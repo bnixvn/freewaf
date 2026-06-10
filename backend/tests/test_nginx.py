@@ -2,6 +2,7 @@ import unittest
 import tempfile
 import os
 import gzip
+import re
 from pathlib import Path
 import sys
 from unittest import mock
@@ -107,6 +108,31 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("if ($request_method ~*", config)
         self.assertIn("if ($request_uri ~*", config)
         self.assertNotIn("$request_method$request_uri", config)
+
+    def test_application_builtin_rules_are_nginx_native(self):
+        app_rule_ids = {
+            "builtin-wordpress-sensitive-files",
+            "builtin-wordpress-enumeration",
+            "builtin-whmcs-sensitive-paths",
+            "builtin-laravel-sensitive-files",
+            "builtin-codeigniter-sensitive-paths",
+            "builtin-hostbill-sensitive-paths",
+            "builtin-php-vendor-test-exposure",
+        }
+        rules = {rule["id"]: rule for rule in BUILTIN_RULES}
+
+        for rule_id in app_rule_ids:
+            rule = rules[rule_id]
+            self.assertNotEqual(rule["target"], "body")
+            re.compile(rule["pattern"], re.IGNORECASE)
+
+        config = generate_nginx_config(make_state())
+
+        self.assertIn("[WordPress] Sensitive application files", config)
+        self.assertIn("[WHMCS] Sensitive files and directories", config)
+        self.assertIn("[Laravel] Env, logs, and framework internals", config)
+        self.assertIn("[CodeIgniter] Protected framework paths", config)
+        self.assertIn("[HostBill] Sensitive files and directories", config)
 
     def test_monitor_site_does_not_block_matching_rules(self):
         state = make_state(
