@@ -192,6 +192,30 @@ EOF
   chmod 0600 "$ENV_FILE"
 }
 
+refresh_nginx_config() {
+  log "Refreshing generated Nginx config"
+  set -a
+  # shellcheck source=/dev/null
+  . "$ENV_FILE"
+  set +a
+
+  (
+    cd "$APP_DIR"
+    PYTHONPATH="${APP_DIR}/backend" /usr/bin/python3 - <<'PY'
+from pathlib import Path
+
+from freewaf.nginx import write_nginx_config
+from freewaf.store import Store, resolve_data_file
+
+root_dir = Path.cwd()
+store = Store(resolve_data_file(root_dir))
+store.init()
+output_file = write_nginx_config(root_dir, store.get_state())
+print(output_file)
+PY
+  )
+}
+
 write_systemd() {
   log "Writing systemd service"
   cat > "$SERVICE_FILE" <<EOF
@@ -268,6 +292,7 @@ main() {
   copy_app "$src"
   build_frontend
   write_env
+  refresh_nginx_config
   write_systemd
   write_nginx_include
   start_service
