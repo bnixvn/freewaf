@@ -78,6 +78,24 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(site_stats["site-wildcard"]["challenged"], 1)
         self.assertEqual(site_stats["site-catchall"]["requests"], 1)
 
+    def test_dashboard_stats_exclude_logs_not_matching_current_applications(self):
+        stats = build_stats(
+            {
+                "sites": [{"id": "site-current", "name": "Current", "hostnames": ["current.example.test"]}],
+                "logs": [
+                    {"host": "current.example.test", "verdict": "allow"},
+                    {"host": "deleted.example.test", "verdict": "block"},
+                    {"host": "203.0.113.10", "verdict": "challenge"},
+                ],
+            }
+        )
+
+        self.assertEqual(stats["scannedTotal"], 3)
+        self.assertEqual(stats["unmatchedTotal"], 2)
+        self.assertEqual(stats["total"], 1)
+        self.assertEqual(stats["protected"], 0)
+        self.assertEqual(stats["siteStats"][0]["requests"], stats["total"])
+
     def test_geoip_country_csv_resolves_public_ip(self):
         with tempfile.TemporaryDirectory() as directory:
             geoip_file = Path(directory) / "dbip-country-lite.csv.gz"

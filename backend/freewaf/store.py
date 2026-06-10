@@ -1629,7 +1629,14 @@ def normalize_access_action(value) -> str:
 
 
 def build_stats(state: dict) -> dict:
-    logs = state.get("logs") or []
+    source_logs = state.get("logs") or []
+    sites = state.get("sites") or []
+    if sites:
+        site_by_id = {str(site.get("id")): site for site in sites if site.get("id")}
+        logs = [entry for entry in source_logs if match_log_site(entry, sites, site_by_id)]
+    else:
+        logs = source_logs
+    unmatched_total = len(source_logs) - len(logs)
     blocked = sum(1 for entry in logs if entry.get("verdict") == "block")
     challenged = sum(1 for entry in logs if entry.get("verdict") == "challenge")
     monitored = sum(1 for entry in logs if entry.get("verdict") == "monitor")
@@ -1650,13 +1657,15 @@ def build_stats(state: dict) -> dict:
         for rule in entry.get("matchedRules", [])
     )
     top_sites = Counter(entry.get("siteName") or "Unmatched" for entry in logs)
-    site_stats = summarize_site_stats(logs, state.get("sites") or [])
+    site_stats = summarize_site_stats(logs, sites)
     status_groups = Counter(status_group(entry) for entry in logs)
     timeline = build_timeline(logs)
     qps_timeline = build_qps_timeline(logs)
 
     return {
         "total": total,
+        "scannedTotal": len(source_logs),
+        "unmatchedTotal": unmatched_total,
         "blocked": blocked,
         "challenged": challenged,
         "protected": protected,
