@@ -723,6 +723,18 @@ td {
   margin-bottom: 12px;
 }
 
+.log-filters {
+  align-items: flex-start;
+}
+
+.log-filter-controls {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: min(100%, 720px);
+}
+
 .search {
   min-width: 240px;
   min-height: 36px;
@@ -730,6 +742,30 @@ td {
   border-radius: 6px;
   padding: 0 10px;
   background: #fff;
+}
+
+.domain-select {
+  min-width: 220px;
+}
+
+.page-size-select {
+  min-width: 124px;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-top: 12px;
+}
+
+.pagination-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .modal-root {

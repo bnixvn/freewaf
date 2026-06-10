@@ -29,7 +29,7 @@ const viewTitles = {
   access: 'Access Control',
   ipGroups: 'IP Groups',
   certificates: 'Certificates',
-  logs: 'Request Logs',
+  logs: 'Access Logs',
   settings: 'Panel Security'
 };
 
@@ -191,13 +191,18 @@ export default function App() {
   const [modal, setModal] = useState(null);
   const [toast, setToast] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [logDomain, setLogDomain] = useState('');
+  const [logPage, setLogPage] = useState(1);
+  const [logPageSize, setLogPageSize] = useState(50);
+  const [logResult, setLogResult] = useState({ logs: [], total: 0, page: 1, pages: 1, domains: [] });
 
   useEffect(() => {
     loadAuth();
   }, []);
 
   useEffect(() => {
-    if (!auth.authenticated || auth.loading || !['dashboard', 'sites', 'logs'].includes(activeView)) {
+    if (!auth.authenticated || auth.loading || !['dashboard', 'sites'].includes(activeView)) {
       return undefined;
     }
     const refreshTimer = window.setInterval(() => {
@@ -205,6 +210,22 @@ export default function App() {
     }, 10000);
     return () => window.clearInterval(refreshTimer);
   }, [auth.authenticated, auth.loading, activeView]);
+
+  useEffect(() => {
+    if (!auth.authenticated || auth.loading || activeView !== 'logs') {
+      return undefined;
+    }
+    const loadTimer = window.setTimeout(() => {
+      loadLogs({}, false, true);
+    }, 250);
+    const refreshTimer = window.setInterval(() => {
+      loadLogs({}, false, false);
+    }, 10000);
+    return () => {
+      window.clearTimeout(loadTimer);
+      window.clearInterval(refreshTimer);
+    };
+  }, [auth.authenticated, auth.loading, activeView, filter, logDomain, logPage, logPageSize]);
 
   async function loadAuth() {
     setLoading(true);
@@ -239,6 +260,41 @@ export default function App() {
       }
     } finally {
       if (manageLoading) setLoading(false);
+    }
+  }
+
+  async function loadLogs(overrides = {}, announce = false, manageLoading = true) {
+    const nextPage = Number(overrides.page || logPage || 1);
+    const nextPageSize = Number(overrides.pageSize || logPageSize || 50);
+    const nextDomain = overrides.domain ?? logDomain;
+    const nextSearch = overrides.search ?? filter;
+    const params = new URLSearchParams({
+      page: String(nextPage),
+      pageSize: String(nextPageSize)
+    });
+    if (nextDomain) params.set('domain', nextDomain);
+    if (nextSearch.trim()) params.set('search', nextSearch.trim());
+
+    if (manageLoading) setLogsLoading(true);
+    try {
+      const result = await api(`/api/logs?${params.toString()}`);
+      setLogResult(result);
+      if (result.page && result.page !== nextPage) {
+        setLogPage(result.page);
+      }
+      if (announce) showToast('Logs refreshed');
+      return result;
+    } catch (error) {
+      if (error.status === 401) {
+        const status = await api('/api/auth/status').catch(() => ({ authenticated: false, setupRequired: false, user: null }));
+        setAuth({ loading: false, ...status });
+        setData(null);
+      } else {
+        showToast(error.message, true);
+      }
+      return null;
+    } finally {
+      if (manageLoading) setLogsLoading(false);
     }
   }
 
@@ -543,8 +599,21 @@ export default function App() {
   async function clearLogs() {
     if (!window.confirm('Clear all logs?')) return;
     await api('/api/logs', { method: 'DELETE' });
+    setLogPage(1);
+    setLogResult({ logs: [], total: 0, page: 1, pages: 1, domains: [] });
     await loadState();
+    if (activeView === 'logs') {
+      await loadLogs({ page: 1 }, false, false);
+    }
     showToast('Logs cleared');
+  }
+
+  async function refreshCurrentView() {
+    if (activeView === 'logs') {
+      await loadLogs({}, true, true);
+      return;
+    }
+    await loadState(true);
   }
 
   async function copyText(value) {
@@ -629,6 +698,14 @@ export default function App() {
       savePanelSettings,
       saveUser,
       deleteUser,
+      logsLoading,
+      logResult,
+      logDomain,
+      setLogDomain,
+      logPage,
+      setLogPage,
+      logPageSize,
+      setLogPageSize,
       auth,
       logout
     };
@@ -640,7 +717,7 @@ export default function App() {
     if (activeView === 'logs') return <LogsView {...props} />;
     if (activeView === 'settings') return <SettingsView {...props} />;
     return <DashboardView {...props} />;
-  }, [activeView, data, filter, auth]);
+  }, [activeView, data, filter, auth, logsLoading, logResult, logDomain, logPage, logPageSize]);
 
   if (auth.loading) {
     return <LoadingPanel />;
@@ -683,8 +760,8 @@ export default function App() {
             <h1>{viewTitles[activeView]}</h1>
           </div>
           <div className="toolbar">
-            <button className="icon-button" onClick={() => loadState(true)} title="Refresh" disabled={loading}>
-              <RefreshCw size={18} className={loading ? 'spin' : ''} />
+            <button className="icon-button" onClick={refreshCurrentView} title="Refresh" disabled={loading || logsLoading}>
+              <RefreshCw size={18} className={loading || logsLoading ? 'spin' : ''} />
             </button>
             <button className="icon-button" onClick={logout} title="Sign out">
               <LogOut size={18} />
@@ -1179,23 +1256,72 @@ function CertificatesView({ data, setModal, deleteCertificate }) {
   );
 }
 
-function LogsView({ data, filter, setFilter, clearLogs }) {
-  const logs = data.logs.filter((entry) => {
-    if (!filter.trim()) return true;
-    return [entry.siteName, entry.host, entry.path, entry.ip, entry.reason, entry.verdict]
-      .join(' ')
-      .toLowerCase()
-      .includes(filter.trim().toLowerCase());
-  });
+function LogsView({
+  data,
+  filter,
+  setFilter,
+  clearLogs,
+  logsLoading,
+  logResult,
+  logDomain,
+  setLogDomain,
+  logPage,
+  setLogPage,
+  logPageSize,
+  setLogPageSize
+}) {
+  const logs = logResult.logs || [];
+  const total = Number(logResult.total || 0);
+  const page = Number(logResult.page || logPage || 1);
+  const pages = Number(logResult.pages || 1);
+  const pageSize = Number(logResult.pageSize || logPageSize || 50);
+  const firstRow = total ? ((page - 1) * pageSize) + 1 : 0;
+  const lastRow = total ? Math.min(total, (page - 1) * pageSize + logs.length) : 0;
+  const domainOptions = Array.from(new Set([
+    ...(logResult.domains || []),
+    ...data.sites.flatMap((site) => site.hostnames || [])
+  ].filter(Boolean))).sort();
 
   return (
     <section className="table-panel">
-      <div className="filters">
+      <div className="filters log-filters">
         <div className="panel-heading compact">
-          <h2>Logs</h2>
+          <h2>Access Logs</h2>
+          <span className="pill">{formatCompact(total)} entries</span>
           <button className="tool-button danger" onClick={clearLogs}><Trash2 size={18} /> Clear</button>
         </div>
-        <input className="search" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter logs" />
+        <div className="log-filter-controls">
+          <select
+            className="search domain-select"
+            value={logDomain}
+            onChange={(event) => {
+              setLogDomain(event.target.value);
+              setLogPage(1);
+            }}
+          >
+            <option value="">All domains</option>
+            {domainOptions.map((domain) => <option key={domain} value={domain}>{domain}</option>)}
+          </select>
+          <input
+            className="search"
+            value={filter}
+            onChange={(event) => {
+              setFilter(event.target.value);
+              setLogPage(1);
+            }}
+            placeholder="Filter logs"
+          />
+          <select
+            className="search page-size-select"
+            value={logPageSize}
+            onChange={(event) => {
+              setLogPageSize(Number(event.target.value));
+              setLogPage(1);
+            }}
+          >
+            {[25, 50, 100, 200].map((size) => <option key={size} value={size}>{size} / page</option>)}
+          </select>
+        </div>
       </div>
       <div className="table-wrap">
         <table>
@@ -1212,7 +1338,9 @@ function LogsView({ data, filter, setFilter, clearLogs }) {
             </tr>
           </thead>
           <tbody>
-            {logs.length ? logs.map((entry) => (
+            {logsLoading ? (
+              <tr><td colSpan="8" className="muted">Loading logs...</td></tr>
+            ) : logs.length ? logs.map((entry) => (
               <tr key={entry.id}>
                 <td><span className={`status ${entry.verdict}`}>{entry.verdict}</span></td>
                 <td>{formatTime(entry.at)}<br /><span className="muted">{entry.durationMs} ms</span></td>
@@ -1228,6 +1356,18 @@ function LogsView({ data, filter, setFilter, clearLogs }) {
             )}
           </tbody>
         </table>
+      </div>
+      <div className="pagination">
+        <span className="muted">{firstRow}-{lastRow} of {formatCompact(total)}</span>
+        <div className="pagination-actions">
+          <button className="tool-button" onClick={() => setLogPage(Math.max(1, page - 1))} disabled={page <= 1 || logsLoading}>
+            Previous
+          </button>
+          <span className="pill">Page {page} / {pages}</span>
+          <button className="tool-button" onClick={() => setLogPage(Math.min(pages, page + 1))} disabled={page >= pages || logsLoading}>
+            Next
+          </button>
+        </div>
       </div>
     </section>
   );

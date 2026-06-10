@@ -8,6 +8,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from freewaf.server import (
+    combined_logs_page,
     prepare_certificate_payload,
     prepare_certbot_certificate_payload,
     remove_certificate_files,
@@ -157,6 +158,28 @@ class CertificateServerTests(unittest.TestCase):
         self.assertEqual(synced["items"], ["203.0.113.10", "198.51.100.0/24"])
         self.assertEqual(synced["lastSyncStatus"], "ok")
         self.assertEqual(synced["lastSyncMessage"], "2 entries synced")
+
+
+class LogPaginationTests(unittest.TestCase):
+    def test_combined_logs_page_filters_domain_and_paginates(self):
+        nginx_logs = [
+            {"id": "1", "at": "2026-06-10T10:04:00+00:00", "host": "www.example.test", "siteName": "www.example.test", "path": "/d"},
+            {"id": "2", "at": "2026-06-10T10:03:00+00:00", "host": "api.example.test", "siteName": "api.example.test", "path": "/c"},
+            {"id": "3", "at": "2026-06-10T10:02:00+00:00", "host": "www.example.test", "siteName": "www.example.test", "path": "/b"},
+            {"id": "4", "at": "2026-06-10T10:01:00+00:00", "host": "www.example.test", "siteName": "www.example.test", "path": "/a"},
+        ]
+        store = mock.Mock()
+        store.get_logs.return_value = []
+
+        with mock.patch.dict(os.environ, {"LOG_PAGE_SCAN_LIMIT": "4", "LOG_PAGE_SCAN_MAX": "10"}):
+            with mock.patch("freewaf.server.parse_nginx_logs", return_value=nginx_logs):
+                page = combined_logs_page(store, limit=2, offset=2, domain="www.example.test", search="")
+
+        self.assertEqual(page["total"], 3)
+        self.assertEqual(page["page"], 2)
+        self.assertEqual(page["pages"], 2)
+        self.assertEqual([entry["id"] for entry in page["logs"]], ["4"])
+        self.assertEqual(page["domains"], ["api.example.test", "www.example.test"])
 
 
 if __name__ == "__main__":

@@ -149,8 +149,12 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 return
 
             if parsed.path == "/api/logs":
-                limit = parse_int((query.get("limit") or ["200"])[0], 200)
-                self.send_json(200, {"logs": combined_logs(store, clamp(limit, 1, 1000))})
+                page_size = clamp(parse_int((query.get("pageSize") or query.get("limit") or ["50"])[0], 50), 1, 200)
+                page = max(1, parse_int((query.get("page") or ["1"])[0], 1))
+                offset = max(0, parse_int((query.get("offset") or [str((page - 1) * page_size)])[0], (page - 1) * page_size))
+                domain = str((query.get("domain") or [""])[0]).strip()
+                search = str((query.get("search") or [""])[0]).strip()
+                self.send_json(200, combined_logs_page(store, page_size, offset, domain, search))
                 return
 
             if parsed.path == "/api/nginx/render":
@@ -661,6 +665,59 @@ def prune_sessions(sessions: dict[str, dict]) -> None:
 def combined_logs(store: Store, limit: int) -> list[dict]:
     logs = [*parse_nginx_logs(ROOT_DIR, limit), *store.get_logs(limit)]
     return sorted(logs, key=lambda entry: entry.get("at") or "", reverse=True)[:limit]
+
+
+def combined_logs_page(store: Store, limit: int, offset: int = 0, domain: str = "", search: str = "") -> dict:
+    scan_limit = log_scan_limit(offset + limit)
+    logs = [*parse_nginx_logs(ROOT_DIR, scan_limit), *store.get_logs(scan_limit)]
+    logs = sorted(logs, key=lambda entry: entry.get("at") or "", reverse=True)
+    domains = sorted({log_domain(entry) for entry in logs if log_domain(entry)})
+    filtered = [entry for entry in logs if log_matches(entry, domain, search)]
+    total = len(filtered)
+    pages = max(1, (total + limit - 1) // limit) if limit else 1
+    if total and offset >= total:
+        offset = (pages - 1) * limit
+    else:
+        offset = max(0, offset)
+    page = (offset // limit) + 1 if limit else 1
+    return {
+        "logs": filtered[offset : offset + limit],
+        "total": total,
+        "limit": limit,
+        "pageSize": limit,
+        "offset": offset,
+        "page": page,
+        "pages": pages,
+        "domain": domain,
+        "search": search,
+        "domains": domains,
+        "scanLimit": scan_limit,
+    }
+
+
+def log_scan_limit(requested: int) -> int:
+    default_limit = parse_int(os.environ.get("LOG_PAGE_SCAN_LIMIT"), 10000)
+    maximum = parse_int(os.environ.get("LOG_PAGE_SCAN_MAX"), 50000)
+    return clamp(max(requested, default_limit), 1, max(1, maximum))
+
+
+def log_domain(entry: dict) -> str:
+    return str(entry.get("host") or entry.get("siteName") or "").strip()
+
+
+def log_matches(entry: dict, domain: str = "", search: str = "") -> bool:
+    normalized_domain = domain.strip().lower()
+    if normalized_domain and log_domain(entry).lower() != normalized_domain:
+        return False
+
+    needle = search.strip().lower()
+    if not needle:
+        return True
+    haystack = " ".join(
+        str(entry.get(key) or "")
+        for key in ("siteName", "host", "method", "path", "ip", "reason", "verdict", "statusCode", "upstreamStatus")
+    ).lower()
+    return needle in haystack
 
 
 def start_ip_group_sync_worker(store: Store) -> None:
