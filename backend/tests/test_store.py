@@ -7,10 +7,31 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from freewaf.store import Store, normalize_state
+from freewaf.store import Store, build_stats, normalize_state
 
 
 class StoreTests(unittest.TestCase):
+    def test_stats_count_challenges_as_protected_events(self):
+        stats = build_stats(
+            {
+                "logs": [
+                    {"verdict": "allow", "statusCode": 200, "siteName": "demo"},
+                    {"verdict": "block", "statusCode": 403, "siteName": "demo", "matchedRules": [{"name": "Deny IP"}]},
+                    {"verdict": "challenge", "statusCode": 200, "siteName": "demo", "matchedRules": [{"name": "Browser challenge required"}]},
+                    {"verdict": "monitor", "statusCode": 200, "siteName": "demo", "matchedRules": [{"name": "Monitor rule"}]},
+                ]
+            }
+        )
+
+        self.assertEqual(stats["total"], 4)
+        self.assertEqual(stats["blocked"], 1)
+        self.assertEqual(stats["challenged"], 1)
+        self.assertEqual(stats["protected"], 2)
+        self.assertEqual(stats["monitored"], 1)
+        self.assertEqual(stats["allowed"], 1)
+        self.assertEqual(stats["blockRate"], 25.0)
+        self.assertEqual(stats["protectedRate"], 50.0)
+
     def test_certbot_certificate_state_is_normalized(self):
         state = normalize_state(
             {

@@ -553,7 +553,7 @@ h2 {
   background: #a6d8cf;
 }
 
-.bar-blocked {
+.bar-protected {
   position: absolute;
   inset: auto 0 0;
   display: block;
@@ -616,6 +616,7 @@ h2 {
 }
 
 .status.monitor,
+.status.challenge,
 .status.medium {
   border-color: #efd29d;
   background: #fff6e6;

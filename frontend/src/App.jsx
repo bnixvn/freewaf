@@ -988,20 +988,24 @@ function AuthScreen({ mode, loading, onSubmit }) {
 
 function DashboardView({ data }) {
   const { stats, logs } = data;
-  const recentBlocks = logs.filter((entry) => entry.verdict === 'block').slice(0, 6);
+  const recentProtections = logs.filter((entry) => ['block', 'challenge', 'monitor'].includes(entry.verdict)).slice(0, 6);
   const topRule = stats.topRules[0]?.name || 'None';
   const timeline = stats.timeline || [];
+  const protectedTotal = Number(stats.protected ?? (Number(stats.blocked || 0) + Number(stats.challenged || 0)));
+  const challengedTotal = Number(stats.challenged || 0);
+  const blockedTotal = Number(stats.blocked || 0);
   const trafficWindow = timeline.reduce((totals, point) => ({
     total: totals.total + Number(point.total || 0),
-    blocked: totals.blocked + Number(point.blocked || 0)
-  }), { total: 0, blocked: 0 });
+    protected: totals.protected + Number(point.protected ?? (Number(point.blocked || 0) + Number(point.challenged || 0))),
+    challenged: totals.challenged + Number(point.challenged || 0)
+  }), { total: 0, protected: 0, challenged: 0 });
 
   return (
     <>
       <div className="metric-grid">
-        <Metric label="Requests" value={stats.total} note="Stored request events" />
-        <Metric label="Blocked" value={stats.blocked} note={`${stats.blockRate}% block rate`} />
-        <Metric label="Monitor" value={stats.monitored} note="Matched without blocking" />
+        <Metric label="Requests" value={formatCompact(stats.total)} note="Analyzed request events" />
+        <Metric label="Protected" value={formatCompact(protectedTotal)} note={`${stats.protectedRate ?? stats.blockRate}% challenge or block rate`} />
+        <Metric label="Challenges" value={formatCompact(challengedTotal)} note={`${formatCompact(blockedTotal)} hard blocks`} />
         <Metric label="Top Signal" value={topRule} note="Most frequent matched rule" />
       </div>
       <div className="grid-two">
@@ -1010,7 +1014,8 @@ function DashboardView({ data }) {
             <h2>Traffic Window</h2>
             <div className="traffic-pills">
               <span className="pill">{formatCompact(trafficWindow.total)} requests</span>
-              <span className="pill">{formatCompact(trafficWindow.blocked)} blocked</span>
+              <span className="pill">{formatCompact(trafficWindow.protected)} protected</span>
+              <span className="pill">{formatCompact(trafficWindow.challenged)} challenged</span>
               <span className="pill">5 minute buckets</span>
             </div>
           </div>
@@ -1018,11 +1023,11 @@ function DashboardView({ data }) {
         </section>
         <section className="panel">
           <div className="panel-heading">
-            <h2>Recent Blocks</h2>
-            <span className="pill">{recentBlocks.length}</span>
+            <h2>Recent Protections</h2>
+            <span className="pill">{recentProtections.length}</span>
           </div>
           <div className="incident-list">
-            {recentBlocks.length ? recentBlocks.map((entry) => <Incident key={entry.id} entry={entry} />) : <p className="muted">No blocked requests recorded.</p>}
+            {recentProtections.length ? recentProtections.map((entry) => <Incident key={entry.id} entry={entry} />) : <p className="muted">No protected requests recorded.</p>}
           </div>
         </section>
       </div>
@@ -1079,7 +1084,7 @@ function ApplicationCard({ site, logs, onEdit, onDelete, onToggle, onConfigureFl
             <strong>{formatCompact(counters.requests)}</strong>
           </div>
           <div>
-            <span>BLK TD</span>
+            <span>PRT TD</span>
             <strong>{formatCompact(counters.blocked)}</strong>
           </div>
         </div>
@@ -1592,19 +1597,20 @@ function Timeline({ points = [] }) {
     <div className="chart" aria-label="Traffic chart">
       {points.map((point, index) => {
         const total = Number(point.total || 0);
-        const blocked = Number(point.blocked || 0);
+        const protectedCount = Number(point.protected ?? (Number(point.blocked || 0) + Number(point.challenged || 0)));
+        const challenged = Number(point.challenged || 0);
         const height = total ? Math.max(8, Math.round((total / max) * 100)) : 4;
-        const blockedHeight = total ? Math.round((blocked / total) * 100) : 0;
+        const protectedHeight = total ? Math.round((protectedCount / total) * 100) : 0;
         const showTick = index % 4 === 0 || index === points.length - 1;
         return (
           <div className="bar-wrap" key={point.at}>
             <span className={`bar-value ${total ? '' : 'zero'}`}>{formatCompact(total)}</span>
             <div
               className={`bar ${total ? 'has-data' : ''}`}
-              title={`${point.label}: ${total} total, ${blocked} blocked`}
+              title={`${point.label}: ${total} total, ${protectedCount} protected, ${challenged} challenged`}
               style={{ height: `${height}%` }}
             >
-              <span className="bar-blocked" style={{ height: `${blockedHeight}%` }} />
+              <span className="bar-protected" style={{ height: `${protectedHeight}%` }} />
             </div>
             <span className="bar-time">{showTick ? point.label : ''}</span>
           </div>
@@ -1615,11 +1621,12 @@ function Timeline({ points = [] }) {
 }
 
 function Incident({ entry }) {
+  const verdict = entry.verdict || 'block';
   return (
     <article className="incident-item">
       <div className="incident-top">
         <strong>{entry.reason}</strong>
-        <span className="status block">block</span>
+        <span className={`status ${verdict}`}>{verdict}</span>
       </div>
       <div className="muted">{entry.method} {entry.path}</div>
       <div className="muted">{entry.ip} / {formatTime(entry.at)}</div>
@@ -3216,7 +3223,7 @@ function siteCounters(site, logs) {
     const matches = entry.siteId === site.id || hosts.has(entry.host) || hosts.has(entry.siteName);
     if (!sameDay || !matches) return totals;
     totals.requests += 1;
-    if (entry.verdict === 'block') totals.blocked += 1;
+    if (['block', 'challenge'].includes(entry.verdict)) totals.blocked += 1;
     return totals;
   }, { requests: 0, blocked: 0 });
 }

@@ -137,7 +137,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 limit = parse_int((query.get("logLimit") or ["200"])[0], 200)
                 logs = combined_logs(store, clamp(limit, 1, 1000))
                 state["logs"] = logs
-                state["stats"] = build_stats({**state, "logs": logs})
+                state["stats"] = build_stats({**state, "logs": combined_stats_logs(store)})
                 state["runtime"] = runtime_payload(state, admin_port, demo_origin_port, demo_enabled)
                 state["users"] = [public_user(user) for user in state.get("users", [])]
                 self.send_json(200, state)
@@ -145,7 +145,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
 
             if parsed.path == "/api/stats":
                 state = store.get_state()
-                self.send_json(200, build_stats({**state, "logs": combined_logs(store, 1000)}))
+                self.send_json(200, build_stats({**state, "logs": combined_stats_logs(store)}))
                 return
 
             if parsed.path == "/api/logs":
@@ -671,6 +671,12 @@ def combined_logs(store: Store, limit: int) -> list[dict]:
     return sorted(logs, key=lambda entry: entry.get("at") or "", reverse=True)[:limit]
 
 
+def combined_stats_logs(store: Store) -> list[dict]:
+    limit = stats_scan_limit()
+    logs = [*parse_nginx_logs(ROOT_DIR, limit), *store.get_logs(limit)]
+    return sorted(logs, key=lambda entry: entry.get("at") or "", reverse=True)[:limit]
+
+
 def combined_logs_page(store: Store, limit: int, offset: int = 0, domain: str = "", search: str = "") -> dict:
     scan_limit = log_scan_limit(offset + limit)
     logs = [*parse_nginx_logs(ROOT_DIR, scan_limit), *store.get_logs(scan_limit)]
@@ -703,6 +709,12 @@ def log_scan_limit(requested: int) -> int:
     default_limit = parse_int(os.environ.get("LOG_PAGE_SCAN_LIMIT"), 10000)
     maximum = parse_int(os.environ.get("LOG_PAGE_SCAN_MAX"), 50000)
     return clamp(max(requested, default_limit), 1, max(1, maximum))
+
+
+def stats_scan_limit() -> int:
+    default_limit = parse_int(os.environ.get("STATS_LOG_SCAN_LIMIT"), 50000)
+    maximum = parse_int(os.environ.get("STATS_LOG_SCAN_MAX"), 250000)
+    return clamp(default_limit, 1, max(1, maximum))
 
 
 def log_domain(entry: dict) -> str:

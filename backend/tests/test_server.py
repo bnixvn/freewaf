@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from freewaf.server import (
     combined_logs_page,
+    combined_stats_logs,
     prepare_certificate_payload,
     prepare_certbot_certificate_payload,
     remove_certificate_files,
@@ -161,6 +162,18 @@ class CertificateServerTests(unittest.TestCase):
 
 
 class LogPaginationTests(unittest.TestCase):
+    def test_combined_stats_logs_uses_dedicated_scan_limit(self):
+        store = mock.Mock()
+        store.get_logs.return_value = []
+
+        with mock.patch.dict(os.environ, {"STATS_LOG_SCAN_LIMIT": "1234", "STATS_LOG_SCAN_MAX": "5000"}):
+            with mock.patch("freewaf.server.parse_nginx_logs", return_value=[]) as parse_logs:
+                combined_stats_logs(store)
+
+        parse_logs.assert_called_once()
+        self.assertEqual(parse_logs.call_args.args[1], 1234)
+        store.get_logs.assert_called_once_with(1234)
+
     def test_combined_logs_page_filters_domain_and_paginates(self):
         nginx_logs = [
             {"id": "1", "at": "2026-06-10T10:04:00+00:00", "host": "www.example.test", "siteName": "www.example.test", "path": "/d"},

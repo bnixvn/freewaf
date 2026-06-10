@@ -1560,7 +1560,9 @@ def normalize_access_action(value) -> str:
 def build_stats(state: dict) -> dict:
     logs = state.get("logs") or []
     blocked = sum(1 for entry in logs if entry.get("verdict") == "block")
+    challenged = sum(1 for entry in logs if entry.get("verdict") == "challenge")
     monitored = sum(1 for entry in logs if entry.get("verdict") == "monitor")
+    protected = blocked + challenged
     total = len(logs)
 
     top_rules = Counter(
@@ -1574,9 +1576,12 @@ def build_stats(state: dict) -> dict:
     return {
         "total": total,
         "blocked": blocked,
+        "challenged": challenged,
+        "protected": protected,
         "monitored": monitored,
-        "allowed": max(total - blocked - monitored, 0),
+        "allowed": max(total - protected - monitored, 0),
         "blockRate": round((blocked / total) * 100, 1) if total else 0,
+        "protectedRate": round((protected / total) * 100, 1) if total else 0,
         "topRules": counter_items(top_rules),
         "topSites": counter_items(top_sites),
         "statusGroups": counter_items(status_groups),
@@ -1595,7 +1600,7 @@ def build_timeline(logs: list[dict]) -> list[dict]:
     for index in range(bucket_count):
         at = start_ms + bucket_ms * index
         label = datetime.fromtimestamp(at / 1000).strftime("%H:%M")
-        buckets.append({"at": at, "label": label, "total": 0, "blocked": 0})
+        buckets.append({"at": at, "label": label, "total": 0, "blocked": 0, "challenged": 0, "protected": 0})
 
     for entry in logs:
         try:
@@ -1608,6 +1613,10 @@ def build_timeline(logs: list[dict]) -> list[dict]:
         buckets[index]["total"] += 1
         if entry.get("verdict") == "block":
             buckets[index]["blocked"] += 1
+            buckets[index]["protected"] += 1
+        elif entry.get("verdict") == "challenge":
+            buckets[index]["challenged"] += 1
+            buckets[index]["protected"] += 1
 
     return buckets
 
