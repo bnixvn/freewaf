@@ -7,6 +7,7 @@ import {
   Globe2,
   Info,
   KeyRound,
+  Loader2,
   LockKeyhole,
   ListFilter,
   LogOut,
@@ -2299,6 +2300,7 @@ function LimitEditFields({ prefix, form, updateLimit, includeStatusCodes = false
 }
 
 function SiteModal({ site, certificates, onClose, onSave }) {
+  const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState(() => ({
     ...defaultSite,
     ...(site || {}),
@@ -2395,8 +2397,9 @@ function SiteModal({ site, certificates, onClose, onSave }) {
     setForm((current) => ({ ...current, upstreams: current.upstreams.filter((_, itemIndex) => itemIndex !== index) }));
   }
 
-  function submit(event) {
+  async function submit(event) {
     event.preventDefault();
+    if (submitting) return;
     const hostnames = listFromText(form.hostnames, /[\s,]+/);
     if (!hostnames.length) {
       window.alert('Enter at least one application domain.');
@@ -2415,14 +2418,19 @@ function SiteModal({ site, certificates, onClose, onSave }) {
       window.alert('Redirect address is required.');
       return;
     }
-    onSave({
-      ...form,
-      tlsEnabled: String(hasHttpsPort || boolValue(form.tlsEnabled)),
-      redirectHttp: String(hasHttpsPort && form.listeningPorts.some((row) => row.protocol === 'http') && boolValue(form.proxyForceHttps)),
-      hostnames: hostnames.join('\n'),
-      upstreams: form.upstreams,
-      listeningPorts: form.listeningPorts
-    });
+    setSubmitting(true);
+    try {
+      await onSave({
+        ...form,
+        tlsEnabled: String(hasHttpsPort || boolValue(form.tlsEnabled)),
+        redirectHttp: String(hasHttpsPort && form.listeningPorts.some((row) => row.protocol === 'http') && boolValue(form.proxyForceHttps)),
+        hostnames: hostnames.join('\n'),
+        upstreams: form.upstreams,
+        listeningPorts: form.listeningPorts
+      });
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -2546,8 +2554,11 @@ function SiteModal({ site, certificates, onClose, onSave }) {
           <TextField label="Application Name" value={form.name} onChange={(value) => update('name', value)} placeholder="Application Name" full required />
         </div>
         <div className="modal-footer">
-          <button type="button" className="tool-button" onClick={onClose}>Cancel</button>
-          <button className="tool-button primary">Submit</button>
+          <button type="button" className="tool-button" onClick={onClose} disabled={submitting}>Cancel</button>
+          <button className="tool-button primary" disabled={submitting}>
+            {submitting && <Loader2 size={17} className="spin" />}
+            {submitting ? 'Saving...' : 'Submit'}
+          </button>
         </div>
       </form>
     </Modal>
@@ -2600,6 +2611,7 @@ function ApplicationOption({ label, checked, onChange }) {
 }
 
 function CertificateModal({ certificate, onClose, onSave }) {
+  const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState(() => ({
     ...defaultCertificate,
     ...(certificate || {}),
@@ -2613,8 +2625,9 @@ function CertificateModal({ certificate, onClose, onSave }) {
     setForm((current) => ({ ...current, [name]: value }));
   }
 
-  function submit(event) {
+  async function submit(event) {
     event.preventDefault();
+    if (submitting) return;
     const domains = listFromText(form.domains, /[\s,]+/);
     if (!domains.length) {
       window.alert('Enter at least one certificate domain.');
@@ -2624,11 +2637,16 @@ function CertificateModal({ certificate, onClose, onSave }) {
       window.alert('Paste both certificate and private key PEM.');
       return;
     }
-    onSave({
-      ...form,
-      name: form.name || domains[0],
-      domains: domains.join('\n')
-    });
+    setSubmitting(true);
+    try {
+      await onSave({
+        ...form,
+        name: form.name || domains[0],
+        domains: domains.join('\n')
+      });
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -2690,8 +2708,11 @@ function CertificateModal({ certificate, onClose, onSave }) {
           </>
         )}
         <div className="modal-footer cert-footer">
-          <button type="button" className="tool-button cert-cancel" onClick={onClose}>Cancel</button>
-          <button className="tool-button primary cert-submit">Submit</button>
+          <button type="button" className="tool-button cert-cancel" onClick={onClose} disabled={submitting}>Cancel</button>
+          <button className="tool-button primary cert-submit" disabled={submitting}>
+            {submitting && <Loader2 size={17} className="spin" />}
+            {submitting ? (form.source === 'certbot' ? 'Issuing...' : 'Saving...') : 'Submit'}
+          </button>
         </div>
       </form>
     </Modal>
