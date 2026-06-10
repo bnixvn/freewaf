@@ -196,6 +196,16 @@ export default function App() {
     loadAuth();
   }, []);
 
+  useEffect(() => {
+    if (!auth.authenticated || auth.loading || !['dashboard', 'sites', 'logs'].includes(activeView)) {
+      return undefined;
+    }
+    const refreshTimer = window.setInterval(() => {
+      loadState(false, false);
+    }, 10000);
+    return () => window.clearInterval(refreshTimer);
+  }, [auth.authenticated, auth.loading, activeView]);
+
   async function loadAuth() {
     setLoading(true);
     try {
@@ -217,7 +227,7 @@ export default function App() {
   async function loadState(announce = false, manageLoading = true) {
     if (manageLoading) setLoading(true);
     try {
-      setData(await api('/api/state'));
+      setData(await api('/api/state?logLimit=1000'));
       if (announce) showToast('State refreshed');
     } catch (error) {
       if (error.status === 401) {
@@ -819,6 +829,11 @@ function DashboardView({ data }) {
   const { stats, logs } = data;
   const recentBlocks = logs.filter((entry) => entry.verdict === 'block').slice(0, 6);
   const topRule = stats.topRules[0]?.name || 'None';
+  const timeline = stats.timeline || [];
+  const trafficWindow = timeline.reduce((totals, point) => ({
+    total: totals.total + Number(point.total || 0),
+    blocked: totals.blocked + Number(point.blocked || 0)
+  }), { total: 0, blocked: 0 });
 
   return (
     <>
@@ -830,11 +845,15 @@ function DashboardView({ data }) {
       </div>
       <div className="grid-two">
         <section className="panel">
-          <div className="panel-heading">
+          <div className="panel-heading traffic-heading">
             <h2>Traffic Window</h2>
-            <span className="pill">5 minute buckets</span>
+            <div className="traffic-pills">
+              <span className="pill">{formatCompact(trafficWindow.total)} requests</span>
+              <span className="pill">{formatCompact(trafficWindow.blocked)} blocked</span>
+              <span className="pill">5 minute buckets</span>
+            </div>
           </div>
-          <Timeline points={stats.timeline} />
+          <Timeline points={timeline} />
         </section>
         <section className="panel">
           <div className="panel-heading">
@@ -1330,21 +1349,27 @@ function Metric({ label, value, note }) {
   );
 }
 
-function Timeline({ points }) {
-  const max = Math.max(1, ...points.map((point) => point.total));
+function Timeline({ points = [] }) {
+  const max = Math.max(1, ...points.map((point) => Number(point.total || 0)));
   return (
     <div className="chart" aria-label="Traffic chart">
-      {points.map((point) => {
-        const height = Math.max(4, Math.round((point.total / max) * 100));
-        const blockedHeight = point.total ? Math.round((point.blocked / point.total) * 100) : 0;
+      {points.map((point, index) => {
+        const total = Number(point.total || 0);
+        const blocked = Number(point.blocked || 0);
+        const height = total ? Math.max(8, Math.round((total / max) * 100)) : 4;
+        const blockedHeight = total ? Math.round((blocked / total) * 100) : 0;
+        const showTick = index % 4 === 0 || index === points.length - 1;
         return (
-          <div
-            className="bar"
-            key={point.at}
-            title={`${point.label}: ${point.total} total, ${point.blocked} blocked`}
-            style={{ height: `${height}%` }}
-          >
-            <span style={{ height: `${blockedHeight}%` }} />
+          <div className="bar-wrap" key={point.at}>
+            <span className={`bar-value ${total ? '' : 'zero'}`}>{formatCompact(total)}</span>
+            <div
+              className={`bar ${total ? 'has-data' : ''}`}
+              title={`${point.label}: ${total} total, ${blocked} blocked`}
+              style={{ height: `${height}%` }}
+            >
+              <span className="bar-blocked" style={{ height: `${blockedHeight}%` }} />
+            </div>
+            <span className="bar-time">{showTick ? point.label : ''}</span>
           </div>
         );
       })}

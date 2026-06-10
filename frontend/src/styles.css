@@ -328,6 +328,21 @@ h2 {
   margin-bottom: 0;
 }
 
+.traffic-heading {
+  align-items: flex-start;
+}
+
+.traffic-heading h2 {
+  margin-bottom: 0;
+}
+
+.traffic-pills {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .application-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(520px, 1fr));
@@ -477,27 +492,70 @@ h2 {
 
 .chart {
   display: grid;
-  grid-template-columns: repeat(24, minmax(8px, 1fr));
-  align-items: end;
+  grid-template-columns: repeat(24, minmax(28px, 1fr));
+  align-items: stretch;
   gap: 5px;
-  height: 220px;
+  height: 238px;
   padding-top: 8px;
+  overflow-x: auto;
   border-top: 1px solid var(--line);
+}
+
+.bar-wrap {
+  display: grid;
+  grid-template-rows: 18px minmax(0, 1fr) 14px;
+  align-items: end;
+  gap: 4px;
+  min-width: 0;
+}
+
+.bar-value,
+.bar-time {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bar-value {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.bar-value.zero {
+  color: #95a3b4;
+  font-weight: 600;
 }
 
 .bar {
   position: relative;
+  align-self: end;
+  width: 100%;
   min-height: 4px;
   border-radius: 4px 4px 0 0;
+  background: #d6e3e2;
+}
+
+.bar.has-data {
   background: #a6d8cf;
 }
 
-.bar span {
+.bar-blocked {
   position: absolute;
   inset: auto 0 0;
   display: block;
   border-radius: 4px 4px 0 0;
   background: #de4b40;
+}
+
+.bar-time {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1;
 }
 
 .incident-list {
