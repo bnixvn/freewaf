@@ -1650,6 +1650,7 @@ def build_stats(state: dict) -> dict:
         for rule in entry.get("matchedRules", [])
     )
     top_sites = Counter(entry.get("siteName") or "Unmatched" for entry in logs)
+    site_stats = summarize_site_stats(logs, state.get("sites") or [])
     status_groups = Counter(status_group(entry) for entry in logs)
     timeline = build_timeline(logs)
     qps_timeline = build_qps_timeline(logs)
@@ -1675,11 +1676,76 @@ def build_stats(state: dict) -> dict:
         "geoAttribution": geoip_attribution(),
         "topRules": counter_items(top_rules),
         "topSites": counter_items(top_sites),
+        "siteStats": site_stats,
         "statusGroups": counter_items(status_groups),
         "qps": qps_timeline[-1]["qps"] if qps_timeline else 0,
         "qpsTimeline": qps_timeline,
         "timeline": timeline,
     }
+
+
+def summarize_site_stats(logs: list[dict], sites: list[dict]) -> list[dict]:
+    totals = {
+        str(site.get("id") or ""): {
+            "siteId": str(site.get("id") or ""),
+            "name": str(site.get("name") or "Untitled site"),
+            "requests": 0,
+            "blocked": 0,
+            "challenged": 0,
+            "protected": 0,
+            "monitored": 0,
+        }
+        for site in sites
+        if site.get("id")
+    }
+    site_by_id = {str(site.get("id")): site for site in sites if site.get("id")}
+
+    for entry in logs:
+        site = match_log_site(entry, sites, site_by_id)
+        if not site:
+            continue
+        item = totals[str(site["id"])]
+        item["requests"] += 1
+        verdict = entry.get("verdict")
+        if verdict == "block":
+            item["blocked"] += 1
+            item["protected"] += 1
+        elif verdict == "challenge":
+            item["challenged"] += 1
+            item["protected"] += 1
+        elif verdict == "monitor":
+            item["monitored"] += 1
+
+    for item in totals.values():
+        requests = item["requests"]
+        item["allowed"] = max(requests - item["protected"] - item["monitored"], 0)
+        item["blockRate"] = round((item["blocked"] / requests) * 100, 1) if requests else 0
+        item["protectedRate"] = round((item["protected"] / requests) * 100, 1) if requests else 0
+    return list(totals.values())
+
+
+def match_log_site(entry: dict, sites: list[dict], site_by_id: dict[str, dict]) -> dict | None:
+    site_id = str(entry.get("siteId") or "")
+    if site_id and site_id in site_by_id:
+        return site_by_id[site_id]
+
+    host = str(entry.get("host") or entry.get("siteName") or "").strip().lower().split(":", 1)[0]
+    if not host:
+        return None
+    for site in sites:
+        for hostname in site.get("hostnames") or []:
+            pattern = str(hostname or "").strip().lower().split(":", 1)[0]
+            if pattern == host:
+                return site
+    for site in sites:
+        for hostname in site.get("hostnames") or []:
+            pattern = str(hostname or "").strip().lower().split(":", 1)[0]
+            if pattern.startswith("*.") and (host == pattern[2:] or host.endswith(pattern[1:])):
+                return site
+    for site in sites:
+        if any(str(hostname or "").strip() in {"*", "_"} for hostname in site.get("hostnames") or []):
+            return site
+    return None
 
 
 def summarize_bot_types(logs: list[dict]) -> list[dict]:

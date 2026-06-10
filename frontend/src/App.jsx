@@ -58,6 +58,7 @@ const emptyStats = {
   geoAttribution: null,
   topRules: [],
   topSites: [],
+  siteStats: [],
   statusGroups: [],
   qps: 0,
   qpsTimeline: [],
@@ -1264,7 +1265,7 @@ function SitesView({ data, setModal, toggleSite, deleteSite }) {
           <ApplicationCard
             key={site.id}
             site={site}
-            logs={data.logs}
+            stats={data.stats?.siteStats?.find((item) => item.siteId === site.id)}
             onEdit={() => setModal({ type: 'site', site })}
             onDelete={() => deleteSite(site)}
             onToggle={(checked) => toggleSite(site, checked)}
@@ -1278,9 +1279,9 @@ function SitesView({ data, setModal, toggleSite, deleteSite }) {
   );
 }
 
-function ApplicationCard({ site, logs, onEdit, onDelete, onToggle, onConfigureFlood, onConfigureBot, onConfigureGeo }) {
+function ApplicationCard({ site, stats, onEdit, onDelete, onToggle, onConfigureFlood, onConfigureBot, onConfigureGeo }) {
   const features = normalizedSiteFeatures(site);
-  const counters = siteCounters(site, logs);
+  const counters = stats || { requests: 0, protected: 0 };
   const domain = site.hostnames?.[0] || site.name;
   const ports = site.ports?.length ? site.ports : [site.tls?.enabled ? `${site.listen || 443}_ssl` : String(site.listen || 8080)];
   const protocol = ports.some((port) => String(port).endsWith('_ssl')) ? 'HTTPS' : 'HTTP';
@@ -1301,7 +1302,7 @@ function ApplicationCard({ site, logs, onEdit, onDelete, onToggle, onConfigureFl
           </div>
           <div>
             <span>PRT TD</span>
-            <strong>{formatCompact(counters.blocked)}</strong>
+            <strong>{formatCompact(counters.protected)}</strong>
           </div>
         </div>
       </div>
@@ -3733,20 +3734,6 @@ function applicationTypeLabel(value) {
   if (value === 'static_files') return 'Static Files';
   if (value === 'redirect') return 'Redirect';
   return 'Reverse Proxy';
-}
-
-function siteCounters(site, logs) {
-  const hosts = new Set(site.hostnames || []);
-  const today = new Date().toDateString();
-  return (logs || []).reduce((totals, entry) => {
-    const entryDate = entry.at ? new Date(entry.at) : null;
-    const sameDay = entryDate && entryDate.toDateString() === today;
-    const matches = entry.siteId === site.id || hosts.has(entry.host) || hosts.has(entry.siteName);
-    if (!sameDay || !matches) return totals;
-    totals.requests += 1;
-    if (['block', 'challenge'].includes(entry.verdict)) totals.blocked += 1;
-    return totals;
-  }, { requests: 0, blocked: 0 });
 }
 
 function formatCompact(value) {

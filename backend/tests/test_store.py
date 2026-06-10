@@ -16,18 +16,23 @@ class StoreTests(unittest.TestCase):
         with mock.patch("freewaf.store.country_for_ip", side_effect=lambda ip: {"code": "US", "name": "United States"}):
             stats = build_stats(
                 {
+                    "sites": [
+                        {"id": "site-demo", "name": "Demo", "hostnames": ["demo.example.test"]},
+                        {"id": "site-other", "name": "Other", "hostnames": ["*.other.test"]},
+                    ],
                     "logs": [
-                        {"verdict": "allow", "statusCode": 200, "siteName": "demo", "ip": "203.0.113.1"},
-                        {"verdict": "block", "statusCode": 403, "siteName": "demo", "ip": "203.0.113.2", "matchedRules": [{"name": "Deny IP"}]},
+                        {"verdict": "allow", "statusCode": 200, "siteName": "demo.example.test", "host": "demo.example.test", "ip": "203.0.113.1"},
+                        {"verdict": "block", "statusCode": 403, "siteName": "demo.example.test", "host": "demo.example.test", "ip": "203.0.113.2", "matchedRules": [{"name": "Deny IP"}]},
                         {
                             "verdict": "challenge",
                             "statusCode": 200,
-                            "siteName": "demo",
+                            "siteName": "demo.example.test",
+                            "host": "demo.example.test",
                             "ip": "203.0.113.3",
                             "userAgent": "meta-externalagent/1.1",
                             "matchedRules": [{"name": "Browser challenge required"}],
                         },
-                        {"verdict": "monitor", "statusCode": 200, "siteName": "demo", "ip": "203.0.113.4", "matchedRules": [{"name": "Monitor rule"}]},
+                        {"verdict": "monitor", "statusCode": 200, "siteName": "demo.example.test", "host": "demo.example.test", "ip": "203.0.113.4", "matchedRules": [{"name": "Monitor rule"}]},
                     ]
                 }
             )
@@ -45,6 +50,33 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(stats["topCountries"][0]["name"], "United States")
         self.assertEqual(stats["topCountries"][0]["protected"], 2)
         self.assertEqual(stats["blockedCountryCount"], 1)
+        demo_stats = next(item for item in stats["siteStats"] if item["siteId"] == "site-demo")
+        self.assertEqual(demo_stats["requests"], stats["total"])
+        self.assertEqual(demo_stats["blocked"], stats["blocked"])
+        self.assertEqual(demo_stats["protected"], stats["protected"])
+
+    def test_site_stats_prefer_exact_domain_before_wildcard_and_catchall(self):
+        stats = build_stats(
+            {
+                "sites": [
+                    {"id": "site-catchall", "name": "Catchall", "hostnames": ["*"]},
+                    {"id": "site-wildcard", "name": "Wildcard", "hostnames": ["*.example.test"]},
+                    {"id": "site-exact", "name": "Exact", "hostnames": ["shop.example.test"]},
+                ],
+                "logs": [
+                    {"host": "shop.example.test", "verdict": "block"},
+                    {"host": "blog.example.test", "verdict": "challenge"},
+                    {"host": "other.test", "verdict": "allow"},
+                ],
+            }
+        )
+
+        site_stats = {item["siteId"]: item for item in stats["siteStats"]}
+        self.assertEqual(site_stats["site-exact"]["requests"], 1)
+        self.assertEqual(site_stats["site-exact"]["blocked"], 1)
+        self.assertEqual(site_stats["site-wildcard"]["requests"], 1)
+        self.assertEqual(site_stats["site-wildcard"]["challenged"], 1)
+        self.assertEqual(site_stats["site-catchall"]["requests"], 1)
 
     def test_geoip_country_csv_resolves_public_ip(self):
         with tempfile.TemporaryDirectory() as directory:

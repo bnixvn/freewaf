@@ -229,7 +229,12 @@ def parse_nginx_logs(root_dir: Path, limit: int = 500) -> list[dict]:
 
             verdict = str(raw.get("verdict") or "allow")
             status = parse_int(raw.get("status"))
+            upstream_status = parse_int(raw.get("upstream_status"))
+            if verdict == "allow" and status in {403, 429} and upstream_status is None:
+                verdict = "block"
             reason = str(raw.get("reason") or ("Blocked by Nginx WAF" if verdict == "block" else "Allowed"))
+            if verdict == "block" and reason == "Allowed":
+                reason = "Blocked by ModSecurity or Nginx edge policy"
             entries.append(
                 {
                     "id": f"nginx-{safe_identifier(log_file.name)}-{len(lines) - index}",
@@ -242,7 +247,7 @@ def parse_nginx_logs(root_dir: Path, limit: int = 500) -> list[dict]:
                     "ip": str(raw.get("remote_addr") or ""),
                     "verdict": verdict,
                     "statusCode": status,
-                    "upstreamStatus": parse_int(raw.get("upstream_status")),
+                    "upstreamStatus": upstream_status,
                     "durationMs": int(float(raw.get("request_time") or 0) * 1000),
                     "reason": reason,
                     "matchedRules": [{"name": reason, "severity": "medium", "action": verdict}] if verdict != "allow" else [],

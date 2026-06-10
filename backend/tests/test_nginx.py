@@ -2,6 +2,7 @@ import unittest
 import tempfile
 import os
 import gzip
+import json
 import re
 from pathlib import Path
 import sys
@@ -10,7 +11,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from freewaf.defaults import BUILTIN_RULES, DEFAULT_SETTINGS
-from freewaf.nginx import BOT_CHALLENGE_UA_PATTERN, generate_nginx_config, write_nginx_config
+from freewaf.nginx import BOT_CHALLENGE_UA_PATTERN, generate_nginx_config, parse_nginx_logs, write_nginx_config
 
 
 def make_state(**overrides):
@@ -55,6 +56,39 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("map $request_uri $sfl_reason {", config)
         self.assertIn("# No enabled sites.", config)
         self.assertNotIn("unknown \"sfl_verdict\"", config)
+
+    def test_nginx_log_parser_counts_edge_403_as_block(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root_dir = Path(directory)
+            log_file = root_dir / "freewaf_access.log"
+            log_file.write_text(
+                json.dumps(
+                    {
+                        "time": "2026-06-10T12:00:00+00:00",
+                        "remote_addr": "203.0.113.10",
+                        "host": "example.test",
+                        "method": "POST",
+                        "uri": "/login",
+                        "status": 403,
+                        "bytes": 153,
+                        "request_time": 0.01,
+                        "upstream_status": "-",
+                        "verdict": "allow",
+                        "reason": "Allowed",
+                        "user_agent": "Mozilla/5.0",
+                        "referer": "",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.dict(os.environ, {"NGINX_ACCESS_LOG": str(log_file), "NGINX_SITE_LOG_DIR": str(root_dir / "sites")}, clear=False):
+                entries = parse_nginx_logs(root_dir, 10)
+
+        self.assertEqual(entries[0]["verdict"], "block")
+        self.assertEqual(entries[0]["statusCode"], 403)
+        self.assertEqual(entries[0]["matchedRules"][0]["name"], "Blocked by ModSecurity or Nginx edge policy")
 
     def test_writes_one_nginx_file_per_domain(self):
         state = make_state(
