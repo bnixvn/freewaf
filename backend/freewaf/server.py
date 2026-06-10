@@ -276,7 +276,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 resource, item_id = split_resource_path(self.path)
                 if resource == "sites":
                     store.delete_site(item_id)
-                    maybe_auto_write(store)
+                    apply_nginx_or_raise(store)
                     self.send_empty(204)
                     return
                 if resource == "rules":
@@ -291,7 +291,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                         return
                     remove_certificate_files(certificate)
                     store.delete_certificate(item_id)
-                    write_nginx_config(ROOT_DIR, store.get_state())
+                    apply_nginx_or_raise(store)
                     self.send_empty(204)
                     return
                 if resource == "ip-groups":
@@ -562,6 +562,22 @@ def apply_nginx(store: Store, payload: dict) -> dict:
             result["ok"] = result["ok"] and reload_result.get("ok", False)
 
     return result
+
+
+def apply_nginx_or_raise(store: Store) -> dict:
+    result = apply_nginx(store, {"test": True, "reload": True})
+    if result.get("ok"):
+        return result
+
+    messages = []
+    for key in ("test", "reload"):
+        item = result.get(key) or {}
+        for stream in ("stderr", "stdout"):
+            value = str(item.get(stream) or "").strip()
+            if value:
+                messages.append(value)
+    message = "\n".join(dict.fromkeys(messages)) or "Nginx config update failed"
+    raise StoreError(500, message)
 
 
 def public_user(user: dict | None, include_totp_secret: bool = False) -> dict | None:

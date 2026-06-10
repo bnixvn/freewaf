@@ -34,12 +34,22 @@ class NginxGeneratorTests(unittest.TestCase):
         config = generate_nginx_config(make_state())
 
         self.assertIn("server {", config)
+        self.assertIn("map $request_uri $sfl_verdict {", config)
+        self.assertIn("map $request_uri $sfl_reason {", config)
         self.assertIn("upstream backend_site_demo", config)
         self.assertIn("listen 0.0.0.0:8080;", config)
         self.assertIn("server_name localhost;", config)
         self.assertIn("server 127.0.0.1:9090;", config)
         self.assertIn("proxy_pass http://backend_site_demo;", config)
         self.assertIn("location = /.safeline/forbidden_page", config)
+
+    def test_generates_safe_http_defaults_without_sites(self):
+        config = generate_nginx_config(make_state(sites=[]))
+
+        self.assertIn("map $request_uri $sfl_verdict {", config)
+        self.assertIn("map $request_uri $sfl_reason {", config)
+        self.assertIn("# No enabled sites.", config)
+        self.assertNotIn("unknown \"sfl_verdict\"", config)
 
     def test_generates_blocking_rule_for_builtin_sqli(self):
         config = generate_nginx_config(make_state())

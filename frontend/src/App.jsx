@@ -486,9 +486,13 @@ export default function App() {
 
   async function deleteSite(site) {
     if (!window.confirm(`Delete ${site.name}?`)) return;
-    await api(`/api/sites/${site.id}`, { method: 'DELETE' });
-    await loadState();
-    showToast('Site deleted');
+    try {
+      await api(`/api/sites/${site.id}`, { method: 'DELETE' });
+      await loadState();
+      showToast('Site deleted');
+    } catch (error) {
+      showToast(error.message, true);
+    }
   }
 
   async function deleteRule(rule) {
@@ -500,9 +504,13 @@ export default function App() {
 
   async function deleteCertificate(certificate) {
     if (!window.confirm(`Delete ${certificate.name}?`)) return;
-    await api(`/api/certificates/${certificate.id}`, { method: 'DELETE' });
-    await loadState();
-    showToast('Certificate deleted');
+    try {
+      await api(`/api/certificates/${certificate.id}`, { method: 'DELETE' });
+      await loadState();
+      showToast('Certificate deleted');
+    } catch (error) {
+      showToast(error.message, true);
+    }
   }
 
   async function deleteIpGroup(group) {
