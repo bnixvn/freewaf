@@ -8,7 +8,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from freewaf.defaults import BUILTIN_RULES, DEFAULT_SETTINGS
-from freewaf.nginx import generate_nginx_config, write_nginx_config
+from freewaf.nginx import BOT_CHALLENGE_UA_PATTERN, generate_nginx_config, write_nginx_config
 
 
 def make_state(**overrides):
@@ -452,11 +452,24 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("set $sfl_bot_block 1;", config)
         self.assertIn("set $sfl_challenge 1;", config)
         self.assertIn("error_page 461 = @freewaf_challenge;", config)
-        self.assertIn("add_header Set-Cookie \"freewaf_challenge=passed;", config)
+        self.assertIn("document.cookie=\"freewaf_challenge=passed;", config)
+        self.assertNotIn("add_header Set-Cookie \"freewaf_challenge=passed;", config)
         self.assertIn("Bot protection matched scanner headers", config)
         self.assertIn("Bot protection matched suspicious headers", config)
         self.assertIn('limit_req_zone "$remote_addr|$request_method|$http_user_agent" zone=freewaf_rate_fingerprint', config)
         self.assertNotIn("$request_method$request_uri$http_user_agent", config)
+
+    def test_social_crawler_user_agents_are_challenged(self):
+        user_agent = "meta-externalagent/1.1 (+https://developers.facebook.com/docs/sharing/webmasters/crawler)"
+        config = generate_nginx_config(make_state())
+        suspicious_map = config[
+            config.find("map $http_user_agent $sfl_suspicious_ua") :
+            config.find("map $http_user_agent $sfl_missing_user_agent")
+        ]
+
+        self.assertRegex(user_agent, BOT_CHALLENGE_UA_PATTERN)
+        self.assertIn("externalagent|facebookexternalhit", suspicious_map)
+        self.assertNotRegex(suspicious_map, r"~\*.*externalagent.* 0;")
 
     def test_bot_protection_options_gate_challenge_and_emit_replay(self):
         state = make_state(

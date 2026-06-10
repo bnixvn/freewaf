@@ -18,11 +18,8 @@ BOT_BLOCK_UA_PATTERN = (
 BOT_CHALLENGE_UA_PATTERN = (
     r"(?:curl|wget|python-requests|python-urllib|aiohttp|httpx|scrapy|libwww-perl|"
     r"go-http-client|java/|okhttp|apache-httpclient|node-fetch|axios|perl|ruby|"
-    r"bot|crawler|spider|headlesschrome|phantomjs|selenium|playwright|puppeteer)"
-)
-GOOD_BOT_UA_PATTERN = (
-    r"(?:googlebot|bingbot|duckduckbot|baiduspider|yandexbot|facebookexternalhit|"
-    r"meta-externalagent|facebot|slurp)"
+    r"bot|crawler|spider|externalagent|facebookexternalhit|headlesschrome|phantomjs|"
+    r"selenium|playwright|puppeteer)"
 )
 
 
@@ -289,7 +286,6 @@ def render_bot_detection_maps() -> list[str]:
         "",
         "map $http_user_agent $sfl_suspicious_ua {",
         "    default 0;",
-        f"    ~*{GOOD_BOT_UA_PATTERN} 0;",
         f"    ~*{BOT_CHALLENGE_UA_PATTERN} 1;",
         "}",
         "",
@@ -624,9 +620,9 @@ def render_internal_waf_locations(site: dict) -> list[str]:
         "        set $sfl_verdict challenge;",
         "        set $sfl_reason \"Browser challenge required\";",
         "        add_header X-FreeWAF-Verdict challenge always;",
-        "        add_header Set-Cookie \"freewaf_challenge=passed; Max-Age=1800; Path=/; SameSite=Lax\" always;",
         "        add_header Cache-Control \"no-store\" always;",
-        "        return 302 $request_uri;",
+        "        default_type text/html;",
+        f"        return 200 '{challenge_page(site)}';",
         "    }",
     ]
 
@@ -1523,6 +1519,22 @@ def rate_limit_page(site: dict) -> str:
     title = "Request limited"
     message = f"FreeWAF rate-limited this request for {site.get('name', 'this site')}."
     return error_page_html(title, message)
+
+
+def challenge_page(site: dict) -> str:
+    title = "Security check"
+    message = f"FreeWAF is verifying this browser for {site.get('name', 'this site')}."
+    html = (
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        f"<title>{title}</title>"
+        "<style>body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#f5f7f8;color:#17202a;display:grid;min-height:100vh;place-items:center}"
+        "main{width:min(560px,calc(100vw - 32px));background:#fff;border:1px solid #d8e0ea;border-radius:8px;padding:28px}"
+        "h1{margin:0 0 12px;font-size:24px}p{line-height:1.55;margin:0;color:#526071}</style></head>"
+        f"<body><main><h1>{title}</h1><p>{message}</p><noscript><p>JavaScript is required to continue.</p></noscript></main>"
+        "<script>(function(){document.cookie=\"freewaf_challenge=passed; Max-Age=1800; Path=/; SameSite=Lax\";window.location.replace(window.location.href);})();</script>"
+        "</body></html>"
+    )
+    return html.replace("\\", "\\\\").replace("'", "\\'")
 
 
 def error_page_html(title: str, message: str) -> str:
