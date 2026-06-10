@@ -2459,6 +2459,60 @@ function SiteModal({ site, certificates, onClose, onSave }) {
             <ModeChoice active={form.applicationType === 'redirect'} label="Redirect" onClick={() => update('applicationType', 'redirect')} />
           </div>
 
+          <section className="application-option-section">
+            <h3>Transport and Protection</h3>
+            <div className="application-option-grid">
+              <ApplicationOption label="Enable HTTP/2" checked={boolValue(form.http2)} onChange={(value) => update('http2', String(value))} />
+              <ApplicationOption label="Redirect HTTP to HTTPS" checked={boolValue(form.proxyForceHttps)} onChange={(value) => update('proxyForceHttps', String(value))} />
+              <ApplicationOption label="Enable HSTS" checked={boolValue(form.proxyHsts)} onChange={(value) => update('proxyHsts', String(value))} />
+              <ApplicationOption label="Gzip Compression" checked={boolValue(form.proxyGzip)} onChange={(value) => update('proxyGzip', String(value))} />
+              <ApplicationOption label="Brotli Compression" checked={boolValue(form.proxyBrotli)} onChange={(value) => update('proxyBrotli', String(value))} />
+              <ApplicationOption label="Clear and Rewrite X-Forwarded-For" checked={boolValue(form.proxyResetXff)} onChange={(value) => update('proxyResetXff', String(value))} />
+              <ApplicationOption label="ModSecurity" checked={boolValue(form.modSecurityEnabled)} onChange={(value) => update('modSecurityEnabled', String(value))} />
+            </div>
+            {boolValue(form.modSecurityEnabled) && (
+              <div className="application-option-inputs">
+                <SelectField
+                  label="Rule Set"
+                  value={form.modSecurityRuleset}
+                  onChange={(value) => update('modSecurityRuleset', value)}
+                  options={[
+                    { value: 'comodo', label: 'Comodo WAF Rules' },
+                    { value: 'owasp', label: 'OWASP Core Rule Set' }
+                  ]}
+                />
+                <SelectField
+                  label="Engine Mode"
+                  value={form.modSecurityMode}
+                  onChange={(value) => update('modSecurityMode', value)}
+                  options={[
+                    { value: 'on', label: 'Block' },
+                    { value: 'detection_only', label: 'Detection Only' }
+                  ]}
+                />
+                <TextField label="Request Body Limit (bytes)" value={form.modSecurityRequestBodyLimit} onChange={(value) => update('modSecurityRequestBodyLimit', value)} type="number" />
+              </div>
+            )}
+            {boolValue(form.proxyHsts) && (
+              <div className="application-option-inputs">
+                <TextField label="HSTS Max Age (seconds)" value={form.proxyHstsMaxAge} onChange={(value) => update('proxyHstsMaxAge', value)} type="number" />
+              </div>
+            )}
+            {form.applicationType === 'reverse_proxy' && (
+              <div className="application-option-inputs">
+                <ApplicationOption label="Modify Host Header" checked={boolValue(form.proxyModifyHostHeader)} onChange={(value) => update('proxyModifyHostHeader', String(value))} />
+                <ApplicationOption label="Pass Forwarded Headers" checked={boolValue(form.proxyForwardedHeaders)} onChange={(value) => update('proxyForwardedHeaders', String(value))} />
+                {boolValue(form.proxyModifyHostHeader) && <TextField label="Host Header" value={form.proxyHostHeader} onChange={(value) => update('proxyHostHeader', value)} placeholder="$http_host" />}
+                {boolValue(form.proxyForwardedHeaders) && (
+                  <>
+                    <TextField label="X-Forwarded-Host" value={form.proxyXForwardedHost} onChange={(value) => update('proxyXForwardedHost', value)} placeholder="$http_host" />
+                    <TextField label="X-Forwarded-Proto" value={form.proxyXForwardedProto} onChange={(value) => update('proxyXForwardedProto', value)} placeholder="$scheme" />
+                  </>
+                )}
+              </div>
+            )}
+          </section>
+
           {form.applicationType === 'reverse_proxy' && (
             <>
               <div className="safe-fieldset">
@@ -2472,64 +2526,6 @@ function SiteModal({ site, certificates, onClose, onSave }) {
                 ))}
                 <button type="button" className="outline-action" onClick={addUpstream}><Plus size={16} /> Add Upstream</button>
               </div>
-
-              <section className="application-option-section">
-                <h3>Transport and Forwarding</h3>
-                <div className="application-option-grid">
-                  <ApplicationOption label="Enable HTTP/2" checked={boolValue(form.http2)} onChange={(value) => update('http2', String(value))} />
-                  <ApplicationOption label="Redirect HTTP to HTTPS" checked={boolValue(form.proxyForceHttps)} onChange={(value) => update('proxyForceHttps', String(value))} />
-                  <ApplicationOption label="Enable HSTS" checked={boolValue(form.proxyHsts)} onChange={(value) => update('proxyHsts', String(value))} />
-                  <ApplicationOption label="Gzip Compression" checked={boolValue(form.proxyGzip)} onChange={(value) => update('proxyGzip', String(value))} />
-                  <ApplicationOption label="Brotli Compression" checked={boolValue(form.proxyBrotli)} onChange={(value) => update('proxyBrotli', String(value))} />
-                  <ApplicationOption label="Modify Host Header" checked={boolValue(form.proxyModifyHostHeader)} onChange={(value) => update('proxyModifyHostHeader', String(value))} />
-                  <ApplicationOption label="Pass Forwarded Headers" checked={boolValue(form.proxyForwardedHeaders)} onChange={(value) => update('proxyForwardedHeaders', String(value))} />
-                  <ApplicationOption label="Clear and Rewrite X-Forwarded-For" checked={boolValue(form.proxyResetXff)} onChange={(value) => update('proxyResetXff', String(value))} />
-                </div>
-                <div className="application-option-inputs">
-                  {boolValue(form.proxyHsts) && (
-                    <TextField label="HSTS Max Age (seconds)" value={form.proxyHstsMaxAge} onChange={(value) => update('proxyHstsMaxAge', value)} type="number" />
-                  )}
-                  {boolValue(form.proxyModifyHostHeader) && (
-                    <TextField label="Host Header" value={form.proxyHostHeader} onChange={(value) => update('proxyHostHeader', value)} placeholder="$http_host" />
-                  )}
-                  {boolValue(form.proxyForwardedHeaders) && (
-                    <>
-                      <TextField label="X-Forwarded-Host" value={form.proxyXForwardedHost} onChange={(value) => update('proxyXForwardedHost', value)} placeholder="$http_host" />
-                      <TextField label="X-Forwarded-Proto" value={form.proxyXForwardedProto} onChange={(value) => update('proxyXForwardedProto', value)} placeholder="$scheme" />
-                    </>
-                  )}
-                </div>
-              </section>
-
-              <section className="application-option-section">
-                <h3>Payload Protection</h3>
-                <div className="application-option-grid">
-                  <ApplicationOption label="ModSecurity" checked={boolValue(form.modSecurityEnabled)} onChange={(value) => update('modSecurityEnabled', String(value))} />
-                </div>
-                {boolValue(form.modSecurityEnabled) && (
-                  <div className="application-option-inputs">
-                    <SelectField
-                      label="Rule Set"
-                      value={form.modSecurityRuleset}
-                      onChange={(value) => update('modSecurityRuleset', value)}
-                      options={[
-                        { value: 'comodo', label: 'Comodo WAF Rules' },
-                        { value: 'owasp', label: 'OWASP Core Rule Set' }
-                      ]}
-                    />
-                    <SelectField
-                      label="Engine Mode"
-                      value={form.modSecurityMode}
-                      onChange={(value) => update('modSecurityMode', value)}
-                      options={[
-                        { value: 'on', label: 'Block' },
-                        { value: 'detection_only', label: 'Detection Only' }
-                      ]}
-                    />
-                    <TextField label="Request Body Limit (bytes)" value={form.modSecurityRequestBodyLimit} onChange={(value) => update('modSecurityRequestBodyLimit', value)} type="number" />
-                  </div>
-                )}
-              </section>
             </>
           )}
 
