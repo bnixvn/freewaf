@@ -17,7 +17,12 @@ BOT_BLOCK_UA_PATTERN = (
 )
 BOT_CHALLENGE_UA_PATTERN = (
     r"(?:curl|wget|python-requests|python-urllib|aiohttp|httpx|scrapy|libwww-perl|"
-    r"go-http-client|java/|okhttp|apache-httpclient|node-fetch|axios|perl|ruby)"
+    r"go-http-client|java/|okhttp|apache-httpclient|node-fetch|axios|perl|ruby|"
+    r"bot|crawler|spider|headlesschrome|phantomjs|selenium|playwright|puppeteer)"
+)
+GOOD_BOT_UA_PATTERN = (
+    r"(?:googlebot|bingbot|duckduckbot|baiduspider|yandexbot|facebookexternalhit|"
+    r"meta-externalagent|facebot|slurp)"
 )
 
 
@@ -280,6 +285,7 @@ def render_bot_detection_maps() -> list[str]:
         "",
         "map $http_user_agent $sfl_suspicious_ua {",
         "    default 0;",
+        f"    ~*{GOOD_BOT_UA_PATTERN} 0;",
         f"    ~*{BOT_CHALLENGE_UA_PATTERN} 1;",
         "}",
         "",
