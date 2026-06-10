@@ -202,6 +202,12 @@ class Store:
                     tls["enabled"] = False
                     site["tls"] = tls
 
+            panel = (self._state().get("settings") or {}).get("panel") or {}
+            if panel.get("certificateId") == certificate_id:
+                panel["certificateId"] = ""
+                panel["httpsEnabled"] = False
+                self._state()["settings"]["panel"] = panel
+
             self.persist()
 
     def upsert_ip_group(self, payload: dict, group_id: str | None = None) -> dict:

@@ -4,6 +4,7 @@ import json
 import mimetypes
 import os
 import secrets
+import shlex
 import ssl
 import subprocess
 import uuid
@@ -285,10 +286,12 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     return
                 if resource == "certificates":
                     certificate = next((item for item in store.get_state()["certificates"] if item["id"] == item_id), None)
+                    if not certificate:
+                        self.send_json(404, {"error": "Certificate not found"})
+                        return
+                    remove_certificate_files(certificate)
                     store.delete_certificate(item_id)
-                    if certificate:
-                        remove_certificate_files(certificate)
-                    maybe_auto_write(store)
+                    write_nginx_config(ROOT_DIR, store.get_state())
                     self.send_empty(204)
                     return
                 if resource == "ip-groups":
@@ -858,11 +861,60 @@ def run_certbot(domains: list[str], email: str) -> dict:
 
 def remove_certificate_files(certificate: dict) -> None:
     if certificate.get("source") == "certbot":
+        remove_certbot_certificate(certificate)
         return
     for key in ("certFile", "keyFile"):
         path = resolve_reference(certificate.get(key))
-        if path and path.exists() and path.is_file() and is_relative_to(path.resolve(), ROOT_DIR.resolve()):
-            path.unlink()
+        if path and is_managed_certificate_path(path):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as error:
+                raise StoreError(500, f"Cannot delete certificate file {path}: {error}") from error
+
+
+def remove_certbot_certificate(certificate: dict) -> None:
+    cert_name = certbot_certificate_name(certificate)
+    if not cert_name:
+        return
+    certbot = os.environ.get("CERTBOT_CMD", "certbot")
+    command = [*shlex.split(certbot), "delete", "--cert-name", cert_name, "--non-interactive"]
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=180, check=False)
+    except FileNotFoundError:
+        raise StoreError(500, f"Certbot command not found: {certbot}") from None
+    except subprocess.TimeoutExpired:
+        raise StoreError(500, "Certbot delete command timed out") from None
+
+    if completed.returncode != 0:
+        message = (completed.stderr or completed.stdout or "Certbot delete failed").strip()
+        if not certbot_files_exist(certificate) and re.search(r"not found|could not find|no certificate", message, re.IGNORECASE):
+            return
+        raise StoreError(500, f"Certbot delete failed: {message}")
+
+
+def certbot_certificate_name(certificate: dict) -> str:
+    for key in ("certFile", "keyFile"):
+        path = resolve_reference(certificate.get(key))
+        if path and path.name in {"fullchain.pem", "cert.pem", "privkey.pem", "chain.pem"} and path.parent.name:
+            return path.parent.name
+    domains = normalize_payload_list(certificate.get("domains"))
+    if not domains:
+        return ""
+    return domains[0].removeprefix("*.")
+
+
+def certbot_files_exist(certificate: dict) -> bool:
+    paths = [resolve_reference(certificate.get(key)) for key in ("certFile", "keyFile")]
+    return any(path and path.exists() for path in paths)
+
+
+def is_managed_certificate_path(path: Path) -> bool:
+    resolved = path.resolve(strict=False)
+    roots = {
+        certificate_dir().resolve(strict=False),
+        (ROOT_DIR / "nginx" / "certs").resolve(strict=False),
+    }
+    return any(is_relative_to(resolved, root) for root in roots)
 
 
 def normalize_payload_list(values) -> list[str]:

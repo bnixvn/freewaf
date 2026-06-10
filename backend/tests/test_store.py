@@ -146,6 +146,33 @@ class StoreTests(unittest.TestCase):
 
             self.assertEqual([rule["name"] for rule in store.get_state()["accessRules"]], ["First rule", "Last rule"])
 
+    def test_delete_certificate_clears_panel_ssl_reference(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.json")
+            store.init()
+            certificate = store.upsert_certificate(
+                {
+                    "name": "Panel cert",
+                    "source": "upload",
+                    "certFile": "nginx/certs/panel.crt",
+                    "keyFile": "nginx/certs/panel.key",
+                }
+            )
+            store.update_settings(
+                {
+                    "panel": {
+                        "httpsEnabled": True,
+                        "certificateId": certificate["id"],
+                    }
+                }
+            )
+
+            store.delete_certificate(certificate["id"])
+
+            panel = store.get_state()["settings"]["panel"]
+            self.assertFalse(panel["httpsEnabled"])
+            self.assertEqual(panel["certificateId"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

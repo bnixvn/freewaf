@@ -7,7 +7,12 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from freewaf.server import prepare_certificate_payload, prepare_certbot_certificate_payload, sync_ip_group_reference
+from freewaf.server import (
+    prepare_certificate_payload,
+    prepare_certbot_certificate_payload,
+    remove_certificate_files,
+    sync_ip_group_reference,
+)
 from freewaf.store import Store
 
 
@@ -64,6 +69,64 @@ class CertificateServerTests(unittest.TestCase):
         self.assertEqual(prepared["certFile"], str(expected_live / "fullchain.pem").replace("\\", "/"))
         self.assertEqual(prepared["keyFile"], str(expected_live / "privkey.pem").replace("\\", "/"))
         self.assertEqual(prepared["status"], "ready")
+
+    def test_delete_uploaded_cert_removes_managed_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cert_dir = Path(temp_dir) / "certs"
+            cert_dir.mkdir()
+            cert_file = cert_dir / "demo.crt"
+            key_file = cert_dir / "demo.key"
+            cert_file.write_text(CERT_PEM, encoding="utf-8")
+            key_file.write_text(KEY_PEM, encoding="utf-8")
+
+            with mock.patch.dict(os.environ, {"NGINX_CERT_DIR": str(cert_dir)}):
+                remove_certificate_files(
+                    {
+                        "source": "upload",
+                        "certFile": str(cert_file),
+                        "keyFile": str(key_file),
+                    }
+                )
+
+            self.assertFalse(cert_file.exists())
+            self.assertFalse(key_file.exists())
+
+    def test_delete_uploaded_cert_does_not_remove_unmanaged_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cert_dir = Path(temp_dir) / "certs"
+            cert_dir.mkdir()
+            outside_file = Path(temp_dir) / "outside.crt"
+            outside_file.write_text(CERT_PEM, encoding="utf-8")
+
+            with mock.patch.dict(os.environ, {"NGINX_CERT_DIR": str(cert_dir)}):
+                remove_certificate_files(
+                    {
+                        "source": "upload",
+                        "certFile": str(outside_file),
+                        "keyFile": "",
+                    }
+                )
+
+            self.assertTrue(outside_file.exists())
+
+    def test_delete_certbot_certificate_runs_certbot_delete(self):
+        with mock.patch(
+            "freewaf.server.subprocess.run",
+            return_value=mock.Mock(returncode=0, stdout="", stderr=""),
+        ) as run:
+            remove_certificate_files(
+                {
+                    "source": "certbot",
+                    "domains": ["example.test"],
+                    "certFile": "/etc/letsencrypt/live/example.test/fullchain.pem",
+                    "keyFile": "/etc/letsencrypt/live/example.test/privkey.pem",
+                }
+            )
+
+        command = run.call_args.args[0]
+        self.assertIn("delete", command)
+        self.assertIn("--cert-name", command)
+        self.assertIn("example.test", command)
 
     def test_ip_group_reference_sync_updates_content(self):
         with tempfile.TemporaryDirectory() as temp_dir:
