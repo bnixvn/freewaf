@@ -5,6 +5,12 @@ import re
 import threading
 import uuid
 import ipaddress
+import base64
+import hashlib
+import hmac
+import secrets
+import struct
+import time
 from collections import Counter
 from copy import deepcopy
 from datetime import datetime
@@ -22,6 +28,22 @@ SEVERITIES = {"low", "medium", "high", "critical"}
 ACCESS_ACTIONS = {"allow", "deny", "monitor"}
 ACL_ACTIONS = {"allow", "block", "challenge_v1", "monitor"}
 APPLICATION_TYPES = {"reverse_proxy", "static_files", "redirect"}
+ACCESS_CONDITION_TARGETS = {"source_ip", "uri", "host", "user_agent", "method"}
+ACCESS_CONDITION_OPERATORS = {
+    "equals",
+    "not_equals",
+    "contains",
+    "not_contains",
+    "regex",
+    "not_regex",
+    "cidr",
+    "not_cidr",
+    "in_ip_group",
+    "not_in_ip_group",
+}
+ACCESS_INSERT_POSITIONS = {"first", "last"}
+USER_ROLES = {"admin", "viewer"}
+PASSWORD_ITERATIONS = 200_000
 
 
 class StoreError(Exception):
@@ -220,16 +242,27 @@ class Store:
             rule = normalize_access_rule_input(payload, access_rule_id or payload.get("id"), now)
             rules = self._state()["accessRules"]
             index = find_index(rules, rule["id"])
+            should_move = bool(payload.get("_moveAccessRule"))
+            position = normalize_insert_position(payload.get("insertPosition"))
 
             if index >= 0:
-                rule["createdAt"] = rules[index].get("createdAt", now)
-                rules[index] = {**rules[index], **rule, "updatedAt": now}
-                saved = rules[index]
+                existing = rules.pop(index)
+                rule["createdAt"] = existing.get("createdAt", now)
+                saved = {**existing, **rule, "updatedAt": now}
+                if should_move and position == "first":
+                    rules.insert(0, saved)
+                elif should_move and position == "last":
+                    rules.append(saved)
+                else:
+                    rules.insert(index, saved)
             else:
                 rule["createdAt"] = now
                 rule["updatedAt"] = now
-                rules.append(rule)
                 saved = rule
+                if position == "first":
+                    rules.insert(0, saved)
+                else:
+                    rules.append(saved)
 
             self.persist()
             return deepcopy(saved)
@@ -241,6 +274,95 @@ class Store:
             if len(self._state()["accessRules"]) == before:
                 raise StoreError(404, "Access rule not found")
             self.persist()
+
+    def update_settings(self, payload: dict) -> dict:
+        with self.lock:
+            current = deepcopy(self._state()["settings"])
+            incoming = payload or {}
+            for key, value in incoming.items():
+                if key in {"panel", "rateLimit"} and isinstance(value, dict):
+                    current[key] = {**(current.get(key) or {}), **value}
+                else:
+                    current[key] = value
+            settings = normalize_settings(current)
+            self._state()["settings"] = settings
+            self.persist()
+            return deepcopy(settings)
+
+    def has_users(self) -> bool:
+        with self.lock:
+            return bool(self._state().get("users"))
+
+    def upsert_user(self, payload: dict, user_id: str | None = None) -> dict:
+        with self.lock:
+            now = utc_now()
+            users = self._state()["users"]
+            existing = next((user for user in users if user["id"] == (user_id or payload.get("id"))), None)
+            user = normalize_user_input(payload, user_id or payload.get("id"), now, existing)
+            totp_secret_generated = bool(user.pop("_totpSecretGenerated", False))
+            if any(item["id"] != user["id"] and item["username"].lower() == user["username"].lower() for item in users):
+                raise StoreError(400, "Username already exists")
+
+            index = find_index(users, user["id"])
+            candidate_users = deepcopy(users)
+            if index >= 0:
+                user["createdAt"] = candidate_users[index].get("createdAt", now)
+                saved = {**candidate_users[index], **user, "updatedAt": now}
+                candidate_users[index] = saved
+            else:
+                user["createdAt"] = now
+                user["updatedAt"] = now
+                saved = user
+                candidate_users.append(saved)
+
+            self.ensure_admin_user(candidate_users)
+            self._state()["users"] = candidate_users
+            self.persist()
+            result = deepcopy(saved)
+            if totp_secret_generated:
+                result["_totpSecretGenerated"] = True
+            return result
+
+    def delete_user(self, user_id: str) -> None:
+        with self.lock:
+            user = next((item for item in self._state()["users"] if item["id"] == user_id), None)
+            if not user:
+                raise StoreError(404, "User not found")
+            remaining = [item for item in self._state()["users"] if item["id"] != user_id]
+            if not any(item.get("enabled") and item.get("role") == "admin" for item in remaining):
+                raise StoreError(400, "Cannot delete the last enabled admin user")
+            self._state()["users"] = remaining
+            self.persist()
+
+    def change_user_password(self, user_id: str, password: str) -> dict:
+        with self.lock:
+            user = next((item for item in self._state()["users"] if item["id"] == user_id), None)
+            if not user:
+                raise StoreError(404, "User not found")
+            password_fields = hash_password(validate_password(password))
+            user.update(password_fields)
+            user["updatedAt"] = utc_now()
+            self.persist()
+            return deepcopy(user)
+
+    def authenticate_user(self, username: str, password: str, totp_code: str = "") -> dict:
+        with self.lock:
+            user = next((item for item in self._state()["users"] if item["username"].lower() == str(username or "").lower()), None)
+            if not user or not user.get("enabled"):
+                raise StoreError(401, "Invalid username or password")
+            if not verify_password(password, user):
+                raise StoreError(401, "Invalid username or password")
+            if user.get("totpEnabled"):
+                if not verify_totp(user.get("totpSecret", ""), totp_code):
+                    raise StoreError(401, "Google Authenticator code is required")
+            user["lastLoginAt"] = utc_now()
+            self.persist()
+            return deepcopy(user)
+
+    def ensure_admin_user(self, users: list[dict] | None = None) -> None:
+        source = users if users is not None else self._state().get("users", [])
+        if not any(user.get("enabled") and user.get("role") == "admin" for user in source):
+            raise StoreError(400, "At least one enabled admin user is required")
 
     def add_log(self, entry: dict) -> None:
         with self.lock:
@@ -274,14 +396,7 @@ def resolve_data_file(root_dir: Path) -> Path:
 
 
 def normalize_state(state: dict) -> dict:
-    settings = {
-        **deepcopy(DEFAULT_SETTINGS),
-        **(state.get("settings") or {}),
-        "rateLimit": {
-            **DEFAULT_SETTINGS["rateLimit"],
-            **((state.get("settings") or {}).get("rateLimit") or {}),
-        },
-    }
+    settings = normalize_settings(state.get("settings") or {})
     return {
         "version": 1,
         "settings": settings,
@@ -290,7 +405,32 @@ def normalize_state(state: dict) -> dict:
         "certificates": [normalize_stored_certificate(certificate) for certificate in state.get("certificates", [])],
         "ipGroups": [normalize_stored_ip_group(group) for group in state.get("ipGroups", [])],
         "accessRules": [normalize_stored_access_rule(rule) for rule in state.get("accessRules", [])],
+        "users": [normalize_stored_user(user) for user in state.get("users", [])],
         "logs": state.get("logs", []) if isinstance(state.get("logs"), list) else [],
+    }
+
+
+def normalize_settings(settings: dict) -> dict:
+    source = settings if isinstance(settings, dict) else {}
+    return {
+        **deepcopy(DEFAULT_SETTINGS),
+        **source,
+        "panel": normalize_panel_settings(source.get("panel") or {}),
+        "rateLimit": {
+            **DEFAULT_SETTINGS["rateLimit"],
+            **(source.get("rateLimit") or {}),
+        },
+    }
+
+
+def normalize_panel_settings(value) -> dict:
+    source = value if isinstance(value, dict) else {}
+    session_hours = normalize_positive_int(source.get("sessionHours") or source.get("session_hours"), DEFAULT_SETTINGS["panel"]["sessionHours"])
+    return {
+        "httpsEnabled": normalize_bool(source.get("httpsEnabled") if "httpsEnabled" in source else source.get("https_enabled"), False),
+        "certificateId": str(source.get("certificateId") or source.get("certificate_id") or ""),
+        "publicUrl": normalize_panel_url(source.get("publicUrl") or source.get("public_url") or ""),
+        "sessionHours": min(max(session_hours, 1), 168),
     }
 
 
@@ -394,14 +534,37 @@ def normalize_stored_access_rule(rule: dict) -> dict:
         "enabled": rule.get("enabled") is not False,
         "siteId": str(rule.get("siteId") or "*"),
         "action": normalize_access_action(rule.get("action")),
+        "insertPosition": normalize_insert_position(rule.get("insertPosition")),
+        "continueDetect": normalize_bool(rule.get("continueDetect"), False),
         "ipGroupIds": normalize_id_list(rule.get("ipGroupIds")),
         "ips": normalize_ip_items(rule.get("ips")),
         "methods": normalize_string_list(rule.get("methods"), uppercase=True),
         "uriPatterns": normalize_string_list(rule.get("uriPatterns")),
         "hostPatterns": normalize_string_list(rule.get("hostPatterns")),
         "userAgentPatterns": normalize_string_list(rule.get("userAgentPatterns")),
+        "conditionGroups": normalize_access_condition_groups(rule.get("conditionGroups") or rule.get("condition_groups")),
         "createdAt": rule.get("createdAt") or now,
         "updatedAt": rule.get("updatedAt") or now,
+    }
+
+
+def normalize_stored_user(user: dict) -> dict:
+    now = utc_now()
+    username = normalize_username(user.get("username") or "admin")
+    return {
+        "id": str(user.get("id") or create_id("user")),
+        "username": username,
+        "displayName": str(user.get("displayName") or user.get("display_name") or username),
+        "role": normalize_user_role(user.get("role")),
+        "enabled": user.get("enabled") is not False,
+        "passwordSalt": str(user.get("passwordSalt") or user.get("password_salt") or ""),
+        "passwordHash": str(user.get("passwordHash") or user.get("password_hash") or ""),
+        "passwordIterations": normalize_positive_int(user.get("passwordIterations") or user.get("password_iterations"), PASSWORD_ITERATIONS),
+        "totpEnabled": normalize_bool(user.get("totpEnabled") if "totpEnabled" in user else user.get("totp_enabled"), False),
+        "totpSecret": normalize_totp_secret(user.get("totpSecret") or user.get("totp_secret") or ""),
+        "lastLoginAt": str(user.get("lastLoginAt") or user.get("last_login_at") or ""),
+        "createdAt": user.get("createdAt") or now,
+        "updatedAt": user.get("updatedAt") or now,
     }
 
 
@@ -514,20 +677,71 @@ def normalize_access_rule_input(payload: dict, rule_id: str | None, now: str) ->
         "enabled": payload.get("enabled") is not False,
         "siteId": str(payload.get("siteId") or "*"),
         "action": normalize_access_action(payload.get("action")),
+        "insertPosition": normalize_insert_position(payload.get("insertPosition")),
+        "continueDetect": normalize_bool(payload.get("continueDetect"), False),
         "ipGroupIds": normalize_id_list(payload.get("ipGroupIds")),
         "ips": normalize_ip_items(payload.get("ips")),
         "methods": normalize_string_list(payload.get("methods"), uppercase=True),
         "uriPatterns": normalize_string_list(payload.get("uriPatterns")),
         "hostPatterns": normalize_string_list(payload.get("hostPatterns")),
         "userAgentPatterns": normalize_string_list(payload.get("userAgentPatterns")),
+        "conditionGroups": normalize_access_condition_groups(payload.get("conditionGroups") or payload.get("condition_groups")),
         "createdAt": now,
         "updatedAt": now,
     }
 
-    if not any([rule["ipGroupIds"], rule["ips"], rule["methods"], rule["uriPatterns"], rule["hostPatterns"], rule["userAgentPatterns"]]):
+    if not any(
+        [
+            rule["ipGroupIds"],
+            rule["ips"],
+            rule["methods"],
+            rule["uriPatterns"],
+            rule["hostPatterns"],
+            rule["userAgentPatterns"],
+            rule["conditionGroups"],
+        ]
+    ):
         raise StoreError(400, "Access rule needs at least one condition")
 
     return rule
+
+
+def normalize_user_input(payload: dict, user_id: str | None, now: str, existing: dict | None = None) -> dict:
+    username = normalize_username(payload.get("username") or (existing or {}).get("username") or "")
+    display_name = str(payload.get("displayName") or payload.get("display_name") or username).strip()
+    role = normalize_user_role(payload.get("role") or (existing or {}).get("role"))
+    enabled = normalize_bool(payload.get("enabled"), (existing or {}).get("enabled", True))
+
+    user = {
+        "id": user_id or create_id("user"),
+        "username": username,
+        "displayName": display_name or username,
+        "role": role,
+        "enabled": enabled,
+        "passwordSalt": (existing or {}).get("passwordSalt", ""),
+        "passwordHash": (existing or {}).get("passwordHash", ""),
+        "passwordIterations": int((existing or {}).get("passwordIterations") or PASSWORD_ITERATIONS),
+        "totpEnabled": normalize_bool(payload.get("totpEnabled"), (existing or {}).get("totpEnabled", False)),
+        "totpSecret": (existing or {}).get("totpSecret", ""),
+        "lastLoginAt": (existing or {}).get("lastLoginAt", ""),
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+    password = str(payload.get("password") or "")
+    if password:
+        user.update(hash_password(validate_password(password)))
+    elif not existing:
+        raise StoreError(400, "Password is required for new users")
+
+    reset_totp = payload.get("resetTotp") is True or payload.get("reset_totp") is True
+    if user["totpEnabled"] and (reset_totp or not user["totpSecret"]):
+        user["totpSecret"] = generate_totp_secret()
+        user["_totpSecretGenerated"] = True
+    if not user["totpEnabled"]:
+        user["totpSecret"] = ""
+
+    return user
 
 
 def normalize_rule_input(payload: dict, rule_id: str | None, now: str, existing: dict | None) -> dict:
@@ -897,6 +1111,16 @@ def normalize_reference_url(value, strict: bool = True) -> str:
     return item
 
 
+def normalize_panel_url(value) -> str:
+    item = str(value or "").strip().replace("\x00", "")
+    if not item:
+        return ""
+    parsed = urlparse(item)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise StoreError(400, "Panel URL must be a valid http or https URL")
+    return item.rstrip("/")
+
+
 def normalize_string_list(values, uppercase: bool = False) -> list[str]:
     if isinstance(values, list):
         source = values
@@ -914,6 +1138,187 @@ def normalize_string_list(values, uppercase: bool = False) -> list[str]:
 
 def normalize_id_list(values) -> list[str]:
     return [item for item in normalize_string_list(values) if re.match(r"^[A-Za-z0-9_.:-]+$", item)]
+
+
+def normalize_username(value) -> str:
+    username = str(value or "").strip().lower()
+    if not re.match(r"^[a-z0-9_.-]{3,64}$", username):
+        raise StoreError(400, "Username must be 3-64 chars: letters, numbers, dot, dash, underscore")
+    return username
+
+
+def normalize_user_role(value) -> str:
+    role = str(value or "admin").strip().lower()
+    return role if role in USER_ROLES else "admin"
+
+
+def validate_password(password: str) -> str:
+    value = str(password or "")
+    if len(value) < 10:
+        raise StoreError(400, "Password must be at least 10 characters")
+    return value
+
+
+def hash_password(password: str) -> dict:
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("ascii"), PASSWORD_ITERATIONS)
+    return {
+        "passwordSalt": salt,
+        "passwordHash": digest.hex(),
+        "passwordIterations": PASSWORD_ITERATIONS,
+    }
+
+
+def verify_password(password: str, user: dict) -> bool:
+    salt = str(user.get("passwordSalt") or "")
+    expected = str(user.get("passwordHash") or "")
+    iterations = int(user.get("passwordIterations") or PASSWORD_ITERATIONS)
+    if not salt or not expected:
+        return False
+    digest = hashlib.pbkdf2_hmac("sha256", str(password or "").encode("utf-8"), salt.encode("ascii"), iterations)
+    return hmac.compare_digest(digest.hex(), expected)
+
+
+def generate_totp_secret() -> str:
+    return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
+
+
+def normalize_totp_secret(value) -> str:
+    return re.sub(r"[^A-Z2-7]", "", str(value or "").upper())
+
+
+def verify_totp(secret: str, code: str, timestamp: int | None = None) -> bool:
+    normalized = normalize_totp_secret(secret)
+    digits = re.sub(r"\D", "", str(code or ""))
+    if not normalized or len(digits) != 6:
+        return False
+    current = int(timestamp or time.time()) // 30
+    return any(hmac.compare_digest(totp_code(normalized, current + offset), digits) for offset in (-1, 0, 1))
+
+
+def totp_code(secret: str, counter: int) -> str:
+    padded = secret + "=" * ((8 - len(secret) % 8) % 8)
+    key = base64.b32decode(padded, casefold=True)
+    message = struct.pack(">Q", counter)
+    digest = hmac.new(key, message, hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    number = struct.unpack(">I", digest[offset : offset + 4])[0] & 0x7FFFFFFF
+    return f"{number % 1_000_000:06d}"
+
+
+def normalize_insert_position(value) -> str:
+    position = str(value or "last").strip().lower()
+    return position if position in ACCESS_INSERT_POSITIONS else "last"
+
+
+def normalize_access_condition_groups(value) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+
+    groups = []
+    for raw_group in value:
+        raw_conditions = raw_group.get("conditions") if isinstance(raw_group, dict) else raw_group
+        if not isinstance(raw_conditions, list):
+            continue
+        conditions = []
+        for raw_condition in raw_conditions:
+            condition = normalize_access_condition(raw_condition)
+            if condition:
+                conditions.append(condition)
+        if conditions:
+            groups.append({"conditions": conditions})
+    return groups
+
+
+def normalize_access_condition(value) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+
+    target = normalize_access_condition_target(value.get("target") or value.get("matchTarget"))
+    operator = normalize_access_condition_operator(value.get("operator"), target)
+    content = str(value.get("content") or value.get("value") or "").strip()
+    if not content:
+        return None
+
+    return {
+        "target": target,
+        "operator": operator,
+        "content": normalize_access_condition_content(target, operator, content),
+    }
+
+
+def normalize_access_condition_target(value) -> str:
+    item = str(value or "source_ip").strip()
+    snake = re.sub(r"(?<!^)([A-Z])", r"_\1", item).lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "ip": "source_ip",
+        "source": "source_ip",
+        "sourceip": "source_ip",
+        "source_ip": "source_ip",
+        "url": "uri",
+        "path": "uri",
+        "hostname": "host",
+        "useragent": "user_agent",
+        "user_agent": "user_agent",
+        "ua": "user_agent",
+    }
+    target = aliases.get(snake, snake)
+    return target if target in ACCESS_CONDITION_TARGETS else "source_ip"
+
+
+def normalize_access_condition_operator(value, target: str) -> str:
+    item = str(value or "equals").strip()
+    snake = re.sub(r"(?<!^)([A-Z])", r"_\1", item).lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "equal": "equals",
+        "does_not_equal": "not_equals",
+        "not_equal": "not_equals",
+        "does_not_match": "not_regex",
+        "fuzzy_match": "contains",
+        "fuzzy": "contains",
+        "in_ip_group": "in_ip_group",
+        "not_in_ip_group": "not_in_ip_group",
+        "does_not_in_ip_group": "not_in_ip_group",
+        "does_not_in_cidr": "not_cidr",
+    }
+    operator = aliases.get(snake, snake)
+    if target == "source_ip" and operator not in {"equals", "not_equals", "cidr", "not_cidr", "in_ip_group", "not_in_ip_group"}:
+        operator = "equals"
+    if target == "method" and operator not in {"equals", "not_equals"}:
+        operator = "equals"
+    if target in {"uri", "host", "user_agent"} and operator not in {"equals", "not_equals", "contains", "not_contains", "regex", "not_regex"}:
+        operator = "equals"
+    return operator if operator in ACCESS_CONDITION_OPERATORS else "equals"
+
+
+def normalize_access_condition_content(target: str, operator: str, content: str) -> str:
+    item = content.replace("\x00", "").strip()
+    if target == "source_ip":
+        if operator in {"in_ip_group", "not_in_ip_group"}:
+            ids = normalize_id_list([item])
+            if not ids:
+                raise StoreError(400, "Access condition needs a valid IP group")
+            return ids[0]
+        try:
+            if operator in {"cidr", "not_cidr"}:
+                return str(ipaddress.ip_network(item, strict=False))
+            return str(ipaddress.ip_address(item))
+        except ValueError:
+            raise StoreError(400, f"Invalid access condition IP/CIDR: {content}") from None
+
+    if target == "method":
+        method = item.upper()
+        if not re.match(r"^[A-Z][A-Z0-9_-]*$", method):
+            raise StoreError(400, "Invalid access condition method")
+        return method
+
+    if operator in {"regex", "not_regex"}:
+        try:
+            re.compile(item, re.IGNORECASE)
+        except re.error:
+            raise StoreError(400, "Access condition regex is invalid") from None
+
+    return item
 
 
 def normalize_access_action(value) -> str:

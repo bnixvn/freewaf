@@ -1,10 +1,11 @@
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from freewaf.store import normalize_state
+from freewaf.store import Store, normalize_state
 
 
 class StoreTests(unittest.TestCase):
@@ -114,6 +115,36 @@ class StoreTests(unittest.TestCase):
         self.assertTrue(site["proxy"]["hsts"])
         self.assertTrue(site["acl"]["enabled"])
         self.assertEqual(site["acl"]["accessLimit"]["count"], 200)
+
+    def test_access_rule_insert_position_first_moves_rule_to_top(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.json")
+            store.init()
+
+            store.upsert_access_rule(
+                {
+                    "name": "Last rule",
+                    "action": "deny",
+                    "insertPosition": "last",
+                    "ips": ["198.51.100.10"],
+                }
+            )
+            store.upsert_access_rule(
+                {
+                    "name": "First rule",
+                    "action": "allow",
+                    "insertPosition": "first",
+                    "conditionGroups": [
+                        {
+                            "conditions": [
+                                {"target": "source_ip", "operator": "equals", "content": "203.0.113.10"}
+                            ]
+                        }
+                    ],
+                }
+            )
+
+            self.assertEqual([rule["name"] for rule in store.get_state()["accessRules"]], ["First rule", "Last rule"])
 
 
 if __name__ == "__main__":

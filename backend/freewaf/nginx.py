@@ -198,18 +198,31 @@ def render_access_maps(state: dict, access_rules: list[dict]) -> list[str]:
     groups = {group["id"]: group for group in state.get("ipGroups", []) if group.get("enabled")}
     blocks = []
     for index, rule in enumerate(access_rules, start=1):
+        condition_groups = rule.get("conditionGroups") if isinstance(rule.get("conditionGroups"), list) else []
+        if condition_groups:
+            for group_index, condition_group in enumerate(condition_groups, start=1):
+                for condition_index, condition in enumerate(condition_group.get("conditions") or [], start=1):
+                    items = collect_condition_ip_items(condition, groups)
+                    if items:
+                        blocks.append(render_geo_map(access_condition_geo_var(index, group_index, condition_index), items))
+            continue
+
         items = collect_access_ips(rule, groups)
         if not items:
             continue
-        lines = [
-            f"geo $sfl_access_ip_{index} {{",
-            "    default 0;",
-        ]
-        for item in items:
-            lines.append(f"    {item} 1;")
-        lines.append("}")
-        blocks.append("\n".join(lines))
+        blocks.append(render_geo_map(f"sfl_access_ip_{index}", items))
     return blocks
+
+
+def render_geo_map(variable_name: str, items: list[str]) -> str:
+    lines = [
+        f"geo ${variable_name} {{",
+        "    default 0;",
+    ]
+    for item in items:
+        lines.append(f"    {item} 1;")
+    lines.append("}")
+    return "\n".join(lines)
 
 
 def render_site_server(site: dict, state: dict, certificates: dict[str, dict]) -> str:
@@ -741,39 +754,58 @@ def render_auth_feature(site: dict) -> list[str]:
 
 def render_access_rule_if(rule: dict, access_index: int, effect: str, rule_index: int, state: dict) -> list[str]:
     match_var = f"$sfl_rule_{rule_index}"
-    token_name = f"sfl_access_{rule_index}"
-    token_var = f"${token_name}"
     reason = nginx_string(rule.get("name") or rule.get("id") or "Access rule matched")
-    conditions = access_conditions(rule, access_index, state)
+    condition_groups = access_condition_groups(rule, access_index, state)
 
-    if not conditions:
+    if not condition_groups:
         return [
             f"    # Access rule {nginx_comment(rule.get('name'))} has no active Nginx-native conditions.",
             "",
         ]
 
-    expected = "".join(token for token, _ in conditions)
-    lines = [
-        f"    set {token_var} \"\";",
-        f"    set {match_var} 0;",
-    ]
-    for token, condition in conditions:
+    lines = [f"    set {match_var} 0;"]
+    for group_index, conditions in enumerate(condition_groups, start=1):
+        token_name = f"sfl_access_{rule_index}_{group_index}"
+        token_var = f"${token_name}"
+        group_var = f"$sfl_access_{rule_index}_group_{group_index}"
+        expected = "1" * len(conditions)
         lines.extend(
             [
-                f"    if ({condition}) {{",
-                f"        set {token_var} \"${{{token_name}}}{token}\";",
+                f"    set {token_var} \"\";",
+                f"    set {group_var} 0;",
+            ]
+        )
+        for condition in conditions:
+            lines.extend(
+                [
+                    f"    if ({condition}) {{",
+                    f"        set {token_var} \"${{{token_name}}}1\";",
+                    "    }",
+                ]
+            )
+        lines.extend(
+            [
+                f"    if ({token_var} = \"{expected}\") {{",
+                f"        set {group_var} 1;",
+                "    }",
+                f"    if ({group_var} = 1) {{",
+                f"        set {match_var} 1;",
                 "    }",
             ]
         )
-    lines.extend(
-        [
-            f"    if ({token_var} = \"{expected}\") {{",
-            f"        set {match_var} 1;",
-            "    }",
-        ]
-    )
 
     if effect == "allow":
+        if rule.get("continueDetect"):
+            lines.extend(
+                [
+                    f"    if ({match_var} = 1) {{",
+                    "        set $sfl_verdict allow;",
+                    f"        set $sfl_reason \"Allowed by {reason}\";",
+                    "    }",
+                ]
+            )
+            return lines
+
         lines.extend(
             [
                 f"    if ({match_var} = 1) {{",
@@ -803,20 +835,105 @@ def render_access_rule_if(rule: dict, access_index: int, effect: str, rule_index
     return lines
 
 
-def access_conditions(rule: dict, access_index: int, state: dict) -> list[tuple[str, str]]:
+def access_condition_groups(rule: dict, access_index: int, state: dict) -> list[list[str]]:
+    condition_groups = rule.get("conditionGroups") if isinstance(rule.get("conditionGroups"), list) else []
+    if condition_groups:
+        groups = {group["id"]: group for group in state.get("ipGroups", []) if group.get("enabled")}
+        rendered_groups = []
+        for group_index, condition_group in enumerate(condition_groups, start=1):
+            rendered_conditions = []
+            for condition_index, condition in enumerate(condition_group.get("conditions") or [], start=1):
+                rendered = access_condition_expression(condition, access_index, group_index, condition_index, groups)
+                if rendered:
+                    rendered_conditions.append(rendered)
+            if rendered_conditions:
+                rendered_groups.append(rendered_conditions)
+        return rendered_groups
+
+    legacy_conditions = legacy_access_conditions(rule, access_index, state)
+    return [legacy_conditions] if legacy_conditions else []
+
+
+def legacy_access_conditions(rule: dict, access_index: int, state: dict) -> list[str]:
     groups = {group["id"]: group for group in state.get("ipGroups", []) if group.get("enabled")}
     conditions = []
     if collect_access_ips(rule, groups):
-        conditions.append(("i", f"$sfl_access_ip_{access_index} = 1"))
+        conditions.append(f"$sfl_access_ip_{access_index} = 1")
     if rule.get("methods"):
-        conditions.append(("m", f"$request_method ~* {nginx_regex(exact_any_regex(rule['methods']))}"))
+        conditions.append(f"$request_method ~* {nginx_regex(exact_any_regex(rule['methods']))}")
     if rule.get("uriPatterns"):
-        conditions.append(("u", f"$request_uri ~* {nginx_regex(any_regex(rule['uriPatterns']))}"))
+        conditions.append(f"$request_uri ~* {nginx_regex(any_regex(rule['uriPatterns']))}")
     if rule.get("hostPatterns"):
-        conditions.append(("h", f"$host ~* {nginx_regex(any_regex(rule['hostPatterns']))}"))
+        conditions.append(f"$host ~* {nginx_regex(any_regex(rule['hostPatterns']))}")
     if rule.get("userAgentPatterns"):
-        conditions.append(("a", f"$http_user_agent ~* {nginx_regex(any_regex(rule['userAgentPatterns']))}"))
+        conditions.append(f"$http_user_agent ~* {nginx_regex(any_regex(rule['userAgentPatterns']))}")
     return conditions
+
+
+def access_condition_expression(condition: dict, access_index: int, group_index: int, condition_index: int, groups: dict[str, dict]) -> str | None:
+    target = str(condition.get("target") or "source_ip")
+    operator = str(condition.get("operator") or "equals")
+    content = str(condition.get("content") or "")
+
+    if target == "source_ip":
+        if operator in {"cidr", "not_cidr", "in_ip_group", "not_in_ip_group"}:
+            items = collect_condition_ip_items(condition, groups)
+            if not items:
+                return None
+            expected = "0" if operator in {"not_cidr", "not_in_ip_group"} else "1"
+            return f"${access_condition_geo_var(access_index, group_index, condition_index)} = {expected}"
+        regex = exact_regex(content)
+        negate = "!" if operator == "not_equals" else ""
+        return f"$remote_addr {negate}~* {nginx_regex(regex)}"
+
+    variable = access_condition_variable(target)
+    if not variable:
+        return None
+
+    if operator == "equals":
+        return f"{variable} ~* {nginx_regex(exact_regex(content))}"
+    if operator == "not_equals":
+        return f"{variable} !~* {nginx_regex(exact_regex(content))}"
+    if operator == "contains":
+        return f"{variable} ~* {nginx_regex(re.escape(content))}"
+    if operator == "not_contains":
+        return f"{variable} !~* {nginx_regex(re.escape(content))}"
+    if operator == "regex":
+        return f"{variable} ~* {nginx_regex(content)}"
+    if operator == "not_regex":
+        return f"{variable} !~* {nginx_regex(content)}"
+    return None
+
+
+def access_condition_variable(target: str) -> str | None:
+    if target == "source_ip":
+        return "$remote_addr"
+    if target == "uri":
+        return "$request_uri"
+    if target == "host":
+        return "$host"
+    if target == "user_agent":
+        return "$http_user_agent"
+    if target == "method":
+        return "$request_method"
+    return None
+
+
+def access_condition_geo_var(access_index: int, group_index: int, condition_index: int) -> str:
+    return f"sfl_access_ip_{access_index}_{group_index}_{condition_index}"
+
+
+def collect_condition_ip_items(condition: dict, groups: dict[str, dict]) -> list[str]:
+    target = str(condition.get("target") or "")
+    operator = str(condition.get("operator") or "")
+    content = str(condition.get("content") or "")
+    if target != "source_ip":
+        return []
+    if operator in {"cidr", "not_cidr"}:
+        return [content] if content else []
+    if operator in {"in_ip_group", "not_in_ip_group"}:
+        return list(groups.get(content, {}).get("items") or [])
+    return []
 
 
 def collect_access_ips(rule: dict, groups: dict[str, dict]) -> list[str]:
@@ -912,6 +1029,10 @@ def nginx_regex(value: str) -> str:
 
 def any_regex(values: list[str]) -> str:
     return "(?:" + "|".join(str(value).replace("\n", " ").replace("\r", " ") for value in values if str(value).strip()) + ")"
+
+
+def exact_regex(value: str) -> str:
+    return "^" + re.escape(str(value or "")) + "$"
 
 
 def exact_any_regex(values: list[str]) -> str:

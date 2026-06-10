@@ -5,10 +5,13 @@ import {
   Edit3,
   Globe2,
   KeyRound,
+  LockKeyhole,
   ListFilter,
+  LogOut,
   MoreHorizontal,
   Network,
   Plus,
+  QrCode,
   RefreshCw,
   Save,
   Server,
@@ -16,6 +19,7 @@ import {
   Shield,
   ShieldCheck,
   Trash2,
+  UserPlus,
   X
 } from 'lucide-react';
 
@@ -27,7 +31,7 @@ const viewTitles = {
   ipGroups: 'IP Groups',
   certificates: 'Certificates',
   logs: 'Request Logs',
-  settings: 'Runtime Settings'
+  settings: 'Panel Security'
 };
 
 const defaultSite = {
@@ -126,20 +130,63 @@ const defaultIpGroup = {
 
 const defaultAccessRule = {
   name: '',
-  description: '',
   siteId: '*',
   action: 'deny',
+  insertPosition: 'first',
   ipGroupIds: '',
   ips: '',
-  methods: '',
-  uriPatterns: '',
-  hostPatterns: '',
-  userAgentPatterns: '',
+  conditionGroups: null,
+  continueDetect: 'false',
   enabled: 'true'
+};
+
+const defaultUser = {
+  username: '',
+  displayName: '',
+  role: 'admin',
+  password: '',
+  enabled: 'true',
+  totpEnabled: 'false',
+  resetTotp: false
+};
+
+const accessTargetOptions = [
+  { value: 'source_ip', label: 'Source IP' },
+  { value: 'uri', label: 'URI' },
+  { value: 'host', label: 'Host' },
+  { value: 'user_agent', label: 'User-Agent' },
+  { value: 'method', label: 'Method' }
+];
+
+const accessOperatorOptions = {
+  source_ip: [
+    { value: 'equals', label: 'Equals' },
+    { value: 'cidr', label: 'CIDR' },
+    { value: 'in_ip_group', label: 'In IP Group' }
+  ],
+  uri: [
+    { value: 'equals', label: 'Equals' },
+    { value: 'contains', label: 'Fuzzy Match' },
+    { value: 'regex', label: 'Regex' }
+  ],
+  host: [
+    { value: 'equals', label: 'Equals' },
+    { value: 'contains', label: 'Fuzzy Match' },
+    { value: 'regex', label: 'Regex' }
+  ],
+  user_agent: [
+    { value: 'equals', label: 'Equals' },
+    { value: 'contains', label: 'Fuzzy Match' },
+    { value: 'regex', label: 'Regex' }
+  ],
+  method: [
+    { value: 'equals', label: 'Equals' }
+  ]
 };
 
 export default function App() {
   const [activeView, setActiveView] = useState('dashboard');
+  const [auth, setAuth] = useState({ loading: true, authenticated: false, setupRequired: false, user: null });
   const [data, setData] = useState(null);
   const [filter, setFilter] = useState('');
   const [modal, setModal] = useState(null);
@@ -147,19 +194,82 @@ export default function App() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    loadState();
+    loadAuth();
   }, []);
 
-  async function loadState(announce = false) {
+  async function loadAuth() {
     setLoading(true);
+    try {
+      const status = await api('/api/auth/status');
+      setAuth({ loading: false, ...status });
+      if (status.authenticated) {
+        await loadState(false, false);
+      } else {
+        setData(null);
+      }
+    } catch (error) {
+      setAuth({ loading: false, authenticated: false, setupRequired: false, user: null });
+      showToast(error.message, true);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadState(announce = false, manageLoading = true) {
+    if (manageLoading) setLoading(true);
     try {
       setData(await api('/api/state'));
       if (announce) showToast('State refreshed');
+    } catch (error) {
+      if (error.status === 401) {
+        const status = await api('/api/auth/status').catch(() => ({ authenticated: false, setupRequired: false, user: null }));
+        setAuth({ loading: false, ...status });
+        setData(null);
+      } else {
+        showToast(error.message, true);
+      }
+    } finally {
+      if (manageLoading) setLoading(false);
+    }
+  }
+
+  async function setupAdmin(payload) {
+    setLoading(true);
+    try {
+      const status = await api('/api/auth/setup', { method: 'POST', body: payload });
+      setAuth({ loading: false, ...status });
+      await loadState(false, false);
+      if (status.user?.totpSetupSecret) {
+        setModal({ type: 'totpSetup', user: status.user });
+      }
+      showToast('Admin user created');
     } catch (error) {
       showToast(error.message, true);
     } finally {
       setLoading(false);
     }
+  }
+
+  async function login(payload) {
+    setLoading(true);
+    try {
+      const status = await api('/api/auth/login', { method: 'POST', body: payload });
+      setAuth({ loading: false, ...status });
+      await loadState(false, false);
+      showToast('Signed in');
+    } catch (error) {
+      showToast(error.message, true);
+      throw error;
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function logout() {
+    await api('/api/auth/logout', { method: 'POST' });
+    setAuth({ loading: false, authenticated: false, setupRequired: false, user: null });
+    setData(null);
+    setActiveView('dashboard');
   }
 
   function showToast(message, danger = false) {
@@ -344,15 +454,20 @@ export default function App() {
   }
 
   async function saveAccessRule(rule) {
+    const conditionGroups = normalizeAccessConditionGroupsPayload(rule.conditionGroups, rule);
+    const flattened = flattenAccessConditions(conditionGroups);
     const payload = {
       ...rule,
       enabled: rule.enabled === 'true' || rule.enabled === true,
-      ipGroupIds: listFromText(rule.ipGroupIds, /[\s,]+/),
-      ips: listFromText(rule.ips, /[\n,]+/),
-      methods: listFromText(rule.methods, /[\s,]+/),
-      uriPatterns: listFromText(rule.uriPatterns, /[\n,]+/),
-      hostPatterns: listFromText(rule.hostPatterns, /[\n,]+/),
-      userAgentPatterns: listFromText(rule.userAgentPatterns, /[\n,]+/)
+      continueDetect: rule.continueDetect === 'true' || rule.continueDetect === true,
+      insertPosition: rule.insertPosition || 'first',
+      ipGroupIds: flattened.ipGroupIds,
+      ips: flattened.ips,
+      methods: flattened.methods,
+      uriPatterns: flattened.uriPatterns,
+      hostPatterns: flattened.hostPatterns,
+      userAgentPatterns: flattened.userAgentPatterns,
+      conditionGroups
     };
     const id = payload.id;
     delete payload.id;
@@ -426,6 +541,45 @@ export default function App() {
     showToast(result.ok ? 'Nginx config written' : 'Nginx command failed', !result.ok);
   }
 
+  async function savePanelSettings(panel) {
+    await api('/api/settings', {
+      method: 'PATCH',
+      body: { panel }
+    });
+    await loadState();
+    showToast('Panel settings saved');
+  }
+
+  async function saveUser(user) {
+    const payload = {
+      ...user,
+      enabled: user.enabled === 'true' || user.enabled === true,
+      totpEnabled: user.totpEnabled === 'true' || user.totpEnabled === true,
+      resetTotp: user.resetTotp === true
+    };
+    if (!payload.password) delete payload.password;
+    const id = payload.id;
+    delete payload.id;
+    const saved = await api(id ? `/api/users/${id}` : '/api/users', {
+      method: id ? 'PUT' : 'POST',
+      body: payload
+    });
+    await loadState();
+    if (saved.totpSetupSecret) {
+      setModal({ type: 'totpSetup', user: saved });
+    } else {
+      setModal(null);
+    }
+    showToast('User saved');
+  }
+
+  async function deleteUser(user) {
+    if (!window.confirm(`Delete ${user.username}?`)) return;
+    await api(`/api/users/${user.id}`, { method: 'DELETE' });
+    await loadState();
+    showToast('User deleted');
+  }
+
   const content = useMemo(() => {
     if (!data) return <LoadingPanel />;
     const props = {
@@ -446,7 +600,12 @@ export default function App() {
       clearLogs,
       copyText,
       previewNginx,
-      applyNginx
+      applyNginx,
+      savePanelSettings,
+      saveUser,
+      deleteUser,
+      auth,
+      logout
     };
     if (activeView === 'sites') return <SitesView {...props} />;
     if (activeView === 'rules') return <RulesView {...props} />;
@@ -456,7 +615,19 @@ export default function App() {
     if (activeView === 'logs') return <LogsView {...props} />;
     if (activeView === 'settings') return <SettingsView {...props} />;
     return <DashboardView {...props} />;
-  }, [activeView, data, filter]);
+  }, [activeView, data, filter, auth]);
+
+  if (auth.loading) {
+    return <LoadingPanel />;
+  }
+
+  if (auth.setupRequired) {
+    return <AuthScreen mode="setup" loading={loading} onSubmit={setupAdmin} />;
+  }
+
+  if (!auth.authenticated) {
+    return <AuthScreen mode="login" loading={loading} onSubmit={login} />;
+  }
 
   return (
     <div className="app-shell">
@@ -487,11 +658,11 @@ export default function App() {
             <h1>{viewTitles[activeView]}</h1>
           </div>
           <div className="toolbar">
-            <span className="runtime-pill">
-              {data ? `Admin ${data.runtime.adminPort} / Nginx ${data.runtime.nginxListenPorts?.join(', ') || 'not applied'}` : 'Loading'}
-            </span>
             <button className="icon-button" onClick={() => loadState(true)} title="Refresh" disabled={loading}>
               <RefreshCw size={18} className={loading ? 'spin' : ''} />
+            </button>
+            <button className="icon-button" onClick={logout} title="Sign out">
+              <LogOut size={18} />
             </button>
           </div>
         </header>
@@ -544,6 +715,20 @@ export default function App() {
           onCopy={copyText}
         />
       )}
+      {modal?.type === 'user' && (
+        <UserModal
+          user={modal.user}
+          onClose={() => setModal(null)}
+          onSave={saveUser}
+        />
+      )}
+      {modal?.type === 'totpSetup' && (
+        <TotpSetupModal
+          user={modal.user}
+          onClose={() => setModal(null)}
+          onCopy={copyText}
+        />
+      )}
       {toast && <div className={`toast ${toast.danger ? 'danger' : ''}`}>{toast.message}</div>}
     </div>
   );
@@ -560,6 +745,59 @@ function NavButton({ active, icon, label, onClick }) {
 
 function LoadingPanel() {
   return <section className="panel">Loading state...</section>;
+}
+
+function AuthScreen({ mode, loading, onSubmit }) {
+  const [form, setForm] = useState({
+    username: 'admin',
+    displayName: 'Administrator',
+    password: '',
+    totpCode: '',
+    totpEnabled: false
+  });
+  const [needsTotp, setNeedsTotp] = useState(false);
+  const isSetup = mode === 'setup';
+
+  function update(name, value) {
+    setForm((current) => ({ ...current, [name]: value }));
+  }
+
+  async function submit(event) {
+    event.preventDefault();
+    try {
+      await onSubmit(form);
+    } catch (error) {
+      if (error.payload?.totpRequired || String(error.message || '').toLowerCase().includes('google authenticator')) {
+        setNeedsTotp(true);
+      }
+    }
+  }
+
+  return (
+    <main className="auth-page">
+      <form className="auth-panel" onSubmit={submit}>
+        <div className="brand auth-brand">
+          <span className="brand-mark"><Shield size={22} /></span>
+          <span>
+            <strong>FreeWAF</strong>
+            <small>{isSetup ? 'Create admin account' : 'Admin panel sign in'}</small>
+          </span>
+        </div>
+        <TextField label="Username" value={form.username} onChange={(value) => update('username', value)} required full />
+        {isSetup && <TextField label="Display Name" value={form.displayName} onChange={(value) => update('displayName', value)} full />}
+        <TextField label="Password" type="password" value={form.password} onChange={(value) => update('password', value)} required full />
+        {isSetup && (
+          <CheckboxField label="Enable Google Authenticator for this admin" checked={form.totpEnabled} onChange={(checked) => update('totpEnabled', checked)} />
+        )}
+        {!isSetup && needsTotp && (
+          <TextField label="Google Authenticator Code" value={form.totpCode} onChange={(value) => update('totpCode', value)} placeholder="123456" full />
+        )}
+        <button className="tool-button primary auth-submit" disabled={loading}>
+          <LockKeyhole size={18} /> {isSetup ? 'Create Admin' : 'Sign In'}
+        </button>
+      </form>
+    </main>
+  );
 }
 
 function DashboardView({ data }) {
@@ -767,8 +1005,7 @@ function AccessView({ data, setModal, toggleAccessRule, deleteAccessRule }) {
               <th>Name</th>
               <th>Action</th>
               <th>Site</th>
-              <th>Sources</th>
-              <th>Conditions</th>
+              <th>Match</th>
               <th>Enabled</th>
               <th>Actions</th>
             </tr>
@@ -779,8 +1016,7 @@ function AccessView({ data, setModal, toggleAccessRule, deleteAccessRule }) {
                 <td><strong>{rule.name}</strong><br /><span className="muted">{rule.description || 'Access control rule'}</span></td>
                 <td><span className={`status ${rule.action === 'deny' ? 'block' : rule.action}`}>{rule.action}</span></td>
                 <td>{siteName(rule.siteId)}</td>
-                <td className="path-cell">{accessSources(rule, data.ipGroups)}</td>
-                <td className="path-cell">{accessConditions(rule)}</td>
+                <td className="path-cell">{accessRuleMatch(rule, data.ipGroups)}</td>
                 <td><Switch checked={rule.enabled} onChange={(checked) => toggleAccessRule(rule, checked)} /></td>
                 <td>
                   <div className="row-actions">
@@ -790,7 +1026,7 @@ function AccessView({ data, setModal, toggleAccessRule, deleteAccessRule }) {
                 </td>
               </tr>
             )) : (
-              <tr><td colSpan="7" className="muted">No access rules.</td></tr>
+              <tr><td colSpan="6" className="muted">No access rules.</td></tr>
             )}
           </tbody>
         </table>
@@ -961,45 +1197,107 @@ function LogsView({ data, filter, setFilter, clearLogs }) {
   );
 }
 
-function SettingsView({ data, copyText, previewNginx, applyNginx }) {
-  const { runtime } = data;
-  const nginxPort = runtime.nginxListenPorts?.[0];
-  const nginxUrl = nginxPort ? `http://localhost:${nginxPort}` : 'No enabled site';
-  const adminUrl = `http://localhost:${runtime.adminPort}`;
-  const demoUrl = runtime.demoOriginEnabled ? `http://localhost:${runtime.demoOriginPort}` : 'disabled';
-  const blockTest = nginxPort ? `curl "http://localhost:${nginxPort}/?q=' OR 1=1 --"` : 'Enable a site first';
+function SettingsView({ data, setModal, savePanelSettings, deleteUser, previewNginx, applyNginx, auth, logout }) {
+  const panel = data.settings?.panel || {};
+  const [panelForm, setPanelForm] = useState(() => ({
+    httpsEnabled: String(panel.httpsEnabled ?? false),
+    certificateId: panel.certificateId || '',
+    publicUrl: panel.publicUrl || '',
+    sessionHours: panel.sessionHours || 12
+  }));
+
+  function updatePanel(name, value) {
+    setPanelForm((current) => ({ ...current, [name]: value }));
+  }
+
+  function submitPanel(event) {
+    event.preventDefault();
+    savePanelSettings({
+      httpsEnabled: boolValue(panelForm.httpsEnabled),
+      certificateId: panelForm.certificateId,
+      publicUrl: panelForm.publicUrl,
+      sessionHours: Number(panelForm.sessionHours || 12)
+    });
+  }
 
   return (
     <>
-      <div className="settings-grid">
-        <SettingTile label="Admin" value={adminUrl} onCopy={() => copyText(adminUrl)} />
-        <SettingTile label="Nginx WAF" value={nginxUrl} onCopy={nginxPort ? () => copyText(nginxUrl) : null} />
-        <SettingTile label="Demo Origin" value={demoUrl} onCopy={runtime.demoOriginEnabled ? () => copyText(demoUrl) : null} />
-        <SettingTile label="Config File" value={runtime.nginx.outputFile} onCopy={() => copyText(runtime.nginx.outputFile)} />
-        <SettingTile label="Access Log" value={runtime.nginx.accessLog} onCopy={() => copyText(runtime.nginx.accessLog)} />
-        <SettingTile label="Site Log Dir" value={runtime.nginx.siteLogDir} onCopy={() => copyText(runtime.nginx.siteLogDir)} />
-        <SettingTile label="Auth File" value={runtime.auth.file || 'not set'} onCopy={runtime.auth.file ? () => copyText(runtime.auth.file) : null} />
-        <SettingTile label="Certbot" value={`${runtime.certbot.command} / ${runtime.certbot.authMethod}`} />
-        <SettingTile label="IP Sync" value={`${runtime.ipGroupSync.enabled ? 'enabled' : 'disabled'} / ${runtime.ipGroupSync.intervalSeconds}s`} />
-        <SettingTile label="Block Test" value={blockTest} onCopy={nginxPort ? () => copyText(blockTest) : null} />
-      </div>
       <section className="panel">
         <div className="panel-heading">
-          <h2>Nginx Apply</h2>
-          <span className="pill">native nginx enforcement</span>
+          <h2>Panel SSL</h2>
+          <span className="pill">{panel.httpsEnabled ? 'HTTPS after restart' : 'HTTP'}</span>
+        </div>
+        <form className="settings-form" onSubmit={submitPanel}>
+          <CheckboxField label="Use HTTPS for admin panel" checked={boolValue(panelForm.httpsEnabled)} onChange={(checked) => updatePanel('httpsEnabled', checked)} />
+          <SelectField
+            label="SSL Certificate"
+            value={panelForm.certificateId}
+            onChange={(value) => updatePanel('certificateId', value)}
+            options={[{ value: '', label: 'No certificate' }, ...data.certificates.map((certificate) => ({ value: certificate.id, label: certificate.name || certificate.id }))]}
+          />
+          <TextField label="Panel URL" value={panelForm.publicUrl} onChange={(value) => updatePanel('publicUrl', value)} placeholder="https://waf.example.com:7001" full />
+          <TextField label="Session Hours" value={panelForm.sessionHours} onChange={(value) => updatePanel('sessionHours', value)} />
+          <div className="settings-actions full">
+            <button className="tool-button primary"><Save size={18} /> Save Panel SSL</button>
+          </div>
+          <p className="form-note full">Changing HTTPS certificate or protocol requires restarting the FreeWAF admin service.</p>
+        </form>
+      </section>
+
+      <section className="table-panel">
+        <div className="panel-heading">
+          <h2>Users</h2>
+          <button className="tool-button primary" onClick={() => setModal({ type: 'user', user: null })}>
+            <UserPlus size={18} /> Add User
+          </button>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Role</th>
+                <th>Google Auth</th>
+                <th>Last Login</th>
+                <th>Enabled</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.users?.length ? data.users.map((user) => (
+                <tr key={user.id}>
+                  <td><strong>{user.displayName || user.username}</strong><br /><span className="muted">{user.username}</span></td>
+                  <td><span className="status low">{user.role}</span></td>
+                  <td><span className={`status ${user.totpEnabled ? 'allow' : 'disabled'}`}>{user.totpEnabled ? 'enabled' : 'disabled'}</span></td>
+                  <td>{user.lastLoginAt ? formatTime(user.lastLoginAt) : <span className="muted">Never</span>}</td>
+                  <td><span className={`status ${user.enabled ? 'enabled' : 'disabled'}`}>{user.enabled ? 'enabled' : 'disabled'}</span></td>
+                  <td>
+                    <div className="row-actions">
+                      <button className="table-action" onClick={() => setModal({ type: 'user', user })} title="Edit"><Edit3 size={17} /></button>
+                      <button className="table-action" onClick={() => deleteUser(user)} title="Delete" disabled={auth.user?.id === user.id}><Trash2 size={17} /></button>
+                    </div>
+                  </td>
+                </tr>
+              )) : (
+                <tr><td colSpan="6" className="muted">No users.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-heading">
+          <h2>Nginx Config</h2>
+          <span className="pill">native enforcement</span>
         </div>
         <div className="settings-actions">
           <button className="tool-button" onClick={previewNginx}><ListFilter size={18} /> Preview</button>
           <button className="tool-button primary" onClick={() => applyNginx({})}><Save size={18} /> Write Config</button>
           <button className="tool-button" onClick={() => applyNginx({ test: true })}><ShieldCheck size={18} /> Write + Test</button>
           <button className="tool-button" onClick={() => applyNginx({ test: true, reload: true })}><RefreshCw size={18} /> Test + Reload</button>
+          <button className="tool-button" onClick={logout}><LogOut size={18} /> Sign Out</button>
         </div>
-        <p className="muted settings-note">
-          Test command: <span className="code">{runtime.nginx.testCommand}</span> Reload command: <span className="code">{runtime.nginx.reloadCommand}</span>
-        </p>
-        <p className="muted settings-note">
-          Native Nginx rules cover URI, method, IP, and common headers. Request body inspection needs ModSecurity, Lua, or njs.
-        </p>
       </section>
     </>
   );
@@ -1412,36 +1710,191 @@ function AccessRuleModal({ rule, sites, ipGroups, onClose, onSave }) {
   const [form, setForm] = useState(() => ({
     ...defaultAccessRule,
     ...(rule || {}),
-    ipGroupIds: Array.isArray(rule?.ipGroupIds) ? rule.ipGroupIds.join(', ') : defaultAccessRule.ipGroupIds,
-    ips: textFromList(rule?.ips || ''),
-    methods: Array.isArray(rule?.methods) ? rule.methods.join(', ') : defaultAccessRule.methods,
-    uriPatterns: textFromList(rule?.uriPatterns || ''),
-    hostPatterns: textFromList(rule?.hostPatterns || ''),
-    userAgentPatterns: textFromList(rule?.userAgentPatterns || ''),
-    enabled: String(rule?.enabled ?? true)
+    action: rule?.action === 'allow' ? 'allow' : 'deny',
+    siteId: rule?.siteId || '*',
+    insertPosition: rule?.insertPosition || 'first',
+    enabled: String(rule?.enabled ?? true),
+    continueDetect: String(rule?.continueDetect ?? false),
+    conditionGroups: accessGroupsFromRule(rule, ipGroups)
   }));
-  const siteOptions = ['*', ...sites.map((site) => site.id)];
-  const groupOptions = ['', ...ipGroups.map((group) => group.id)];
+  const siteOptions = [{ value: '*', label: 'All applications' }, ...sites.map((site) => ({ value: site.id, label: site.name || site.id }))];
 
   function update(name, value) {
     setForm((current) => ({ ...current, [name]: value }));
   }
 
+  function updateGroup(groupIndex, mutator) {
+    setForm((current) => {
+      const conditionGroups = current.conditionGroups.map((group, index) => {
+        if (index !== groupIndex) return group;
+        return mutator(group);
+      });
+      return { ...current, conditionGroups };
+    });
+  }
+
+  function updateCondition(groupIndex, conditionIndex, mutator) {
+    updateGroup(groupIndex, (group) => ({
+      ...group,
+      conditions: group.conditions.map((condition, index) => (
+        index === conditionIndex ? mutator(condition) : condition
+      ))
+    }));
+  }
+
+  function addGroup() {
+    setForm((current) => ({
+      ...current,
+      conditionGroups: [...current.conditionGroups, createAccessConditionGroup(ipGroups)]
+    }));
+  }
+
+  function removeGroup(groupIndex) {
+    setForm((current) => {
+      if (current.conditionGroups.length <= 1) return current;
+      return {
+        ...current,
+        conditionGroups: current.conditionGroups.filter((_, index) => index !== groupIndex)
+      };
+    });
+  }
+
+  function addCondition(groupIndex) {
+    updateGroup(groupIndex, (group) => ({
+      ...group,
+      conditions: [...group.conditions, createAccessCondition('source_ip', 'equals', '', ipGroups)]
+    }));
+  }
+
+  function removeCondition(groupIndex, conditionIndex) {
+    setForm((current) => {
+      const group = current.conditionGroups[groupIndex];
+      if (!group) return current;
+      if (group.conditions.length <= 1) {
+        if (current.conditionGroups.length <= 1) return current;
+        return {
+          ...current,
+          conditionGroups: current.conditionGroups.filter((_, index) => index !== groupIndex)
+        };
+      }
+      return {
+        ...current,
+        conditionGroups: current.conditionGroups.map((item, index) => (
+          index === groupIndex
+            ? { ...item, conditions: item.conditions.filter((_, conditionOffset) => conditionOffset !== conditionIndex) }
+            : item
+        ))
+      };
+    });
+  }
+
+  function submit(event) {
+    event.preventDefault();
+    const hasCondition = form.conditionGroups.some((group) => group.conditions.some((condition) => String(condition.content || '').trim()));
+    if (!hasCondition) {
+      window.alert('Add at least one condition.');
+      return;
+    }
+    onSave(form);
+  }
+
   return (
-    <Modal title={rule ? 'Edit Access Rule' : 'Add Access Rule'} onClose={onClose} wide>
-      <form onSubmit={(event) => { event.preventDefault(); onSave(form); }}>
-        <div className="form-grid">
-          <TextField label="Name" value={form.name} onChange={(value) => update('name', value)} required />
-          <SelectField label="Site" value={form.siteId} onChange={(value) => update('siteId', value)} options={siteOptions} />
-          <SelectField label="Action" value={form.action} onChange={(value) => update('action', value)} options={['deny', 'allow', 'monitor']} />
-          <SelectField label="Enabled" value={form.enabled} onChange={(value) => update('enabled', value)} options={['true', 'false']} />
-          <SelectField label="IP Group" value={form.ipGroupIds.split(/[\s,]+/).filter(Boolean)[0] || ''} onChange={(value) => update('ipGroupIds', value)} options={groupOptions} />
-          <TextAreaField label="Direct IP/CIDR Entries" value={form.ips} onChange={(value) => update('ips', value)} />
-          <TextField label="Methods" value={form.methods} onChange={(value) => update('methods', value)} />
-          <TextAreaField label="URI Regex Patterns" value={form.uriPatterns} onChange={(value) => update('uriPatterns', value)} />
-          <TextAreaField label="Host Regex Patterns" value={form.hostPatterns} onChange={(value) => update('hostPatterns', value)} />
-          <TextAreaField label="User-Agent Regex Patterns" value={form.userAgentPatterns} onChange={(value) => update('userAgentPatterns', value)} />
-          <TextAreaField label="Description" value={form.description} onChange={(value) => update('description', value)} />
+    <Modal title={rule ? 'Edit Rules' : 'Add rules'} onClose={onClose} wide>
+      <form onSubmit={submit}>
+        <div className="access-form">
+          <div className="access-choice-grid full">
+            <button
+              type="button"
+              className={`access-choice ${form.action === 'allow' ? 'active' : ''}`}
+              onClick={() => update('action', 'allow')}
+            >
+              <ShieldCheck size={18} />
+              <span>Allow</span>
+            </button>
+            <button
+              type="button"
+              className={`access-choice ${form.action !== 'allow' ? 'active' : ''}`}
+              onClick={() => setForm((current) => ({ ...current, action: 'deny', continueDetect: 'false' }))}
+            >
+              <Shield size={18} />
+              <span>Deny Rule</span>
+            </button>
+          </div>
+
+          <div className="access-top-grid full">
+            <TextField label="Name *" value={form.name} onChange={(value) => update('name', value)} required full />
+            <SelectField label="Insert Position" value={form.insertPosition} onChange={(value) => update('insertPosition', value)} options={[{ value: 'first', label: 'First' }, { value: 'last', label: 'Last' }]} />
+          </div>
+
+          <SelectField label="Application" value={form.siteId} onChange={(value) => update('siteId', value)} options={siteOptions} full />
+
+          <div className="condition-builder full">
+            {form.conditionGroups.map((group, groupIndex) => (
+              <div className="condition-group" key={groupIndex}>
+                {groupIndex > 0 && <div className="condition-connector">OR</div>}
+                {group.conditions.map((condition, conditionIndex) => (
+                  <div className="condition-row" key={conditionIndex}>
+                    <SelectField
+                      label="Match Target"
+                      value={condition.target}
+                      onChange={(value) => updateCondition(groupIndex, conditionIndex, (current) => {
+                        const operator = defaultAccessOperator(value);
+                        return {
+                          ...current,
+                          target: value,
+                          operator,
+                          content: defaultAccessContent(value, operator, ipGroups)
+                        };
+                      })}
+                      options={accessTargetOptions}
+                    />
+                    <SelectField
+                      label="Operator *"
+                      value={condition.operator}
+                      onChange={(value) => updateCondition(groupIndex, conditionIndex, (current) => ({
+                        ...current,
+                        operator: value,
+                        content: defaultAccessContent(current.target, value, ipGroups)
+                      }))}
+                      options={accessOperatorsFor(condition.target, ipGroups)}
+                    />
+                    {renderAccessConditionContent(condition, ipGroups, (value) => updateCondition(groupIndex, conditionIndex, (current) => ({ ...current, content: value })))}
+                    <button
+                      type="button"
+                      className="table-action ghost"
+                      onClick={() => removeCondition(groupIndex, conditionIndex)}
+                      title="Remove condition"
+                      disabled={group.conditions.length <= 1 && form.conditionGroups.length <= 1}
+                    >
+                      <Trash2 size={17} />
+                    </button>
+                  </div>
+                ))}
+                <div className="condition-actions">
+                  <button type="button" className="outline-action" onClick={() => addCondition(groupIndex)}>
+                    <Plus size={16} /> Add an AND condition
+                  </button>
+                  {form.conditionGroups.length > 1 && (
+                    <button type="button" className="outline-action danger" onClick={() => removeGroup(groupIndex)}>
+                      Remove this condition group
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+            <button type="button" className="outline-action full" onClick={addGroup}>
+              <Plus size={16} /> Add an OR condition
+            </button>
+          </div>
+
+          {form.action === 'allow' && (
+            <CheckboxField
+              label="Continue to detect and log attack after whitelisting."
+              checked={boolValue(form.continueDetect)}
+              onChange={(checked) => update('continueDetect', checked)}
+            />
+          )}
+          <CheckboxField label="Enabled" checked={boolValue(form.enabled)} onChange={(checked) => update('enabled', checked)} />
         </div>
         <ModalFooter onClose={onClose} />
       </form>
@@ -1481,6 +1934,75 @@ function RuleModal({ rule, sites, onClose, onSave }) {
   );
 }
 
+function UserModal({ user, onClose, onSave }) {
+  const [form, setForm] = useState(() => ({
+    ...defaultUser,
+    ...(user || {}),
+    password: '',
+    enabled: String(user?.enabled ?? true),
+    totpEnabled: String(user?.totpEnabled ?? false),
+    resetTotp: false
+  }));
+
+  function update(name, value) {
+    setForm((current) => ({ ...current, [name]: value }));
+  }
+
+  function submit(event) {
+    event.preventDefault();
+    if (!user && form.password.length < 10) {
+      window.alert('Password must be at least 10 characters.');
+      return;
+    }
+    onSave(form);
+  }
+
+  return (
+    <Modal title={user ? 'Edit User' : 'Add User'} onClose={onClose}>
+      <form onSubmit={submit}>
+        <div className="form-grid">
+          <TextField label="Username" value={form.username} onChange={(value) => update('username', value)} required full={!user} />
+          <TextField label="Display Name" value={form.displayName} onChange={(value) => update('displayName', value)} />
+          <SelectField label="Role" value={form.role} onChange={(value) => update('role', value)} options={['admin', 'viewer']} />
+          <SelectField label="Enabled" value={form.enabled} onChange={(value) => update('enabled', value)} options={['true', 'false']} />
+          <TextField label={user ? 'New Password' : 'Password'} type="password" value={form.password} onChange={(value) => update('password', value)} required={!user} full />
+          <CheckboxField label="Enable Google Authenticator" checked={boolValue(form.totpEnabled)} onChange={(checked) => update('totpEnabled', checked)} />
+          {user && boolValue(form.totpEnabled) && (
+            <CheckboxField label="Generate new Google Authenticator secret" checked={form.resetTotp} onChange={(checked) => update('resetTotp', checked)} />
+          )}
+        </div>
+        <ModalFooter onClose={onClose} />
+      </form>
+    </Modal>
+  );
+}
+
+function TotpSetupModal({ user, onClose, onCopy }) {
+  return (
+    <Modal title="Google Authenticator" onClose={onClose}>
+      <div className="totp-panel">
+        <div className="totp-icon"><QrCode size={34} /></div>
+        <div>
+          <h3>{user.username}</h3>
+          <p className="muted">Add this secret to Google Authenticator, then use the 6-digit code when signing in.</p>
+        </div>
+        <label className="field full">
+          <span>Secret</span>
+          <input value={user.totpSetupSecret || ''} readOnly />
+        </label>
+        <label className="field full">
+          <span>Authenticator URI</span>
+          <textarea value={user.totpSetupUri || ''} readOnly />
+        </label>
+        <div className="modal-footer compact">
+          <button type="button" className="tool-button" onClick={() => onCopy(user.totpSetupSecret || '')}>Copy Secret</button>
+          <button type="button" className="tool-button primary" onClick={onClose}>Done</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function Modal({ title, onClose, children, wide = false }) {
   return (
     <div className="modal-root">
@@ -1504,11 +2026,11 @@ function ModalFooter({ onClose }) {
   );
 }
 
-function TextField({ label, value, onChange, required = false, full = false, placeholder = '' }) {
+function TextField({ label, value, onChange, required = false, full = false, placeholder = '', type = 'text' }) {
   return (
     <label className={`field ${full ? 'full' : ''}`}>
       <span>{label}</span>
-      <input value={value} onChange={(event) => onChange(event.target.value)} required={required} placeholder={placeholder} />
+      <input type={type} value={value} onChange={(event) => onChange(event.target.value)} required={required} placeholder={placeholder} />
     </label>
   );
 }
@@ -1531,12 +2053,15 @@ function CheckboxField({ label, checked, onChange }) {
   );
 }
 
-function SelectField({ label, value, onChange, options }) {
+function SelectField({ label, value, onChange, options, full = false }) {
   return (
-    <label className="field">
+    <label className={`field ${full ? 'full' : ''}`}>
       <span>{label}</span>
       <select value={value} onChange={(event) => onChange(event.target.value)}>
-        {options.map((option) => <option key={option} value={option}>{option}</option>)}
+        {options.map((option) => {
+          const normalized = typeof option === 'object' ? option : { value: option, label: option };
+          return <option key={normalized.value} value={normalized.value}>{normalized.label}</option>;
+        })}
       </select>
     </label>
   );
@@ -1551,7 +2076,10 @@ async function api(path, options = {}) {
   const response = await fetch(path, init);
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    throw new Error(payload.error || response.statusText);
+    const error = new Error(payload.error || response.statusText);
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
   }
   if (response.status === 204) return null;
   return response.json();
@@ -1606,25 +2134,230 @@ function inlineList(items) {
   return items?.length ? items.map((item) => <span className="code chip" key={item}>{item}</span>) : <span className="muted">Any</span>;
 }
 
-function accessSources(rule, ipGroups) {
-  const groupNames = (rule.ipGroupIds || []).map((id) => ipGroups.find((group) => group.id === id)?.name || id);
+function createAccessCondition(target = 'source_ip', operator = defaultAccessOperator(target), content = '', ipGroups = []) {
+  return {
+    target,
+    operator,
+    content: content || defaultAccessContent(target, operator, ipGroups)
+  };
+}
+
+function createAccessConditionGroup(ipGroups = []) {
+  return {
+    conditions: [createAccessCondition('source_ip', 'equals', '', ipGroups)]
+  };
+}
+
+function accessGroupsFromRule(rule, ipGroups) {
+  if (Array.isArray(rule?.conditionGroups) && rule.conditionGroups.length) {
+    return rule.conditionGroups.map((group) => ({
+      conditions: Array.isArray(group?.conditions) && group.conditions.length
+        ? group.conditions.map((condition) => normalizeAccessCondition(condition, ipGroups))
+        : [createAccessCondition('source_ip', 'equals', '', ipGroups)]
+    }));
+  }
+
+  const groups = [];
+  for (const ipGroupId of rule?.ipGroupIds || []) {
+    groups.push({
+      conditions: [createAccessCondition('source_ip', 'in_ip_group', ipGroupId, ipGroups)]
+    });
+  }
+  for (const item of rule?.ips || []) {
+    const value = String(item || '').trim();
+    if (!value) continue;
+    groups.push({
+      conditions: [createAccessCondition('source_ip', value.includes('/') ? 'cidr' : 'equals', value, ipGroups)]
+    });
+  }
+  for (const method of rule?.methods || []) {
+    groups.push({
+      conditions: [createAccessCondition('method', 'equals', method, ipGroups)]
+    });
+  }
+  for (const pattern of rule?.uriPatterns || []) {
+    groups.push({
+      conditions: [createAccessCondition('uri', 'regex', pattern, ipGroups)]
+    });
+  }
+  for (const pattern of rule?.hostPatterns || []) {
+    groups.push({
+      conditions: [createAccessCondition('host', 'regex', pattern, ipGroups)]
+    });
+  }
+  for (const pattern of rule?.userAgentPatterns || []) {
+    groups.push({
+      conditions: [createAccessCondition('user_agent', 'regex', pattern, ipGroups)]
+    });
+  }
+  return groups.length ? groups : [createAccessConditionGroup(ipGroups)];
+}
+
+function normalizeAccessCondition(condition, ipGroups = []) {
+  const target = accessTargetOptions.some((option) => option.value === condition?.target) ? condition.target : 'source_ip';
+  const operator = accessOperatorsFor(target, ipGroups).some((option) => option.value === condition?.operator)
+    ? condition.operator
+    : defaultAccessOperator(target);
+  return {
+    target,
+    operator,
+    content: String(condition?.content || '').trim() || defaultAccessContent(target, operator, ipGroups)
+  };
+}
+
+function defaultAccessOperator(target) {
+  const options = accessOperatorOptions[target] || accessOperatorOptions.source_ip;
+  return options[0]?.value || 'equals';
+}
+
+function defaultAccessContent(target, operator, ipGroups) {
+  if (target === 'source_ip' && operator === 'in_ip_group') {
+    return ipGroups[0]?.id || '';
+  }
+  if (target === 'source_ip') return '';
+  if (target === 'method') return 'GET';
+  return '';
+}
+
+function accessOperatorsFor(target, ipGroups) {
+  const options = accessOperatorOptions[target] || accessOperatorOptions.source_ip;
+  if (target !== 'source_ip') return options;
+  return options.map((option) => {
+    if (option.value !== 'in_ip_group') return option;
+    return {
+      ...option,
+      label: ipGroups.length ? 'In IP Group' : 'In IP Group'
+    };
+  });
+}
+
+function renderAccessConditionContent(condition, ipGroups, onChange) {
+  const target = condition.target || 'source_ip';
+  if (target === 'source_ip' && condition.operator === 'in_ip_group') {
+    return (
+      <label className="field condition-content">
+        <span>Content *</span>
+        <select value={condition.content} onChange={(event) => onChange(event.target.value)}>
+          {ipGroups.length ? ipGroups.map((group) => <option key={group.id} value={group.id}>{group.name || group.id}</option>) : <option value="">No IP groups</option>}
+        </select>
+      </label>
+    );
+  }
   return (
-    <>
-      {groupNames.length ? groupNames.map((item) => <span className="code chip" key={item}>{item}</span>) : null}
-      {rule.ips?.length ? rule.ips.map((item) => <span className="code chip" key={item}>{item}</span>) : null}
-      {!groupNames.length && !rule.ips?.length ? <span className="muted">Any IP</span> : null}
-    </>
+    <label className="field condition-content">
+      <span>Content *</span>
+      <input
+        value={condition.content}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={accessConditionPlaceholder(target, condition.operator)}
+      />
+      <small className="field-hint">{accessConditionHint(target, condition.operator)}</small>
+    </label>
   );
 }
 
-function accessConditions(rule) {
-  const chunks = [
-    ...(rule.methods?.length ? [`methods: ${rule.methods.join(', ')}`] : []),
-    ...(rule.uriPatterns?.length ? [`uri: ${rule.uriPatterns.join(', ')}`] : []),
-    ...(rule.hostPatterns?.length ? [`host: ${rule.hostPatterns.join(', ')}`] : []),
-    ...(rule.userAgentPatterns?.length ? [`ua: ${rule.userAgentPatterns.join(', ')}`] : [])
-  ];
-  return chunks.length ? chunks.map((item) => <span className="code chip" key={item}>{item}</span>) : <span className="muted">IP only</span>;
+function accessConditionPlaceholder(target, operator) {
+  if (target === 'source_ip' && operator === 'cidr') return '192.168.0.0/24';
+  if (target === 'method') return 'GET';
+  if (target === 'uri') return '/admin';
+  if (target === 'host') return 'example.com';
+  if (target === 'user_agent') return 'curl';
+  return '192.168.10.10';
+}
+
+function accessConditionHint(target, operator) {
+  if (target === 'source_ip' && operator === 'cidr') return 'CIDR block';
+  if (target === 'source_ip') return 'Single IP';
+  if (target === 'method') return 'GET, POST, PUT...';
+  if (operator === 'regex') return 'Regex pattern';
+  if (operator === 'contains') return 'Substring match';
+  return '';
+}
+
+function normalizeAccessConditionGroupsPayload(groups, rule) {
+  const source = Array.isArray(groups) && groups.length ? groups : accessGroupsFromRule(rule, []);
+  return source.map((group) => ({
+    conditions: (group.conditions || [])
+      .map((condition) => normalizeAccessConditionForPayload(condition))
+      .filter((condition) => condition.target && condition.operator && String(condition.content || '').trim())
+  })).filter((group) => group.conditions.length);
+}
+
+function normalizeAccessConditionForPayload(condition) {
+  const target = String(condition?.target || 'source_ip');
+  const operator = String(condition?.operator || defaultAccessOperator(target));
+  const content = String(condition?.content || '').trim();
+  return { target, operator, content };
+}
+
+function flattenAccessConditions(groups) {
+  const flattened = {
+    ipGroupIds: [],
+    ips: [],
+    methods: [],
+    uriPatterns: [],
+    hostPatterns: [],
+    userAgentPatterns: []
+  };
+
+  for (const group of groups || []) {
+    for (const condition of group.conditions || []) {
+      if (condition.target === 'source_ip') {
+        if (condition.operator === 'in_ip_group') {
+          flattened.ipGroupIds.push(condition.content);
+        } else if (condition.operator === 'equals' || condition.operator === 'cidr') {
+          flattened.ips.push(condition.content);
+        }
+      } else if (condition.target === 'method' && condition.operator === 'equals') {
+        flattened.methods.push(condition.content.toUpperCase());
+      } else if (condition.target === 'uri') {
+        flattened.uriPatterns.push(accessPatternFromCondition(condition));
+      } else if (condition.target === 'host') {
+        flattened.hostPatterns.push(accessPatternFromCondition(condition));
+      } else if (condition.target === 'user_agent') {
+        flattened.userAgentPatterns.push(accessPatternFromCondition(condition));
+      }
+    }
+  }
+
+  return {
+    ipGroupIds: Array.from(new Set(flattened.ipGroupIds)),
+    ips: Array.from(new Set(flattened.ips)),
+    methods: Array.from(new Set(flattened.methods)),
+    uriPatterns: Array.from(new Set(flattened.uriPatterns)),
+    hostPatterns: Array.from(new Set(flattened.hostPatterns)),
+    userAgentPatterns: Array.from(new Set(flattened.userAgentPatterns))
+  };
+}
+
+function accessPatternFromCondition(condition) {
+  if (condition.operator === 'contains') {
+    return escapeRegex(condition.content);
+  }
+  if (condition.operator === 'equals') {
+    return `^${escapeRegex(condition.content)}$`;
+  }
+  return condition.content;
+}
+
+function accessRuleMatch(rule, ipGroups) {
+  const groups = Array.isArray(rule?.conditionGroups) && rule.conditionGroups.length ? rule.conditionGroups : accessGroupsFromRule(rule, ipGroups);
+  const summary = groups.map((group) => group.conditions.map((condition) => accessConditionSummary(condition, ipGroups)).join(' AND '));
+  return summary.length ? summary.map((item) => <span className="code chip" key={item}>{item}</span>) : <span className="muted">Any</span>;
+}
+
+function accessConditionSummary(condition, ipGroups) {
+  const targetLabel = accessTargetOptions.find((option) => option.value === condition.target)?.label || condition.target;
+  const operatorLabel = accessOperatorsFor(condition.target, ipGroups).find((option) => option.value === condition.operator)?.label || condition.operator;
+  let content = condition.content;
+  if (condition.target === 'source_ip' && condition.operator === 'in_ip_group') {
+    content = ipGroups.find((group) => group.id === condition.content)?.name || condition.content;
+  }
+  return `${targetLabel} ${operatorLabel} ${content}`;
+}
+
+function escapeRegex(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function normalizedSiteFeatures(site) {

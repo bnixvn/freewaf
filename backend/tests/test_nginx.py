@@ -272,6 +272,44 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("198.51.100.10 1;", config)
         self.assertIn("Deny test range", config)
 
+    def test_generates_access_rule_condition_group(self):
+        state = make_state(
+            ipGroups=[
+                {
+                    "id": "ipgroup-admin",
+                    "name": "Admins",
+                    "description": "",
+                    "items": ["203.0.113.0/24"],
+                    "enabled": True,
+                }
+            ],
+            accessRules=[
+                {
+                    "id": "access-admin",
+                    "name": "Deny admin path",
+                    "description": "",
+                    "enabled": True,
+                    "siteId": "*",
+                    "action": "deny",
+                    "conditionGroups": [
+                        {
+                            "conditions": [
+                                {"target": "source_ip", "operator": "in_ip_group", "content": "ipgroup-admin"},
+                                {"target": "uri", "operator": "contains", "content": "/admin"},
+                            ]
+                        }
+                    ],
+                }
+            ],
+        )
+        config = generate_nginx_config(state)
+
+        self.assertIn("geo $sfl_access_ip_1_1_1", config)
+        self.assertIn("203.0.113.0/24 1;", config)
+        self.assertIn('if ($request_uri ~* "/admin")', config)
+        self.assertIn("set $sfl_access_1_group_1 1;", config)
+        self.assertIn("Deny admin path", config)
+
     def test_site_features_gate_native_modules(self):
         state = make_state(
             sites=[

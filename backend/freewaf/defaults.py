@@ -7,6 +7,12 @@ from datetime import datetime, timezone
 DEFAULT_SETTINGS = {
     "logRetention": 1500,
     "bodyInspectionLimit": 131072,
+    "panel": {
+        "httpsEnabled": False,
+        "certificateId": "",
+        "publicUrl": "",
+        "sessionHours": 12,
+    },
     "rateLimit": {
         "enabled": True,
         "windowMs": 60000,
@@ -226,5 +232,6 @@ def create_default_state(now: str | None = None) -> dict:
             }
         ],
         "accessRules": [],
+        "users": [],
         "logs": [],
     }

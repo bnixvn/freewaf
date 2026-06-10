@@ -19,6 +19,55 @@ Dev/test local khong can VPS. Neu muon test Nginx that tren may Windows, nen dun
 
 VPS chi can khi chay production ngoai internet voi domain, TLS, firewall, systemd, backup va log rotation.
 
+## Cai Len VPS
+
+Ho tro cai truc tiep tren:
+
+- Debian 12
+- Debian 13
+- Ubuntu 24.04 LTS
+
+Installer se cai `nginx`, `certbot`, Python 3, Node.js 20+ de build React, copy app vao `/opt/freewaf`, tao `/etc/freewaf/freewaf.env`, tao service `freewaf`, va include config Nginx tai `/etc/nginx/conf.d/freewaf.conf`.
+
+Cai tu repo da clone:
+
+```bash
+sudo bash install.sh
+```
+
+Cai bang Git URL:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/<owner>/freewaf/main/install.sh -o install.sh
+sudo FREEWAF_REPO_URL=https://github.com/<owner>/freewaf.git bash install.sh
+```
+
+Bien cai dat hay dung:
+
+```bash
+sudo FREEWAF_APP_DIR=/opt/freewaf ADMIN_PORT=7001 bash install.sh
+```
+
+Sau khi cai xong, mo:
+
+```text
+http://SERVER_IP:7001
+```
+
+Lan dau panel se bat tao admin user. Neu bat HTTPS cho panel trong Settings, can restart service de admin socket doi sang TLS:
+
+```bash
+sudo systemctl restart freewaf
+```
+
+Lenh quan tri:
+
+```bash
+sudo systemctl status freewaf
+sudo journalctl -u freewaf -f
+sudo nginx -t
+```
+
 ## Chay Backend
 
 Backend Python khong dung package ngoai.
@@ -38,6 +87,8 @@ Mac dinh:
 - Admin API/static build: `http://localhost:7001`
 - Demo origin: `http://localhost:9090`
 - Nginx listen port mac dinh trong generated config: `8080`
+
+Lan dau mo admin panel se hien man `Create admin account`. Sau khi tao user dau tien, cac API quan tri se yeu cau login bang session cookie. Neu bat Google Authenticator cho user, panel se hien secret/URI de them vao app Google Authenticator va lan dang nhap sau can ma 6 so.
 
 ## Chay React Dashboard
 
@@ -119,6 +170,14 @@ Dashboard co 2 cach add cert:
 
 - `Paste cert`: dan noi dung certificate chain PEM va private key PEM; backend luu thanh file trong `nginx/certs/`.
 - `Get free cert`: nhap domain va email; backend goi certbot de lay Let's Encrypt certificate bang HTTP-01. Mac dinh dung `certbot certonly --nginx`; co the doi bang `CERTBOT_AUTH_METHOD=webroot` hoac `standalone`.
+
+## Panel Security
+
+Settings gom:
+
+- Panel SSL: chon certificate da tao trong tab Certs de admin panel chay HTTPS. Sau khi save can restart `backend/run.py` de socket admin doi sang TLS.
+- Users: tao/sua/xoa user, doi password, bat/tat Google Authenticator. Khong the xoa user dang dang nhap va khong the xoa admin enabled cuoi cung.
+- Nginx Config: preview/write/test/reload config Nginx.
 
 Voi certbot, record se tro toi:
 

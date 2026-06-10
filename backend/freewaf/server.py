@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import secrets
+import ssl
 import subprocess
 import uuid
 import threading
@@ -12,7 +14,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from .nginx import (
     clear_nginx_logs,
@@ -39,16 +41,29 @@ def main() -> None:
     store = Store(resolve_data_file(ROOT_DIR))
     store.init()
     start_ip_group_sync_worker(store)
+    state = store.get_state()
+    panel = state.get("settings", {}).get("panel", {})
+    admin_https = bool(panel.get("httpsEnabled"))
 
-    servers = [
-        (
-            "Admin dashboard",
-            ThreadingHTTPServer(
-                ("0.0.0.0", admin_port),
-                make_admin_handler(store, admin_port, demo_origin_port, enable_demo_origin),
-            ),
-        )
-    ]
+    admin_server = ThreadingHTTPServer(
+        ("0.0.0.0", admin_port),
+        make_admin_handler(store, admin_port, demo_origin_port, enable_demo_origin, admin_https),
+    )
+    if admin_https:
+        certificate = next((item for item in state.get("certificates", []) if item["id"] == panel.get("certificateId")), None)
+        if certificate:
+            try:
+                context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                context.load_cert_chain(resolve_reference(certificate.get("certFile")), resolve_reference(certificate.get("keyFile")))
+                admin_server.socket = context.wrap_socket(admin_server.socket, server_side=True)
+            except Exception as error:
+                admin_https = False
+                print(f"Panel HTTPS failed to load certificate: {error}. Falling back to HTTP.")
+        else:
+            admin_https = False
+            print("Panel HTTPS is enabled, but the selected certificate was not found. Falling back to HTTP.")
+
+    servers = [("Admin dashboard", admin_server)]
 
     if enable_demo_origin:
         servers.append(("Demo origin", ThreadingHTTPServer(("127.0.0.1", demo_origin_port), make_demo_handler())))
@@ -58,7 +73,8 @@ def main() -> None:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         threads.append(thread)
-        print(f"{label}: http://localhost:{server.server_port}")
+        scheme = "https" if label == "Admin dashboard" and admin_https else "http"
+        print(f"{label}: {scheme}://localhost:{server.server_port}")
 
     ports = sorted({port for site in store.get_state().get("sites", []) if site.get("enabled") for port, _ in site_ports(site)})
     print(f"Nginx WAF listen ports from config: {', '.join(str(port) for port in ports) or 'none'}")
@@ -77,7 +93,10 @@ def main() -> None:
             thread.join(timeout=2)
 
 
-def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, demo_enabled: bool):
+def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, demo_enabled: bool, secure_cookie: bool = False):
+    sessions: dict[str, dict] = {}
+    sessions_lock = threading.RLock()
+
     class AdminHandler(BaseHTTPRequestHandler):
         server_version = "FreeWAFAdmin/1.0"
 
@@ -104,6 +123,13 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 self.send_json(200, {"ok": True, "adminPort": admin_port, "waf": "nginx"})
                 return
 
+            if parsed.path == "/api/auth/status":
+                self.send_json(200, self.auth_status())
+                return
+
+            if parsed.path.startswith("/api/") and not self.require_auth(parsed.path):
+                return
+
             if parsed.path == "/api/state":
                 state = store.get_state()
                 limit = parse_int((query.get("logLimit") or ["200"])[0], 200)
@@ -111,6 +137,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 state["logs"] = logs
                 state["stats"] = build_stats({**state, "logs": logs})
                 state["runtime"] = runtime_payload(state, admin_port, demo_origin_port, demo_enabled)
+                state["users"] = [public_user(user) for user in state.get("users", [])]
                 self.send_json(200, state)
                 return
 
@@ -138,11 +165,48 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
 
         def do_POST(self):
             try:
+                if self.path == "/api/auth/setup":
+                    payload = self.read_payload()
+                    if store.has_users():
+                        self.send_json(400, {"error": "Initial admin user already exists"})
+                        return
+                    saved = store.upsert_user(
+                        {
+                            "username": payload.get("username"),
+                            "displayName": payload.get("displayName") or payload.get("username"),
+                            "password": payload.get("password"),
+                            "role": "admin",
+                            "enabled": True,
+                            "totpEnabled": bool(payload.get("totpEnabled")),
+                        }
+                    )
+                    self.login_user(saved)
+                    return
+
+                if self.path == "/api/auth/login":
+                    payload = self.read_payload()
+                    user = store.authenticate_user(payload.get("username", ""), payload.get("password", ""), payload.get("totpCode", ""))
+                    self.login_user(user)
+                    return
+
+                if self.path == "/api/auth/logout":
+                    self.logout_user()
+                    return
+
+                if self.path.startswith("/api/") and not self.require_auth(self.path):
+                    return
+
                 resource, item_id, action = split_action_path(self.path)
                 if resource == "ip-groups" and action == "sync":
                     saved = sync_ip_group_reference(store, item_id)
                     maybe_auto_write(store)
                     self.send_json(200, saved)
+                    return
+
+                if resource == "users" and action == "password":
+                    payload = self.read_payload()
+                    saved = store.change_user_password(item_id, payload.get("password", ""))
+                    self.send_json(200, public_user(saved))
                     return
 
                 payload = self.read_payload()
@@ -172,23 +236,42 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     maybe_auto_write(store)
                     self.send_json(201, saved)
                     return
+                if self.path == "/api/users":
+                    saved = store.upsert_user(payload)
+                    self.send_json(201, public_user(saved, include_totp_secret=bool(saved.get("_totpSecretGenerated"))))
+                    return
                 if self.path == "/api/nginx/apply":
                     self.send_json(200, apply_nginx(store, payload))
                     return
                 self.send_json(404, {"error": "Not found"})
             except StoreError as error:
-                self.send_json(error.status, {"error": error.message})
+                self.send_json(error.status, error_payload(error))
             except ValueError as error:
                 self.send_json(400, {"error": str(error)})
 
         def do_PUT(self):
+            if self.path.startswith("/api/") and not self.require_auth(self.path):
+                return
             self.handle_resource_update(replace=True)
 
         def do_PATCH(self):
+            if self.path.startswith("/api/") and not self.require_auth(self.path):
+                return
+            if self.path == "/api/settings":
+                try:
+                    saved = store.update_settings(self.read_payload())
+                    self.send_json(200, saved)
+                except StoreError as error:
+                    self.send_json(error.status, error_payload(error))
+                except ValueError as error:
+                    self.send_json(400, {"error": str(error)})
+                return
             self.handle_resource_update(replace=False)
 
         def do_DELETE(self):
             try:
+                if self.path.startswith("/api/") and not self.require_auth(self.path):
+                    return
                 resource, item_id = split_resource_path(self.path)
                 if resource == "sites":
                     store.delete_site(item_id)
@@ -218,6 +301,14 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     maybe_auto_write(store)
                     self.send_empty(204)
                     return
+                if resource == "users":
+                    token_user = self.authenticated_user()
+                    if token_user and token_user.get("id") == item_id:
+                        self.send_json(400, {"error": "You cannot delete the signed-in user"})
+                        return
+                    store.delete_user(item_id)
+                    self.send_empty(204)
+                    return
                 if self.path == "/api/logs":
                     store.clear_logs()
                     clear_nginx_logs(ROOT_DIR)
@@ -225,7 +316,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     return
                 self.send_json(404, {"error": "Not found"})
             except StoreError as error:
-                self.send_json(error.status, {"error": error.message})
+                self.send_json(error.status, error_payload(error))
 
         def handle_resource_update(self, replace: bool):
             try:
@@ -283,22 +374,100 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     return
 
                 if resource == "access-rules":
+                    move_rule = "insertPosition" in payload
                     if not replace:
                         current = next((item for item in state["accessRules"] if item["id"] == item_id), None)
                         if not current:
                             self.send_json(404, {"error": "Access rule not found"})
                             return
                         payload = {**current, **payload}
+                    if move_rule:
+                        payload["_moveAccessRule"] = True
                     saved = store.upsert_access_rule(payload, item_id)
                     maybe_auto_write(store)
                     self.send_json(200, saved)
                     return
 
+                if resource == "users":
+                    if not replace:
+                        current = next((item for item in state["users"] if item["id"] == item_id), None)
+                        if not current:
+                            self.send_json(404, {"error": "User not found"})
+                            return
+                        payload = {**current, **payload}
+                    saved = store.upsert_user(payload, item_id)
+                    self.send_json(200, public_user(saved, include_totp_secret=bool(saved.get("_totpSecretGenerated"))))
+                    return
+
                 self.send_json(404, {"error": "Not found"})
             except StoreError as error:
-                self.send_json(error.status, {"error": error.message})
+                self.send_json(error.status, error_payload(error))
             except ValueError as error:
                 self.send_json(400, {"error": str(error)})
+
+        def auth_status(self) -> dict:
+            user = self.authenticated_user()
+            return {
+                "authenticated": bool(user),
+                "setupRequired": not store.has_users(),
+                "user": public_user(user) if user else None,
+            }
+
+        def require_auth(self, path: str) -> bool:
+            if is_public_api_path(path):
+                return True
+            if not store.has_users():
+                self.send_json(401, {"error": "Initial admin user is required", "setupRequired": True})
+                return False
+            if self.authenticated_user():
+                return True
+            self.send_json(401, {"error": "Login required"})
+            return False
+
+        def login_user(self, user: dict) -> None:
+            token = secrets.token_urlsafe(32)
+            max_age = session_max_age_seconds(store.get_state())
+            with sessions_lock:
+                sessions[token] = {
+                    "userId": user["id"],
+                    "expiresAt": time.time() + max_age,
+                }
+                prune_sessions(sessions)
+            self.send_json(
+                200,
+                {
+                    "authenticated": True,
+                    "setupRequired": False,
+                    "user": public_user(user, include_totp_secret=bool(user.get("_totpSecretGenerated"))),
+                },
+                headers={"Set-Cookie": session_cookie(token, max_age, secure_cookie)},
+            )
+
+        def logout_user(self) -> None:
+            token = session_token_from_headers(self.headers.get("cookie", ""))
+            if token:
+                with sessions_lock:
+                    sessions.pop(token, None)
+            self.send_json(
+                200,
+                {"authenticated": False},
+                headers={"Set-Cookie": expired_session_cookie(secure_cookie)},
+            )
+
+        def authenticated_user(self) -> dict | None:
+            token = session_token_from_headers(self.headers.get("cookie", ""))
+            if not token:
+                return None
+            with sessions_lock:
+                session = sessions.get(token)
+                if not session:
+                    return None
+                if session.get("expiresAt", 0) < time.time():
+                    sessions.pop(token, None)
+                    return None
+                user_id = session.get("userId")
+            user = next((item for item in store.get_state().get("users", []) if item["id"] == user_id and item.get("enabled")), None)
+            return user
 
         def serve_static(self, request_path: str):
             if not FRONTEND_DIST.exists():
@@ -342,17 +511,21 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 raise ValueError("JSON body must be an object")
             return payload
 
-        def send_json(self, status: int, payload: dict):
+        def send_json(self, status: int, payload: dict, headers: dict | None = None):
             body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
             self.send_response(status)
             self.send_header("content-type", "application/json; charset=utf-8")
             self.send_header("content-length", str(len(body)))
+            for key, value in (headers or {}).items():
+                self.send_header(key, value)
             self.end_headers()
             self.wfile.write(body)
 
-        def send_empty(self, status: int):
+        def send_empty(self, status: int, headers: dict | None = None):
             self.send_response(status)
             self.send_header("content-length", "0")
+            for key, value in (headers or {}).items():
+                self.send_header(key, value)
             self.end_headers()
 
         def log_message(self, format, *args):
@@ -386,6 +559,83 @@ def apply_nginx(store: Store, payload: dict) -> dict:
             result["ok"] = result["ok"] and reload_result.get("ok", False)
 
     return result
+
+
+def public_user(user: dict | None, include_totp_secret: bool = False) -> dict | None:
+    if not user:
+        return None
+    payload = {
+        "id": user.get("id"),
+        "username": user.get("username"),
+        "displayName": user.get("displayName") or user.get("username"),
+        "role": user.get("role") or "admin",
+        "enabled": user.get("enabled") is not False,
+        "totpEnabled": bool(user.get("totpEnabled")),
+        "lastLoginAt": user.get("lastLoginAt", ""),
+        "createdAt": user.get("createdAt", ""),
+        "updatedAt": user.get("updatedAt", ""),
+    }
+    if include_totp_secret and user.get("totpSecret"):
+        payload["totpSetupSecret"] = user["totpSecret"]
+        payload["totpSetupUri"] = totp_setup_uri(user)
+    return payload
+
+
+def error_payload(error: StoreError) -> dict:
+    payload = {"error": error.message}
+    if "Google Authenticator" in error.message:
+        payload["totpRequired"] = True
+    return payload
+
+
+def totp_setup_uri(user: dict) -> str:
+    issuer = "FreeWAF"
+    label = quote(f"{issuer}:{user.get('username')}", safe="")
+    secret = quote(str(user.get("totpSecret") or ""), safe="")
+    issuer_value = quote(issuer, safe="")
+    return f"otpauth://totp/{label}?secret={secret}&issuer={issuer_value}&algorithm=SHA1&digits=6&period=30"
+
+
+def is_public_api_path(path: str) -> bool:
+    parsed = urlparse(path)
+    return parsed.path in {"/api/health", "/api/auth/status", "/api/auth/setup", "/api/auth/login", "/api/auth/logout"}
+
+
+def session_max_age_seconds(state: dict) -> int:
+    panel = state.get("settings", {}).get("panel", {})
+    try:
+        hours = int(panel.get("sessionHours") or 12)
+    except (TypeError, ValueError):
+        hours = 12
+    return max(1, min(hours, 168)) * 3600
+
+
+def session_cookie(token: str, max_age: int, secure: bool) -> str:
+    flags = "HttpOnly; SameSite=Lax; Path=/"
+    if secure:
+        flags += "; Secure"
+    return f"freewaf_session={token}; Max-Age={max_age}; {flags}"
+
+
+def expired_session_cookie(secure: bool) -> str:
+    flags = "HttpOnly; SameSite=Lax; Path=/"
+    if secure:
+        flags += "; Secure"
+    return f"freewaf_session=; Max-Age=0; {flags}"
+
+
+def session_token_from_headers(cookie_header: str) -> str:
+    for part in str(cookie_header or "").split(";"):
+        name, _, value = part.strip().partition("=")
+        if name == "freewaf_session":
+            return value
+    return ""
+
+
+def prune_sessions(sessions: dict[str, dict]) -> None:
+    now = time.time()
+    for token in [token for token, session in sessions.items() if session.get("expiresAt", 0) < now]:
+        sessions.pop(token, None)
 
 
 def combined_logs(store: Store, limit: int) -> list[dict]:
@@ -653,8 +903,10 @@ def maybe_auto_write(store: Store) -> None:
 
 def runtime_payload(state: dict, admin_port: int, demo_origin_port: int, demo_enabled: bool) -> dict:
     listen_ports = sorted({port for site in state.get("sites", []) if site.get("enabled") for port, _ in site_ports(site)})
+    panel = state.get("settings", {}).get("panel", {})
     return {
         "adminPort": admin_port,
+        "adminProtocol": "https" if panel.get("httpsEnabled") else "http",
         "wafMode": "nginx",
         "nginxListenPorts": listen_ports,
         "proxyPort": listen_ports[0] if listen_ports else None,
@@ -730,7 +982,7 @@ def make_demo_handler():
 def split_resource_path(path: str) -> tuple[str, str]:
     parsed = urlparse(path)
     parts = [part for part in parsed.path.split("/") if part]
-    if len(parts) == 3 and parts[0] == "api" and parts[1] in {"sites", "rules", "certificates", "ip-groups", "access-rules"}:
+    if len(parts) == 3 and parts[0] == "api" and parts[1] in {"sites", "rules", "certificates", "ip-groups", "access-rules", "users"}:
         return parts[1], parts[2]
     return "", ""
 
@@ -738,7 +990,7 @@ def split_resource_path(path: str) -> tuple[str, str]:
 def split_action_path(path: str) -> tuple[str, str, str]:
     parsed = urlparse(path)
     parts = [part for part in parsed.path.split("/") if part]
-    if len(parts) == 4 and parts[0] == "api" and parts[1] in {"ip-groups"}:
+    if len(parts) == 4 and parts[0] == "api" and parts[1] in {"ip-groups", "users"}:
         return parts[1], parts[2], parts[3]
     return "", "", ""
 
