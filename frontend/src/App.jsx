@@ -1301,8 +1301,8 @@ function ApplicationCard({ site, stats, onEdit, onDelete, onToggle, onConfigureF
             <strong>{formatCompact(counters.requests)}</strong>
           </div>
           <div>
-            <span>PRT TD</span>
-            <strong>{formatCompact(counters.protected)}</strong>
+            <span>BLK TD</span>
+            <strong>{formatCompact(counters.blocked)}</strong>
           </div>
         </div>
       </div>
