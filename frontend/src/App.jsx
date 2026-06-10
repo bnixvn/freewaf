@@ -1741,21 +1741,21 @@ function Timeline({ points = [] }) {
         return (
           <div className="bar-wrap" key={point.at} onMouseEnter={() => setHovered(index)} onFocus={() => setHovered(index)}>
             <span className={`bar-value ${total ? '' : 'zero'}`}>{formatCompact(total)}</span>
+            {hovered === index && (
+              <div className={`chart-tooltip ${tooltipSide}`}>
+                <strong>{formatBucketRange(point)}</strong>
+                <span>{formatCompact(total)} requests</span>
+                <span>{formatCompact(protectedCount)} protected</span>
+                <span>{formatCompact(challenged)} challenged</span>
+                <span>{formatCompact(blocked)} blocked</span>
+              </div>
+            )}
             <div
               tabIndex={0}
               className={`bar ${total ? 'has-data' : ''}`}
               style={{ height: `${height}%` }}
             >
               <span className="bar-protected" style={{ height: `${protectedHeight}%` }} />
-              {hovered === index && (
-                <div className={`chart-tooltip ${tooltipSide}`}>
-                  <strong>{formatBucketRange(point)}</strong>
-                  <span>{formatCompact(total)} requests</span>
-                  <span>{formatCompact(protectedCount)} protected</span>
-                  <span>{formatCompact(challenged)} challenged</span>
-                  <span>{formatCompact(blocked)} blocked</span>
-                </div>
-              )}
             </div>
             <span className="bar-time">{showTick ? point.label : ''}</span>
           </div>
