@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   Copy,
@@ -39,7 +39,7 @@ const defaultSite = {
   applicationType: 'reverse_proxy',
   origin: 'http://127.0.0.1:9090',
   upstreams: 'http://127.0.0.1:9090',
-  hostnames: 'localhost',
+  hostnames: '',
   listen: '8080',
   ports: '80, 443_ssl',
   redirectStatusCode: '301',
@@ -109,7 +109,7 @@ const defaultRule = {
 
 const defaultCertificate = {
   name: '',
-  source: 'upload',
+  source: 'certbot',
   domains: '',
   email: '',
   certificate: '',
@@ -411,7 +411,7 @@ export default function App() {
     try {
       const payload = {
         ...certificate,
-        domains: listFromText(certificate.domains, /[\n,]+/),
+        domains: listFromText(certificate.domains, /[\s,]+/),
         autoRenew: certificate.autoRenew !== false && certificate.autoRenew !== 'false',
         renewBeforeDays: Number(certificate.renewBeforeDays || 30)
       };
@@ -1471,6 +1471,11 @@ function SiteModal({ site, certificates, onClose, onSave }) {
 
   function submit(event) {
     event.preventDefault();
+    const hostnames = listFromText(form.hostnames, /[\s,]+/);
+    if (!hostnames.length) {
+      window.alert('Enter at least one application domain.');
+      return;
+    }
     const hasHttpsPort = form.listeningPorts.some((row) => row.protocol === 'https');
     if (form.applicationType === 'reverse_proxy' && !form.upstreams.some((item) => String(item).trim())) {
       window.alert('Add at least one upstream.');
@@ -1488,6 +1493,7 @@ function SiteModal({ site, certificates, onClose, onSave }) {
       ...form,
       tlsEnabled: String(hasHttpsPort || boolValue(form.tlsEnabled)),
       redirectHttp: String(hasHttpsPort && form.listeningPorts.some((row) => row.protocol === 'http')),
+      hostnames: hostnames.join('\n'),
       upstreams: form.upstreams,
       listeningPorts: form.listeningPorts
     });
@@ -1497,7 +1503,7 @@ function SiteModal({ site, certificates, onClose, onSave }) {
     <Modal title={site ? 'Edit Application' : 'Add Application'} onClose={onClose} wide>
       <form onSubmit={submit}>
         <div className="safe-form">
-          <TextField label="Domain" value={form.hostnames} onChange={(value) => update('hostnames', value)} placeholder="www.example.com, support *" full required />
+          <DomainChipField label="Domain" value={form.hostnames} onChange={(value) => update('hostnames', value)} placeholder="www.example.com, support *" required />
 
           <div className="safe-fieldset">
             {form.listeningPorts.map((row, index) => (
@@ -1618,73 +1624,84 @@ function CertificateModal({ certificate, onClose, onSave }) {
 
   function submit(event) {
     event.preventDefault();
+    const domains = listFromText(form.domains, /[\s,]+/);
+    if (!domains.length) {
+      window.alert('Enter at least one certificate domain.');
+      return;
+    }
     if (form.source === 'upload' && Boolean(form.certificate.trim()) !== Boolean(form.privateKey.trim())) {
       window.alert('Paste both certificate and private key PEM.');
       return;
     }
-    if (form.source === 'upload' && !String(form.domains || '').trim()) {
-      window.alert('Enter at least one certificate domain.');
-      return;
-    }
-    onSave(form);
+    onSave({
+      ...form,
+      name: form.name || domains[0],
+      domains: domains.join('\n')
+    });
   }
 
   return (
-    <Modal title={certificate ? 'Edit Cert' : 'Add Cert'} onClose={onClose}>
-      <form onSubmit={submit}>
-        <div className="form-grid">
-          <div className="segmented full">
-            <button type="button" className={form.source === 'upload' ? 'active' : ''} onClick={() => update('source', 'upload')}>Paste cert</button>
-            <button type="button" className={form.source === 'certbot' ? 'active' : ''} onClick={() => update('source', 'certbot')}>Get free cert</button>
-          </div>
-
-          {form.source === 'upload' ? (
-            <>
-              <TextField label="Name" value={form.name} onChange={(value) => update('name', value)} required />
-              <TextAreaField
-                label="Domains"
-                value={form.domains}
-                onChange={(value) => update('domains', value)}
-                placeholder={'minhhien.vn\nwww.minhhien.vn\n*.minhhien.vn'}
-              />
-              <label className="field full">
-                <span>Certificate PEM</span>
-                <textarea
-                  value={form.certificate}
-                  onChange={(event) => update('certificate', event.target.value)}
-                  required={!certificate && !form.certFile}
-                  placeholder="-----BEGIN CERTIFICATE-----"
-                />
-              </label>
-              <label className="field full">
-                <span>Private Key PEM</span>
-                <textarea
-                  value={form.privateKey}
-                  onChange={(event) => update('privateKey', event.target.value)}
-                  required={!certificate && !form.keyFile}
-                  placeholder="-----BEGIN PRIVATE KEY-----"
-                />
-              </label>
-              {(form.certFile || form.keyFile) && (
-                <div className="notice full">
-                  <div>Current certificate: <span className="code">{form.certFile || 'not set'}</span></div>
-                  <div>Current key: <span className="code">{form.keyFile || 'not set'}</span></div>
-                </div>
-              )}
-              <p className="form-note full">Paste the certificate chain and matching private key. After saving, the backend writes them to nginx/certs and Nginx uses the stored file paths shown here.</p>
-            </>
-          ) : (
-            <>
-              <TextField label="Domain" value={form.domains} onChange={(value) => update('domains', value)} full required />
-              <TextField label="Email Address" value={form.email} onChange={(value) => update('email', value)} full required />
-              <div className="notice full">
-                Online required, follows Let's Encrypt HTTP-01 method. Automatically renew 30 days before expiration.
-              </div>
-              <p className="form-note full">Backend runs certbot and records /etc/letsencrypt/live/&lt;domain&gt;/fullchain.pem and privkey.pem.</p>
-            </>
-          )}
+    <Modal title={certificate ? 'Edit Cert' : 'Add Cert'} onClose={onClose} className="certificate-modal">
+      <form onSubmit={submit} className="cert-form">
+        <div className="cert-source-grid">
+          <button type="button" className={`cert-source-choice ${form.source === 'upload' ? 'active' : ''}`} onClick={() => update('source', 'upload')}>
+            <span className="radio-dot" />
+            Upload cert file
+          </button>
+          <button type="button" className={`cert-source-choice ${form.source === 'certbot' ? 'active' : ''}`} onClick={() => update('source', 'certbot')}>
+            <span className="radio-dot" />
+            Get free cert
+          </button>
         </div>
-        <ModalFooter onClose={onClose} />
+
+        {form.source === 'upload' ? (
+          <>
+            <DomainChipField label="Domain" value={form.domains} onChange={(value) => update('domains', value)} required />
+            <label className="field cert-text-field full">
+              <span>Name <b>*</b></span>
+              <input value={form.name} onChange={(event) => update('name', event.target.value)} placeholder="Certificate name" required />
+            </label>
+            <label className="field full">
+              <span>Certificate PEM</span>
+              <textarea
+                value={form.certificate}
+                onChange={(event) => update('certificate', event.target.value)}
+                required={!certificate && !form.certFile}
+                placeholder="-----BEGIN CERTIFICATE-----"
+              />
+            </label>
+            <label className="field full">
+              <span>Private Key PEM</span>
+              <textarea
+                value={form.privateKey}
+                onChange={(event) => update('privateKey', event.target.value)}
+                required={!certificate && !form.keyFile}
+                placeholder="-----BEGIN PRIVATE KEY-----"
+              />
+            </label>
+            {(form.certFile || form.keyFile) && (
+              <div className="notice full">
+                <div>Current certificate: <span className="code">{form.certFile || 'not set'}</span></div>
+                <div>Current key: <span className="code">{form.keyFile || 'not set'}</span></div>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <DomainChipField label="Domain" value={form.domains} onChange={(value) => update('domains', value)} required />
+            <label className="field cert-text-field full">
+              <span>Email Address <b>*</b></span>
+              <input type="email" value={form.email} onChange={(event) => update('email', event.target.value)} placeholder="admin@example.com" required />
+            </label>
+            <div className="notice full">
+              Online required, follows Let's Encrypt HTTP-01 method. Automatically renew 30 days before expiration.
+            </div>
+          </>
+        )}
+        <div className="modal-footer cert-footer">
+          <button type="button" className="tool-button cert-cancel" onClick={onClose}>Cancel</button>
+          <button className="tool-button primary cert-submit">Submit</button>
+        </div>
       </form>
     </Modal>
   );
@@ -2017,15 +2034,118 @@ function TotpSetupModal({ user, onClose, onCopy }) {
   );
 }
 
-function Modal({ title, onClose, children, wide = false }) {
+function Modal({ title, onClose, children, wide = false, className = '' }) {
   return (
     <div className="modal-root">
-      <div className={`modal ${wide ? 'wide' : ''}`}>
+      <div className={`modal ${wide ? 'wide' : ''} ${className}`}>
         <div className="modal-header">
           <h2>{title}</h2>
           <button type="button" className="icon-button" onClick={onClose} title="Close"><X size={18} /></button>
         </div>
         {children}
+      </div>
+    </div>
+  );
+}
+
+function DomainChipField({ label, value, onChange, placeholder = 'Support multiple', required = false }) {
+  const inputRef = useRef(null);
+  const domains = useMemo(() => listFromText(value, /[\s,]+/), [value]);
+  const [draft, setDraft] = useState('');
+
+  function emit(nextItems) {
+    const unique = Array.from(new Set(nextItems.map((item) => item.trim()).filter(Boolean)));
+    onChange(unique.join('\n'));
+  }
+
+  function commit(raw = draft) {
+    const items = listFromText(raw, /[\s,]+/);
+    if (!items.length) {
+      setDraft('');
+      return;
+    }
+    emit([...domains, ...items]);
+    setDraft('');
+  }
+
+  function remove(item) {
+    emit(domains.filter((domain) => domain !== item));
+  }
+
+  function clear() {
+    emit([]);
+    setDraft('');
+    inputRef.current?.focus();
+  }
+
+  function handleChange(event) {
+    const next = event.target.value;
+    if (/[\s,]/.test(next)) {
+      const endsWithSeparator = /[\s,]$/.test(next);
+      const parts = listFromText(next, /[\s,]+/);
+      if (endsWithSeparator) {
+        emit([...domains, ...parts]);
+        setDraft('');
+        return;
+      }
+      if (parts.length > 1) {
+        const tail = parts.pop();
+        emit([...domains, ...parts]);
+        setDraft(tail || '');
+        return;
+      }
+    }
+    setDraft(next);
+  }
+
+  function handleKeyDown(event) {
+    if (['Enter', ',', ' '].includes(event.key)) {
+      if (draft.trim()) {
+        event.preventDefault();
+        commit();
+      }
+      return;
+    }
+    if (event.key === 'Backspace' && !draft && domains.length) {
+      remove(domains[domains.length - 1]);
+    }
+  }
+
+  function handlePaste(event) {
+    const text = event.clipboardData.getData('text');
+    if (/[\s,]/.test(text)) {
+      event.preventDefault();
+      commit(text);
+    }
+  }
+
+  return (
+    <div className="domain-chip-field full">
+      <span className="domain-chip-label">{label}{required && <b>*</b>}</span>
+      <div className="domain-chip-box" onClick={() => inputRef.current?.focus()}>
+        {domains.map((domain) => (
+          <span className="domain-chip" key={domain}>
+            {domain}
+            <button type="button" onClick={(event) => { event.stopPropagation(); remove(domain); }} title={`Remove ${domain}`}>
+              <X size={13} />
+            </button>
+          </span>
+        ))}
+        <input
+          ref={inputRef}
+          value={draft}
+          onChange={handleChange}
+          onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
+          onBlur={() => commit()}
+          placeholder={placeholder}
+          aria-required={required}
+        />
+        {(domains.length > 0 || draft) && (
+          <button type="button" className="domain-chip-clear" onClick={(event) => { event.stopPropagation(); clear(); }} title="Clear domains">
+            <X size={18} />
+          </button>
+        )}
       </div>
     </div>
   );

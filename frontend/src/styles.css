@@ -689,6 +689,10 @@ td {
   width: min(1080px, 100%);
 }
 
+.modal.certificate-modal {
+  width: min(448px, 100%);
+}
+
 .modal-header,
 .modal-footer {
   display: flex;
@@ -714,6 +718,83 @@ td {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
   padding: 16px;
+}
+
+.cert-form {
+  display: grid;
+  gap: 22px;
+  padding: 0 18px 18px;
+}
+
+.certificate-modal .modal-header {
+  border-bottom: 0;
+  padding: 34px 18px 20px;
+}
+
+.cert-source-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.cert-source-choice {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #fff;
+  color: var(--text);
+}
+
+.cert-source-choice.active {
+  border-color: #18c7bc;
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px #18c7bc;
+}
+
+.radio-dot {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  border: 2px solid #34424c;
+  border-radius: 50%;
+}
+
+.cert-source-choice.active .radio-dot {
+  border-color: #18c7bc;
+}
+
+.cert-source-choice.active .radio-dot::after {
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: #18c7bc;
+  content: "";
+}
+
+.cert-footer {
+  padding: 0 8px;
+  border-top: 0;
+}
+
+.cert-cancel {
+  border-color: transparent;
+  background: transparent;
+  color: #0fada4;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.cert-submit {
+  min-width: 112px;
+  min-height: 36px;
+  border-color: #18c7bc;
+  background: #18c7bc;
+  font-weight: 800;
+  text-transform: uppercase;
 }
 
 .safe-form {
@@ -933,7 +1014,8 @@ td {
   gap: 6px;
 }
 
-.field.full {
+.field.full,
+.domain-chip-field.full {
   grid-column: 1 / -1;
 }
 
@@ -1024,6 +1106,99 @@ td {
 .field span {
   color: var(--muted);
   font-size: 13px;
+}
+
+.cert-text-field span b {
+  color: #e5484d;
+  font-weight: 700;
+}
+
+.domain-chip-field {
+  position: relative;
+  display: grid;
+}
+
+.domain-chip-label {
+  position: absolute;
+  top: -7px;
+  left: 12px;
+  z-index: 1;
+  padding: 0 4px;
+  background: #fff;
+  color: #0fada4;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.domain-chip-label b {
+  margin-left: 2px;
+  color: #e5484d;
+  font-weight: 700;
+}
+
+.domain-chip-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+  min-height: 42px;
+  padding: 6px 38px 6px 8px;
+  border: 1px solid #18c7bc;
+  border-radius: 4px;
+  background: #fff;
+  cursor: text;
+}
+
+.domain-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  min-height: 26px;
+  padding: 0 8px 0 10px;
+  border-radius: 4px;
+  background: #eef2f5;
+  color: #263238;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.domain-chip button,
+.domain-chip-clear {
+  display: inline-grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: #8b98a5;
+}
+
+.domain-chip button {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+}
+
+.domain-chip-clear {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  transform: translateY(-50%);
+}
+
+.domain-chip-box input {
+  flex: 1 1 150px;
+  min-width: 120px;
+  min-height: 26px;
+  border: 0;
+  outline: 0;
+  padding: 0 2px;
+  background: transparent;
+  color: var(--text);
 }
 
 .field input,
