@@ -1870,7 +1870,7 @@ def build_timeline(logs: list[dict]) -> list[dict]:
     for index in range(bucket_count):
         at = start_ms + bucket_ms * index
         label = datetime.fromtimestamp(at / 1000).strftime("%H:%M")
-        buckets.append({"at": at, "label": label, "total": 0, "blocked": 0, "challenged": 0, "protected": 0})
+        buckets.append({"at": at, "endAt": at + bucket_ms, "label": label, "total": 0, "blocked": 0, "challenged": 0, "protected": 0})
 
     for entry in logs:
         try:

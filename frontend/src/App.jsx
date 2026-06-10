@@ -1725,25 +1725,37 @@ function Metric({ label, value, note }) {
 }
 
 function Timeline({ points = [] }) {
+  const [hovered, setHovered] = useState(null);
   const max = Math.max(1, ...points.map((point) => Number(point.total || 0)));
   return (
-    <div className="chart" aria-label="Traffic chart">
+    <div className="chart" aria-label="Traffic chart" onMouseLeave={() => setHovered(null)}>
       {points.map((point, index) => {
         const total = Number(point.total || 0);
         const protectedCount = Number(point.protected ?? (Number(point.blocked || 0) + Number(point.challenged || 0)));
         const challenged = Number(point.challenged || 0);
+        const blocked = Number(point.blocked || 0);
         const height = total ? Math.max(8, Math.round((total / max) * 100)) : 4;
         const protectedHeight = total ? Math.round((protectedCount / total) * 100) : 0;
         const showTick = index % 4 === 0 || index === points.length - 1;
+        const tooltipSide = index > points.length - 6 ? 'left' : 'right';
         return (
-          <div className="bar-wrap" key={point.at}>
+          <div className="bar-wrap" key={point.at} onMouseEnter={() => setHovered(index)} onFocus={() => setHovered(index)}>
             <span className={`bar-value ${total ? '' : 'zero'}`}>{formatCompact(total)}</span>
             <div
+              tabIndex={0}
               className={`bar ${total ? 'has-data' : ''}`}
-              title={`${point.label}: ${total} total, ${protectedCount} protected, ${challenged} challenged`}
               style={{ height: `${height}%` }}
             >
               <span className="bar-protected" style={{ height: `${protectedHeight}%` }} />
+              {hovered === index && (
+                <div className={`chart-tooltip ${tooltipSide}`}>
+                  <strong>{formatBucketRange(point)}</strong>
+                  <span>{formatCompact(total)} requests</span>
+                  <span>{formatCompact(protectedCount)} protected</span>
+                  <span>{formatCompact(challenged)} challenged</span>
+                  <span>{formatCompact(blocked)} blocked</span>
+                </div>
+              )}
             </div>
             <span className="bar-time">{showTick ? point.label : ''}</span>
           </div>
@@ -1785,8 +1797,8 @@ function Incident({ entry }) {
         <strong>{entry.reason}</strong>
         <span className={`status ${verdict}`}>{verdict}</span>
       </div>
-      <div className="muted">{entry.method} {entry.path}</div>
-      <div className="muted">{entry.ip} / {formatTime(entry.at)}</div>
+      <div className="incident-path"><span>{entry.method}</span> {entry.path}</div>
+      <div className="incident-meta">{entry.ip} / {formatTime(entry.at)}</div>
     </article>
   );
 }
@@ -2990,6 +3002,15 @@ function formatTime(value) {
     minute: '2-digit',
     second: '2-digit'
   });
+}
+
+function formatBucketRange(point) {
+  const start = new Date(Number(point?.at || 0));
+  const end = new Date(Number(point?.endAt || Number(point?.at || 0) + 5 * 60 * 1000));
+  const date = start.toLocaleDateString([], { year: 'numeric', month: 'short', day: '2-digit' });
+  const startTime = start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const endTime = end.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return `${date} ${startTime} - ${endTime}`;
 }
 
 function listFromText(value, splitter) {
