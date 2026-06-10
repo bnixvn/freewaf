@@ -434,7 +434,10 @@ def domain_config_filename(site: dict, hostname: str) -> str:
 
 def render_site_server(site: dict, state: dict, certificates: dict[str, dict], hostname: str | None = None) -> str:
     hostnames = [hostname] if hostname else site_hostnames(site)
-    render_site = {**site, "hostnames": hostnames}
+    defaults = application_defaults(state)
+    proxy = site_proxy(site, defaults.get("proxy"))
+    modsecurity = site_modsecurity(site, defaults.get("modSecurity"))
+    render_site = {**site, "hostnames": hostnames, "proxy": proxy, "modSecurity": modsecurity}
     server_name = " ".join(escape_server_name(name) for name in hostnames)
     app_type = application_type(site)
     upstreams = site_upstreams(site)
@@ -443,7 +446,6 @@ def render_site_server(site: dict, state: dict, certificates: dict[str, dict], h
     tls = site.get("tls") or {}
     certificate = certificates.get(tls.get("certificateId"))
     has_tls = bool(tls.get("enabled") and certificate)
-    proxy = site_proxy(site)
     ports = site_ports(site)
     http_ports = [port for port, is_ssl in ports if not is_ssl]
     https_ports = [port for port, is_ssl in ports if is_ssl]
@@ -806,9 +808,20 @@ def parse_site_port(value) -> tuple[int, bool] | None:
     return port, is_ssl
 
 
-def site_proxy(site: dict) -> dict:
+def application_defaults(state: dict) -> dict:
+    settings = state.get("settings") if isinstance(state.get("settings"), dict) else {}
+    defaults = settings.get("applicationDefaults") if isinstance(settings.get("applicationDefaults"), dict) else {}
+    return {
+        "proxy": defaults.get("proxy") if isinstance(defaults.get("proxy"), dict) else {},
+        "modSecurity": defaults.get("modSecurity") if isinstance(defaults.get("modSecurity"), dict) else {},
+    }
+
+
+def site_proxy(site: dict, defaults: dict | None = None) -> dict:
     tls = site.get("tls") if isinstance(site.get("tls"), dict) else {}
-    proxy = site.get("proxy") if isinstance(site.get("proxy"), dict) else {}
+    site_proxy_config = site.get("proxy") if isinstance(site.get("proxy"), dict) else {}
+    defaults = defaults if isinstance(defaults, dict) else {}
+    proxy = {**site_proxy_config, **defaults}
     return {
         "forceHttps": bool(proxy.get("forceHttps", tls.get("redirectHttp", False))),
         "redirectStatusCode": int(proxy.get("redirectStatusCode") or site.get("redirectStatusCode") or 301),
@@ -816,7 +829,7 @@ def site_proxy(site: dict) -> dict:
         "hstsMaxAge": str(proxy.get("hstsMaxAge") or "15768000"),
         "gzip": proxy.get("gzip") is not False,
         "brotli": bool(proxy.get("brotli")),
-        "http2": proxy.get("http2") is not False and tls.get("http2", True) is not False,
+        "http2": proxy.get("http2", tls.get("http2", True)) is not False,
         "ipv6": bool(proxy.get("ipv6")),
         "resetXff": proxy.get("resetXff") is not False,
         "defaultServer": bool(proxy.get("defaultServer")),
@@ -828,6 +841,20 @@ def site_proxy(site: dict) -> dict:
         "xForwardedProto": nginx_value(proxy.get("xForwardedProto") or "$scheme"),
         "xForwardedHost": nginx_value(proxy.get("xForwardedHost") or "$http_host"),
         "proxySslServerName": proxy.get("proxySslServerName") is not False,
+    }
+
+
+def site_modsecurity(site: dict, defaults: dict | None = None) -> dict:
+    config = site.get("modSecurity") if isinstance(site.get("modSecurity"), dict) else {}
+    defaults = defaults if isinstance(defaults, dict) else {}
+    merged = {**config, **defaults}
+    mode = str(merged.get("mode") or "on").lower()
+    ruleset = str(merged.get("ruleset") or "comodo").lower()
+    return {
+        "enabled": merged.get("enabled") is not False,
+        "mode": mode if mode in {"on", "detection_only"} else "on",
+        "ruleset": ruleset if ruleset in {"comodo", "owasp"} else "comodo",
+        "requestBodyLimit": min(max(int(merged.get("requestBodyLimit") or 13107200), 131072), 1073741824),
     }
 
 

@@ -75,7 +75,7 @@ function createEmptyData() {
     certificates: [],
     users: [],
     logs: [],
-    settings: { panel: {} },
+    settings: { panel: {}, applicationDefaults: { proxy: {}, modSecurity: {} } },
     stats: { ...emptyStats, timeline: [] }
   };
 }
@@ -140,6 +140,26 @@ const defaultSite = {
   featureAttacks: 'true',
   mode: 'block',
   enabled: 'true'
+};
+
+const defaultApplicationDefaults = {
+  proxyForceHttps: 'false',
+  proxyHsts: 'false',
+  proxyHstsMaxAge: '15768000',
+  proxyGzip: 'true',
+  proxyBrotli: 'false',
+  proxyHttp2: 'true',
+  proxyResetXff: 'true',
+  proxyModifyHostHeader: 'true',
+  proxyForwardedHeaders: 'true',
+  proxyHostHeader: '$http_host',
+  proxyXForwardedHost: '$http_host',
+  proxyXForwardedProto: '$scheme',
+  proxySslServerName: 'true',
+  modSecurityEnabled: 'true',
+  modSecurityMode: 'on',
+  modSecurityRuleset: 'comodo',
+  modSecurityRequestBodyLimit: '13107200'
 };
 
 const defaultBotLoginPathPatterns = [
@@ -850,6 +870,19 @@ export default function App() {
     showToast('Panel settings saved');
   }
 
+  async function saveApplicationDefaults(applicationDefaults) {
+    await api('/api/settings', {
+      method: 'PATCH',
+      body: { applicationDefaults }
+    });
+    const result = await api('/api/nginx/apply', {
+      method: 'POST',
+      body: { test: true, reload: true }
+    });
+    await loadState();
+    showToast(result.ok ? 'Global defaults saved and Nginx reloaded' : 'Global defaults saved, but Nginx reload failed', !result.ok);
+  }
+
   async function saveUser(user) {
     const payload = {
       ...user,
@@ -903,6 +936,7 @@ export default function App() {
       previewNginx,
       applyNginx,
       savePanelSettings,
+      saveApplicationDefaults,
       saveUser,
       saveHttpFlood,
       saveBotProtection,
@@ -1724,14 +1758,29 @@ function LogsView({
   );
 }
 
-function SettingsView({ data, setModal, savePanelSettings, deleteUser, previewNginx, applyNginx, auth, logout }) {
+function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaults, deleteUser, previewNginx, applyNginx, auth, logout }) {
   const panel = data.settings?.panel || {};
+  const applicationDefaults = data.settings?.applicationDefaults || {};
   const [panelForm, setPanelForm] = useState(() => ({
     httpsEnabled: String(panel.httpsEnabled ?? false),
     certificateId: panel.certificateId || '',
     publicUrl: panel.publicUrl || '',
     sessionHours: panel.sessionHours || 12
   }));
+  const [applicationForm, setApplicationForm] = useState(() => applicationDefaultsFormFromSettings(applicationDefaults));
+
+  useEffect(() => {
+    setPanelForm({
+      httpsEnabled: String(panel.httpsEnabled ?? false),
+      certificateId: panel.certificateId || '',
+      publicUrl: panel.publicUrl || '',
+      sessionHours: panel.sessionHours || 12
+    });
+  }, [panel.httpsEnabled, panel.certificateId, panel.publicUrl, panel.sessionHours]);
+
+  useEffect(() => {
+    setApplicationForm(applicationDefaultsFormFromSettings(applicationDefaults));
+  }, [applicationDefaults]);
 
   function updatePanel(name, value) {
     setPanelForm((current) => ({ ...current, [name]: value }));
@@ -1745,6 +1794,15 @@ function SettingsView({ data, setModal, savePanelSettings, deleteUser, previewNg
       publicUrl: panelForm.publicUrl,
       sessionHours: Number(panelForm.sessionHours || 12)
     });
+  }
+
+  function updateApplication(name, value) {
+    setApplicationForm((current) => ({ ...current, [name]: value }));
+  }
+
+  function submitApplicationDefaults(event) {
+    event.preventDefault();
+    saveApplicationDefaults(applicationDefaultsPayload(applicationForm));
   }
 
   return (
@@ -1768,6 +1826,69 @@ function SettingsView({ data, setModal, savePanelSettings, deleteUser, previewNg
             <button className="tool-button primary"><Save size={18} /> Save Panel SSL</button>
           </div>
           <p className="form-note full">Changing HTTPS certificate or protocol requires restarting the FreeWAF admin service.</p>
+        </form>
+      </section>
+
+      <section className="panel">
+        <div className="panel-heading">
+          <h2>Transport and Protection</h2>
+          <span className="pill">all applications</span>
+        </div>
+        <form className="settings-form" onSubmit={submitApplicationDefaults}>
+          <section className="application-option-section full">
+            <div className="application-option-grid">
+              <ApplicationOption label="Enable HTTP/2" checked={boolValue(applicationForm.proxyHttp2)} onChange={(value) => updateApplication('proxyHttp2', String(value))} />
+              <ApplicationOption label="Redirect HTTP to HTTPS" checked={boolValue(applicationForm.proxyForceHttps)} onChange={(value) => updateApplication('proxyForceHttps', String(value))} />
+              <ApplicationOption label="Enable HSTS" checked={boolValue(applicationForm.proxyHsts)} onChange={(value) => updateApplication('proxyHsts', String(value))} />
+              <ApplicationOption label="Gzip Compression" checked={boolValue(applicationForm.proxyGzip)} onChange={(value) => updateApplication('proxyGzip', String(value))} />
+              <ApplicationOption label="Brotli Compression" checked={boolValue(applicationForm.proxyBrotli)} onChange={(value) => updateApplication('proxyBrotli', String(value))} />
+              <ApplicationOption label="Clear and Rewrite X-Forwarded-For" checked={boolValue(applicationForm.proxyResetXff)} onChange={(value) => updateApplication('proxyResetXff', String(value))} />
+              <ApplicationOption label="Modify Host Header" checked={boolValue(applicationForm.proxyModifyHostHeader)} onChange={(value) => updateApplication('proxyModifyHostHeader', String(value))} />
+              <ApplicationOption label="Pass Forwarded Headers" checked={boolValue(applicationForm.proxyForwardedHeaders)} onChange={(value) => updateApplication('proxyForwardedHeaders', String(value))} />
+              <ApplicationOption label="Proxy SSL Server Name" checked={boolValue(applicationForm.proxySslServerName)} onChange={(value) => updateApplication('proxySslServerName', String(value))} />
+              <ApplicationOption label="ModSecurity" checked={boolValue(applicationForm.modSecurityEnabled)} onChange={(value) => updateApplication('modSecurityEnabled', String(value))} />
+            </div>
+            <div className="application-option-inputs">
+              {boolValue(applicationForm.modSecurityEnabled) && (
+                <>
+                  <SelectField
+                    label="Rule Set"
+                    value={applicationForm.modSecurityRuleset}
+                    onChange={(value) => updateApplication('modSecurityRuleset', value)}
+                    options={[
+                      { value: 'comodo', label: 'Comodo WAF Rules' },
+                      { value: 'owasp', label: 'OWASP Core Rule Set' }
+                    ]}
+                  />
+                  <SelectField
+                    label="Engine Mode"
+                    value={applicationForm.modSecurityMode}
+                    onChange={(value) => updateApplication('modSecurityMode', value)}
+                    options={[
+                      { value: 'on', label: 'Block' },
+                      { value: 'detection_only', label: 'Detection Only' }
+                    ]}
+                  />
+                  <TextField label="Request Body Limit (bytes)" value={applicationForm.modSecurityRequestBodyLimit} onChange={(value) => updateApplication('modSecurityRequestBodyLimit', value)} type="number" />
+                </>
+              )}
+              {boolValue(applicationForm.proxyHsts) && (
+                <TextField label="HSTS Max Age (seconds)" value={applicationForm.proxyHstsMaxAge} onChange={(value) => updateApplication('proxyHstsMaxAge', value)} type="number" />
+              )}
+              {boolValue(applicationForm.proxyModifyHostHeader) && (
+                <TextField label="Host Header" value={applicationForm.proxyHostHeader} onChange={(value) => updateApplication('proxyHostHeader', value)} placeholder="$http_host" />
+              )}
+              {boolValue(applicationForm.proxyForwardedHeaders) && (
+                <>
+                  <TextField label="X-Forwarded-Host" value={applicationForm.proxyXForwardedHost} onChange={(value) => updateApplication('proxyXForwardedHost', value)} placeholder="$http_host" />
+                  <TextField label="X-Forwarded-Proto" value={applicationForm.proxyXForwardedProto} onChange={(value) => updateApplication('proxyXForwardedProto', value)} placeholder="$scheme" />
+                </>
+              )}
+            </div>
+          </section>
+          <div className="settings-actions full">
+            <button className="tool-button primary"><Save size={18} /> Save Global Defaults</button>
+          </div>
         </form>
       </section>
 
@@ -2522,60 +2643,6 @@ function SiteModal({ site, certificates, onClose, onSave }) {
             <ModeChoice active={form.applicationType === 'static_files'} label="Static Files" onClick={() => update('applicationType', 'static_files')} />
             <ModeChoice active={form.applicationType === 'redirect'} label="Redirect" onClick={() => update('applicationType', 'redirect')} />
           </div>
-
-          <section className="application-option-section">
-            <h3>Transport and Protection</h3>
-            <div className="application-option-grid">
-              <ApplicationOption label="Enable HTTP/2" checked={boolValue(form.http2)} onChange={(value) => update('http2', String(value))} />
-              <ApplicationOption label="Redirect HTTP to HTTPS" checked={boolValue(form.proxyForceHttps)} onChange={(value) => update('proxyForceHttps', String(value))} />
-              <ApplicationOption label="Enable HSTS" checked={boolValue(form.proxyHsts)} onChange={(value) => update('proxyHsts', String(value))} />
-              <ApplicationOption label="Gzip Compression" checked={boolValue(form.proxyGzip)} onChange={(value) => update('proxyGzip', String(value))} />
-              <ApplicationOption label="Brotli Compression" checked={boolValue(form.proxyBrotli)} onChange={(value) => update('proxyBrotli', String(value))} />
-              <ApplicationOption label="Clear and Rewrite X-Forwarded-For" checked={boolValue(form.proxyResetXff)} onChange={(value) => update('proxyResetXff', String(value))} />
-              <ApplicationOption label="ModSecurity" checked={boolValue(form.modSecurityEnabled)} onChange={(value) => update('modSecurityEnabled', String(value))} />
-            </div>
-            {boolValue(form.modSecurityEnabled) && (
-              <div className="application-option-inputs">
-                <SelectField
-                  label="Rule Set"
-                  value={form.modSecurityRuleset}
-                  onChange={(value) => update('modSecurityRuleset', value)}
-                  options={[
-                    { value: 'comodo', label: 'Comodo WAF Rules' },
-                    { value: 'owasp', label: 'OWASP Core Rule Set' }
-                  ]}
-                />
-                <SelectField
-                  label="Engine Mode"
-                  value={form.modSecurityMode}
-                  onChange={(value) => update('modSecurityMode', value)}
-                  options={[
-                    { value: 'on', label: 'Block' },
-                    { value: 'detection_only', label: 'Detection Only' }
-                  ]}
-                />
-                <TextField label="Request Body Limit (bytes)" value={form.modSecurityRequestBodyLimit} onChange={(value) => update('modSecurityRequestBodyLimit', value)} type="number" />
-              </div>
-            )}
-            {boolValue(form.proxyHsts) && (
-              <div className="application-option-inputs">
-                <TextField label="HSTS Max Age (seconds)" value={form.proxyHstsMaxAge} onChange={(value) => update('proxyHstsMaxAge', value)} type="number" />
-              </div>
-            )}
-            {form.applicationType === 'reverse_proxy' && (
-              <div className="application-option-inputs">
-                <ApplicationOption label="Modify Host Header" checked={boolValue(form.proxyModifyHostHeader)} onChange={(value) => update('proxyModifyHostHeader', String(value))} />
-                <ApplicationOption label="Pass Forwarded Headers" checked={boolValue(form.proxyForwardedHeaders)} onChange={(value) => update('proxyForwardedHeaders', String(value))} />
-                {boolValue(form.proxyModifyHostHeader) && <TextField label="Host Header" value={form.proxyHostHeader} onChange={(value) => update('proxyHostHeader', value)} placeholder="$http_host" />}
-                {boolValue(form.proxyForwardedHeaders) && (
-                  <>
-                    <TextField label="X-Forwarded-Host" value={form.proxyXForwardedHost} onChange={(value) => update('proxyXForwardedHost', value)} placeholder="$http_host" />
-                    <TextField label="X-Forwarded-Proto" value={form.proxyXForwardedProto} onChange={(value) => update('proxyXForwardedProto', value)} placeholder="$scheme" />
-                  </>
-                )}
-              </div>
-            )}
-          </section>
 
           {form.applicationType === 'reverse_proxy' && (
             <>
@@ -3693,6 +3760,57 @@ function errorLimitSummary(form) {
   if (!boolValue(form.errorEnabled)) return 'Disabled.';
   const codes = listFromText(form.errorStatusCodes, /[\s,]+/).join(', ') || '403, 404';
   return `An IP that triggers ${codes} errors ${positiveInt(form.errorCount, 10)} times within ${positiveInt(form.errorPeriod, 10)} seconds will ${floodActionPhrase(form.errorAction, form.errorBlockMin)}.`;
+}
+
+function applicationDefaultsFormFromSettings(applicationDefaults) {
+  const proxy = applicationDefaults?.proxy || {};
+  const modSecurity = applicationDefaults?.modSecurity || {};
+  return {
+    ...defaultApplicationDefaults,
+    proxyForceHttps: String(proxy.forceHttps ?? false),
+    proxyHsts: String(proxy.hsts ?? false),
+    proxyHstsMaxAge: String(proxy.hstsMaxAge ?? 15768000),
+    proxyGzip: String(proxy.gzip ?? true),
+    proxyBrotli: String(proxy.brotli ?? false),
+    proxyHttp2: String(proxy.http2 ?? true),
+    proxyResetXff: String(proxy.resetXff ?? true),
+    proxyModifyHostHeader: String(proxy.modifyHostHeader ?? true),
+    proxyForwardedHeaders: String(proxy.forwardedHeaders ?? true),
+    proxyHostHeader: proxy.hostHeader || '$http_host',
+    proxyXForwardedHost: proxy.xForwardedHost || '$http_host',
+    proxyXForwardedProto: proxy.xForwardedProto || '$scheme',
+    proxySslServerName: String(proxy.proxySslServerName ?? true),
+    modSecurityEnabled: String(modSecurity.enabled ?? true),
+    modSecurityMode: modSecurity.mode === 'detection_only' ? 'detection_only' : 'on',
+    modSecurityRuleset: modSecurity.ruleset === 'owasp' ? 'owasp' : 'comodo',
+    modSecurityRequestBodyLimit: String(modSecurity.requestBodyLimit ?? 13107200)
+  };
+}
+
+function applicationDefaultsPayload(form) {
+  return {
+    proxy: {
+      forceHttps: boolValue(form.proxyForceHttps),
+      hsts: boolValue(form.proxyHsts),
+      hstsMaxAge: positiveInt(form.proxyHstsMaxAge, 15768000),
+      gzip: boolValue(form.proxyGzip),
+      brotli: boolValue(form.proxyBrotli),
+      http2: boolValue(form.proxyHttp2),
+      resetXff: boolValue(form.proxyResetXff),
+      modifyHostHeader: boolValue(form.proxyModifyHostHeader),
+      forwardedHeaders: boolValue(form.proxyForwardedHeaders),
+      hostHeader: form.proxyHostHeader || '$http_host',
+      xForwardedHost: form.proxyXForwardedHost || '$http_host',
+      xForwardedProto: form.proxyXForwardedProto || '$scheme',
+      proxySslServerName: boolValue(form.proxySslServerName)
+    },
+    modSecurity: {
+      enabled: boolValue(form.modSecurityEnabled),
+      mode: form.modSecurityMode === 'detection_only' ? 'detection_only' : 'on',
+      ruleset: form.modSecurityRuleset === 'owasp' ? 'owasp' : 'comodo',
+      requestBodyLimit: positiveInt(form.modSecurityRequestBodyLimit, 13107200)
+    }
+  };
 }
 
 function floodActionPhrase(action, blockMin) {

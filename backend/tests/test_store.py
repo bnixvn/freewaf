@@ -435,6 +435,41 @@ class StoreTests(unittest.TestCase):
             self.assertFalse(panel["httpsEnabled"])
             self.assertEqual(panel["certificateId"], "")
 
+    def test_application_defaults_are_normalized_and_deep_merged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.json")
+            store.init()
+            store.update_settings(
+                {
+                    "applicationDefaults": {
+                        "proxy": {
+                            "brotli": True,
+                            "hstsMaxAge": 123,
+                        },
+                        "modSecurity": {
+                            "mode": "detection_only",
+                            "requestBodyLimit": 8388608,
+                        },
+                    }
+                }
+            )
+            store.update_settings(
+                {
+                    "applicationDefaults": {
+                        "proxy": {
+                            "hostHeader": "$host",
+                        },
+                    }
+                }
+            )
+
+            defaults = store.get_state()["settings"]["applicationDefaults"]
+            self.assertTrue(defaults["proxy"]["brotli"])
+            self.assertEqual(defaults["proxy"]["hstsMaxAge"], 123)
+            self.assertEqual(defaults["proxy"]["hostHeader"], "$host")
+            self.assertEqual(defaults["modSecurity"]["mode"], "detection_only")
+            self.assertEqual(defaults["modSecurity"]["requestBodyLimit"], 8388608)
+
 
 if __name__ == "__main__":
     unittest.main()

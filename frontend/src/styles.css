@@ -1298,6 +1298,10 @@ td {
   border-top: 1px solid var(--line);
 }
 
+.application-option-section.full {
+  grid-column: 1 / -1;
+}
+
 .application-option-section h3 {
   margin: 0;
   color: var(--text);

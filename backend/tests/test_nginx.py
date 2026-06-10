@@ -35,6 +35,15 @@ def make_state(**overrides):
     return state
 
 
+def make_settings(proxy: dict | None = None, mod_security: dict | None = None) -> dict:
+    settings = json.loads(json.dumps(DEFAULT_SETTINGS))
+    if proxy:
+        settings["applicationDefaults"]["proxy"].update(proxy)
+    if mod_security:
+        settings["applicationDefaults"]["modSecurity"].update(mod_security)
+    return settings
+
+
 class NginxGeneratorTests(unittest.TestCase):
     def test_generates_server_block_for_enabled_site(self):
         config = generate_nginx_config(make_state())
@@ -232,6 +241,7 @@ class NginxGeneratorTests(unittest.TestCase):
 
     def test_generates_tls_directives_when_certificate_selected(self):
         state = make_state(
+            settings=make_settings(proxy={"forceHttps": True}),
             certificates=[
                 {
                     "id": "cert-demo",
@@ -268,6 +278,7 @@ class NginxGeneratorTests(unittest.TestCase):
 
     def test_force_https_redirect_server_enforces_waf_before_redirect(self):
         state = make_state(
+            settings=make_settings(proxy={"forceHttps": True}),
             certificates=[
                 {
                     "id": "cert-demo",
@@ -309,6 +320,7 @@ class NginxGeneratorTests(unittest.TestCase):
 
     def test_generates_safeline_like_upstreams_and_proxy_options(self):
         state = make_state(
+            settings=make_settings(proxy={"forceHttps": True, "hsts": True, "hstsMaxAge": "15768000", "resetXff": True, "gzip": True}),
             certificates=[
                 {
                     "id": "cert-demo",
@@ -358,6 +370,21 @@ class NginxGeneratorTests(unittest.TestCase):
 
     def test_generates_modsecurity_and_explicit_forwarding_controls(self):
         state = make_state(
+            settings=make_settings(
+                proxy={
+                    "modifyHostHeader": False,
+                    "forwardedHeaders": True,
+                    "resetXff": True,
+                    "xForwardedHost": "$host",
+                    "xForwardedProto": "https",
+                },
+                mod_security={
+                    "enabled": True,
+                    "mode": "on",
+                    "ruleset": "comodo",
+                    "requestBodyLimit": 8388608,
+                },
+            ),
             sites=[
                 {
                     "id": "site-secure",
@@ -403,8 +430,95 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("proxy_set_header X-Forwarded-Proto https;", config)
         self.assertIn("proxy_set_header X-Forwarded-Host $host;", config)
 
+    def test_application_defaults_override_site_transport_and_modsecurity(self):
+        settings = json.loads(json.dumps(DEFAULT_SETTINGS))
+        settings["applicationDefaults"] = {
+            "proxy": {
+                "forceHttps": True,
+                "hsts": True,
+                "hstsMaxAge": 123,
+                "gzip": True,
+                "brotli": True,
+                "http2": True,
+                "resetXff": True,
+                "modifyHostHeader": True,
+                "forwardedHeaders": True,
+                "hostHeader": "$host",
+                "xForwardedProto": "https",
+                "xForwardedHost": "$host",
+                "proxySslServerName": True,
+            },
+            "modSecurity": {
+                "enabled": True,
+                "mode": "on",
+                "ruleset": "owasp",
+                "requestBodyLimit": 8388608,
+            },
+        }
+        state = make_state(
+            settings=settings,
+            certificates=[
+                {
+                    "id": "cert-demo",
+                    "name": "Demo cert",
+                    "certFile": "/etc/ssl/demo/fullchain.pem",
+                    "keyFile": "/etc/ssl/demo/privkey.pem",
+                }
+            ],
+            sites=[
+                {
+                    "id": "site-secure",
+                    "name": "Secure",
+                    "hostnames": ["secure.example.test"],
+                    "origin": "https://203.0.113.10:443",
+                    "ports": ["80", "443_ssl"],
+                    "tls": {"enabled": True, "certificateId": "cert-demo", "http2": False},
+                    "proxy": {
+                        "forceHttps": False,
+                        "hsts": False,
+                        "gzip": False,
+                        "brotli": False,
+                        "http2": False,
+                        "resetXff": False,
+                        "modifyHostHeader": False,
+                        "forwardedHeaders": False,
+                    },
+                    "modSecurity": {
+                        "enabled": False,
+                    },
+                    "mode": "block",
+                    "enabled": True,
+                }
+            ],
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "NGINX_HAS_MODSECURITY": "true",
+                "NGINX_HAS_BROTLI": "true",
+                "NGINX_MODSECURITY_OWASP_RULES_FILE": "/etc/freewaf/modsecurity/owasp-crs.conf",
+            },
+            clear=False,
+        ):
+            config = generate_nginx_config(state)
+
+        self.assertIn("listen 0.0.0.0:443 ssl http2;", config)
+        self.assertIn("return 301 https://$host:443$request_uri;", config)
+        self.assertIn('add_header Strict-Transport-Security "max-age=123;" always;', config)
+        self.assertIn("gzip on;", config)
+        self.assertIn("brotli on;", config)
+        self.assertIn("proxy_set_header Host $host;", config)
+        self.assertIn("proxy_set_header X-Forwarded-For $remote_addr;", config)
+        self.assertIn("proxy_set_header X-Forwarded-Proto https;", config)
+        self.assertIn("proxy_set_header X-Forwarded-Host $host;", config)
+        self.assertIn("modsecurity on;", config)
+        self.assertIn("modsecurity_rules_file /etc/freewaf/modsecurity/owasp-crs.conf;", config)
+        self.assertIn("modsecurity_rules 'SecRequestBodyLimit 8388608';", config)
+
     def test_omits_forwarded_headers_when_disabled(self):
         state = make_state(
+            settings=make_settings(proxy={"forwardedHeaders": False}),
             sites=[
                 {
                     "id": "site-private",
@@ -575,6 +689,7 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("Deny admin path", config)
 
     def test_bot_protection_emits_header_block_login_challenge_and_rate_rules(self):
+        state = make_state(settings=make_settings(mod_security={"enabled": False}))
         with mock.patch.dict(
             os.environ,
             {
@@ -583,7 +698,7 @@ class NginxGeneratorTests(unittest.TestCase):
             },
             clear=False,
         ):
-            config = generate_nginx_config(make_state())
+            config = generate_nginx_config(state)
 
         self.assertIn("map $http_user_agent $sfl_bad_bot_ua", config)
         self.assertNotIn("map $http_user_agent $sfl_suspicious_ua", config)

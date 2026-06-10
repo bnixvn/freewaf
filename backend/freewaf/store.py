@@ -338,7 +338,16 @@ class Store:
             current = deepcopy(self._state()["settings"])
             incoming = payload or {}
             for key, value in incoming.items():
-                if key in {"panel", "rateLimit"} and isinstance(value, dict):
+                if key == "applicationDefaults" and isinstance(value, dict):
+                    current_defaults = current.get(key) if isinstance(current.get(key), dict) else {}
+                    merged_defaults = {**current_defaults}
+                    for group_key, group_value in value.items():
+                        if isinstance(group_value, dict) and isinstance(merged_defaults.get(group_key), dict):
+                            merged_defaults[group_key] = {**merged_defaults[group_key], **group_value}
+                        else:
+                            merged_defaults[group_key] = group_value
+                    current[key] = merged_defaults
+                elif key in {"panel", "rateLimit"} and isinstance(value, dict):
                     current[key] = {**(current.get(key) or {}), **value}
                 else:
                     current[key] = value
@@ -526,6 +535,7 @@ def normalize_settings(settings: dict) -> dict:
             **DEFAULT_SETTINGS["rateLimit"],
             **(source.get("rateLimit") or {}),
         },
+        "applicationDefaults": normalize_application_defaults(source.get("applicationDefaults") or source.get("application_defaults") or {}),
     }
 
 
@@ -537,6 +547,54 @@ def normalize_panel_settings(value) -> dict:
         "certificateId": str(source.get("certificateId") or source.get("certificate_id") or ""),
         "publicUrl": normalize_panel_url(source.get("publicUrl") or source.get("public_url") or ""),
         "sessionHours": min(max(session_hours, 1), 168),
+    }
+
+
+def normalize_application_defaults(value) -> dict:
+    source = value if isinstance(value, dict) else {}
+    proxy = source.get("proxy") if isinstance(source.get("proxy"), dict) else {}
+    modsecurity = source.get("modSecurity") or source.get("modsecurity")
+    modsecurity = modsecurity if isinstance(modsecurity, dict) else {}
+    proxy_defaults = DEFAULT_SETTINGS["applicationDefaults"]["proxy"]
+    modsecurity_defaults = DEFAULT_SETTINGS["applicationDefaults"]["modSecurity"]
+    return {
+        "proxy": {
+            "forceHttps": normalize_bool(proxy.get("forceHttps") if "forceHttps" in proxy else proxy.get("force_https"), proxy_defaults["forceHttps"]),
+            "hsts": normalize_bool(proxy.get("hsts"), proxy_defaults["hsts"]),
+            "hstsMaxAge": normalize_positive_int(proxy.get("hstsMaxAge") or proxy.get("hsts_max_age"), proxy_defaults["hstsMaxAge"]),
+            "gzip": normalize_bool(proxy.get("gzip"), proxy_defaults["gzip"]),
+            "brotli": normalize_bool(proxy.get("brotli"), proxy_defaults["brotli"]),
+            "http2": normalize_bool(proxy.get("http2"), proxy_defaults["http2"]),
+            "resetXff": normalize_bool(proxy.get("resetXff") if "resetXff" in proxy else proxy.get("reset_xff"), proxy_defaults["resetXff"]),
+            "modifyHostHeader": normalize_bool(
+                proxy.get("modifyHostHeader") if "modifyHostHeader" in proxy else proxy.get("modify_host_header"),
+                proxy_defaults["modifyHostHeader"],
+            ),
+            "forwardedHeaders": normalize_bool(
+                proxy.get("forwardedHeaders") if "forwardedHeaders" in proxy else proxy.get("forwarded_headers"),
+                proxy_defaults["forwardedHeaders"],
+            ),
+            "hostHeader": normalize_proxy_header(proxy.get("hostHeader") or proxy.get("host_header") or proxy_defaults["hostHeader"]),
+            "xForwardedProto": normalize_proxy_header(proxy.get("xForwardedProto") or proxy.get("xfp") or proxy_defaults["xForwardedProto"]),
+            "xForwardedHost": normalize_proxy_header(proxy.get("xForwardedHost") or proxy.get("xfh") or proxy_defaults["xForwardedHost"]),
+            "proxySslServerName": normalize_bool(
+                proxy.get("proxySslServerName") if "proxySslServerName" in proxy else proxy.get("proxy_ssl_server_name"),
+                proxy_defaults["proxySslServerName"],
+            ),
+        },
+        "modSecurity": {
+            "enabled": normalize_bool(modsecurity.get("enabled"), modsecurity_defaults["enabled"]),
+            "mode": str(modsecurity.get("mode") or modsecurity_defaults["mode"]).lower()
+            if str(modsecurity.get("mode") or modsecurity_defaults["mode"]).lower() in MODSECURITY_MODES
+            else modsecurity_defaults["mode"],
+            "ruleset": str(modsecurity.get("ruleset") or modsecurity_defaults["ruleset"]).lower()
+            if str(modsecurity.get("ruleset") or modsecurity_defaults["ruleset"]).lower() in MODSECURITY_RULESETS
+            else modsecurity_defaults["ruleset"],
+            "requestBodyLimit": min(
+                max(normalize_positive_int(modsecurity.get("requestBodyLimit") or modsecurity.get("request_body_limit"), modsecurity_defaults["requestBodyLimit"]), 131072),
+                1073741824,
+            ),
+        },
     }
 
 
