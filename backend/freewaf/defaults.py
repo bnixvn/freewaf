@@ -200,6 +200,7 @@ def create_default_state(now: str | None = None) -> dict:
                 "features": {
                     "httpFlood": True,
                     "botProtection": True,
+                    "geoBlock": False,
                     "auth": False,
                     "attacks": True,
                 },
@@ -215,6 +216,11 @@ def create_default_state(now: str | None = None) -> dict:
                     "antiReplay": {
                         "enabled": False,
                     },
+                },
+                "geoBlock": {
+                    "enabled": False,
+                    "countries": [],
+                    "action": "block",
                 },
                 "mode": "block",
                 "enabled": True,

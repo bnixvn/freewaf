@@ -85,6 +85,7 @@ const defaultSite = {
   aclErrorStatusCodes: '403, 404',
   featureHttpFlood: 'true',
   featureBotProtection: 'true',
+  featureGeoBlock: 'false',
   featureAuth: 'false',
   featureAttacks: 'true',
   mode: 'block',
@@ -94,6 +95,7 @@ const defaultSite = {
 const siteFeatureLabels = {
   httpFlood: 'HTTP FLOOD',
   botProtection: 'BOT PROTECT',
+  geoBlock: 'GEO BLOCK',
   auth: 'AUTH',
   attacks: 'ATTACKS',
   acl: 'ACL'
@@ -115,6 +117,26 @@ const floodActionOptions = [
   { value: 'challenge_v1', label: 'Anti-Bot challenge' },
   { value: 'block', label: 'Block' },
   { value: 'monitor', label: 'Monitor only' }
+];
+
+const geoBlockActionOptions = [
+  { value: 'block', label: 'Block' },
+  { value: 'monitor', label: 'Monitor only' }
+];
+
+const geoQuickCountries = [
+  { code: 'US', name: 'United States' },
+  { code: 'CN', name: 'China' },
+  { code: 'RU', name: 'Russia' },
+  { code: 'VN', name: 'Vietnam' },
+  { code: 'SG', name: 'Singapore' },
+  { code: 'ID', name: 'Indonesia' },
+  { code: 'JP', name: 'Japan' },
+  { code: 'KR', name: 'South Korea' },
+  { code: 'IN', name: 'India' },
+  { code: 'BR', name: 'Brazil' },
+  { code: 'DE', name: 'Germany' },
+  { code: 'FR', name: 'France' }
 ];
 
 const defaultCertificate = {
@@ -455,10 +477,12 @@ export default function App() {
         features: {
           httpFlood: boolValue(site.featureHttpFlood),
           botProtection: boolValue(site.featureBotProtection),
+          geoBlock: boolValue(site.featureGeoBlock),
           auth: boolValue(site.featureAuth),
           attacks: boolValue(site.featureAttacks)
         },
-        botProtection: botProtectPayloadFromConfig(site.botProtection, boolValue(site.featureBotProtection))
+        botProtection: botProtectPayloadFromConfig(site.botProtection, boolValue(site.featureBotProtection)),
+        geoBlock: geoBlockPayloadFromConfig(site.geoBlock, boolValue(site.featureGeoBlock))
       };
       const id = payload.id;
       delete payload.id;
@@ -520,6 +544,27 @@ export default function App() {
       setModal(null);
       await loadState();
       showToast('Bot Protect settings saved and Nginx reloaded');
+    } catch (error) {
+      showToast(error.message, true);
+    }
+  }
+
+  async function saveGeoBlock(site, geoBlock) {
+    try {
+      const currentFeatures = site.features || {};
+      await api(`/api/sites/${site.id}`, {
+        method: 'PATCH',
+        body: {
+          geoBlock,
+          features: {
+            ...currentFeatures,
+            geoBlock: geoBlock.enabled
+          }
+        }
+      });
+      setModal(null);
+      await loadState();
+      showToast('Geo Block settings saved and Nginx reloaded');
     } catch (error) {
       showToast(error.message, true);
     }
@@ -776,6 +821,7 @@ export default function App() {
       saveUser,
       saveHttpFlood,
       saveBotProtection,
+      saveGeoBlock,
       deleteUser,
       logsLoading,
       logResult,
@@ -871,6 +917,13 @@ export default function App() {
           site={modal.site}
           onClose={() => setModal(null)}
           onSave={(protection) => saveBotProtection(modal.site, protection)}
+        />
+      )}
+      {modal?.type === 'geoBlock' && (
+        <GeoBlockModal
+          site={modal.site}
+          onClose={() => setModal(null)}
+          onSave={(geoBlock) => saveGeoBlock(modal.site, geoBlock)}
         />
       )}
       {modal?.type === 'rule' && (
@@ -1126,6 +1179,7 @@ function SitesView({ data, setModal, toggleSite, deleteSite }) {
             onToggle={(checked) => toggleSite(site, checked)}
             onConfigureFlood={() => setModal({ type: 'httpFlood', site })}
             onConfigureBot={() => setModal({ type: 'botProtect', site })}
+            onConfigureGeo={() => setModal({ type: 'geoBlock', site })}
           />
         ))}
       </div>
@@ -1133,7 +1187,7 @@ function SitesView({ data, setModal, toggleSite, deleteSite }) {
   );
 }
 
-function ApplicationCard({ site, logs, onEdit, onDelete, onToggle, onConfigureFlood, onConfigureBot }) {
+function ApplicationCard({ site, logs, onEdit, onDelete, onToggle, onConfigureFlood, onConfigureBot, onConfigureGeo }) {
   const features = normalizedSiteFeatures(site);
   const counters = siteCounters(site, logs);
   const domain = site.hostnames?.[0] || site.name;
@@ -1200,6 +1254,11 @@ function ApplicationCard({ site, logs, onEdit, onDelete, onToggle, onConfigureFl
           ) : key === 'botProtection' ? (
             <button className={`feature-chip feature-chip-button ${features[key] ? 'active' : ''}`} key={key} type="button" onClick={onConfigureBot} title="Configure Bot Protect">
               <ShieldCheck size={13} />
+              {label}
+            </button>
+          ) : key === 'geoBlock' ? (
+            <button className={`feature-chip feature-chip-button ${features[key] ? 'active' : ''}`} key={key} type="button" onClick={onConfigureGeo} title="Configure Geo Block">
+              <Globe2 size={13} />
               {label}
             </button>
           ) : (
@@ -1965,6 +2024,68 @@ function BotOptionCheckbox({ label, checked, onChange, badge = '', note = '' }) 
   );
 }
 
+function GeoBlockModal({ site, onClose, onSave }) {
+  const [form, setForm] = useState(() => geoBlockFormFromSite(site));
+  const selected = new Set(normalizeCountryCodes(form.countries));
+
+  function update(name, value) {
+    setForm((current) => ({ ...current, [name]: value }));
+  }
+
+  function toggleCountry(code) {
+    const next = new Set(normalizeCountryCodes(form.countries));
+    if (next.has(code)) {
+      next.delete(code);
+    } else {
+      next.add(code);
+    }
+    update('countries', Array.from(next).join(', '));
+  }
+
+  function submit(event) {
+    event.preventDefault();
+    onSave(geoBlockPayload(form));
+  }
+
+  return (
+    <Modal title="GEO Block" onClose={onClose} className="geo-block-modal">
+      <form onSubmit={submit} className="geo-block-form">
+        <div className="bot-control-row">
+          <span className="flood-accent" />
+          <strong>Geo Block</strong>
+          <Switch checked={boolValue(form.enabled)} onChange={(checked) => update('enabled', String(checked))} />
+          <Info size={16} />
+          <span className="muted">Traffic from selected countries is handled before proxying to the origin.</span>
+        </div>
+
+        <div className="form-grid">
+          <SelectField label="Action" value={form.action} onChange={(value) => update('action', value)} options={geoBlockActionOptions} />
+          <TextAreaField label="Countries" value={form.countries} onChange={(value) => update('countries', value)} placeholder="US, CN, RU" full />
+        </div>
+
+        <div className="country-picker">
+          {geoQuickCountries.map((country) => (
+            <button
+              key={country.code}
+              type="button"
+              className={selected.has(country.code) ? 'active' : ''}
+              onClick={() => toggleCountry(country.code)}
+            >
+              <span>{country.code}</span>
+              {country.name}
+            </button>
+          ))}
+        </div>
+
+        <div className="modal-footer">
+          <button type="button" className="tool-button" onClick={onClose}>Cancel</button>
+          <button className="tool-button primary">Save</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 function FloodSection({ title, action, children }) {
   return (
     <section className="flood-section">
@@ -2043,6 +2164,7 @@ function SiteModal({ site, certificates, onClose, onSave }) {
     aclErrorStatusCodes: textFromList(site?.acl?.errorLimit?.statusCodes || defaultSite.aclErrorStatusCodes).replace(/\n/g, ', '),
     featureHttpFlood: String(site?.features?.httpFlood ?? true),
     featureBotProtection: String(site?.features?.botProtection ?? true),
+    featureGeoBlock: String(site?.features?.geoBlock ?? false),
     featureAuth: String(site?.features?.auth ?? false),
     featureAttacks: String(site?.features?.attacks ?? true),
     enabled: String(site?.enabled ?? true)
@@ -2810,9 +2932,9 @@ function TextField({ label, value, onChange, required = false, full = false, pla
   );
 }
 
-function TextAreaField({ label, value, onChange, placeholder = '' }) {
+function TextAreaField({ label, value, onChange, placeholder = '', full = false }) {
   return (
-    <label className="field full">
+    <label className={`field ${full ? 'full' : ''}`}>
       <span>{label}</span>
       <textarea value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} />
     </label>
@@ -3295,11 +3417,45 @@ function botProtectPayloadFromConfig(config, enabledFallback = true) {
   };
 }
 
+function geoBlockFormFromSite(site) {
+  const config = geoBlockPayloadFromConfig(site?.geoBlock, site?.features?.geoBlock === true);
+  return {
+    enabled: String(config.enabled),
+    countries: config.countries.join(', '),
+    action: config.action
+  };
+}
+
+function geoBlockPayload(form) {
+  const countries = normalizeCountryCodes(form.countries);
+  return {
+    enabled: boolValue(form.enabled) && countries.length > 0,
+    countries,
+    action: form.action === 'monitor' ? 'monitor' : 'block'
+  };
+}
+
+function geoBlockPayloadFromConfig(config, enabledFallback = false) {
+  const countries = normalizeCountryCodes(config?.countries || []);
+  return {
+    enabled: Boolean(config?.enabled ?? enabledFallback) && countries.length > 0,
+    countries,
+    action: config?.action === 'monitor' ? 'monitor' : 'block'
+  };
+}
+
+function normalizeCountryCodes(value) {
+  return Array.from(new Set(listFromText(value, /[\s,]+/)
+    .map((item) => item.toUpperCase())
+    .filter((item) => /^[A-Z]{2}$/.test(item))));
+}
+
 function normalizedSiteFeatures(site) {
   const features = site?.features || {};
   return {
     httpFlood: features.httpFlood !== false,
     botProtection: features.botProtection !== false,
+    geoBlock: features.geoBlock === true,
     auth: features.auth === true,
     attacks: features.attacks !== false,
     acl: site?.acl?.enabled !== false

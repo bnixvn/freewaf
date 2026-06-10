@@ -545,7 +545,9 @@ def normalize_stored_site(site: dict) -> dict:
     redirect = normalize_redirect_config(site.get("redirect"), proxy)
     features = normalize_site_features(site.get("features"))
     bot_protection = normalize_bot_protection_config(site.get("botProtection") or site.get("bot_protection"), features.get("botProtection"))
+    geo_block = normalize_geo_block_config(site.get("geoBlock") or site.get("geo_block"), features.get("geoBlock"))
     features["botProtection"] = bot_protection["enabled"]
+    features["geoBlock"] = geo_block["enabled"]
     return {
         "id": str(site.get("id") or create_id("site")),
         "name": str(site.get("name") or site.get("comment") or "Untitled site"),
@@ -563,6 +565,7 @@ def normalize_stored_site(site: dict) -> dict:
         "acl": normalize_acl_config(site.get("acl"), site.get("acl_enabled")),
         "features": features,
         "botProtection": bot_protection,
+        "geoBlock": geo_block,
         "mode": site.get("mode") if site.get("mode") in MODES else "block",
         "enabled": normalize_bool(enabled_value, False),
         "createdAt": site.get("createdAt") or now,
@@ -713,7 +716,9 @@ def normalize_site_input(payload: dict, site_id: str | None, now: str) -> dict:
 
     features = normalize_site_features(payload.get("features"))
     bot_protection = normalize_bot_protection_config(payload.get("botProtection") or payload.get("bot_protection"), features.get("botProtection"))
+    geo_block = normalize_geo_block_config(payload.get("geoBlock") or payload.get("geo_block"), features.get("geoBlock"))
     features["botProtection"] = bot_protection["enabled"]
+    features["geoBlock"] = geo_block["enabled"]
     return {
         "id": site_id or create_id("site"),
         "name": name,
@@ -731,6 +736,7 @@ def normalize_site_input(payload: dict, site_id: str | None, now: str) -> dict:
         "acl": normalize_acl_config(payload.get("acl")),
         "features": features,
         "botProtection": bot_protection,
+        "geoBlock": geo_block,
         "mode": payload.get("mode") if payload.get("mode") in MODES else "block",
         "enabled": payload.get("enabled") is not False,
         "createdAt": now,
@@ -1183,6 +1189,7 @@ def normalize_site_features(value) -> dict:
     return {
         "httpFlood": normalize_bool(source.get("httpFlood"), True),
         "botProtection": normalize_bool(source.get("botProtection"), True),
+        "geoBlock": normalize_bool(source.get("geoBlock"), False),
         "auth": normalize_bool(source.get("auth"), False),
         "attacks": normalize_bool(source.get("attacks"), True),
     }
@@ -1216,6 +1223,24 @@ def normalize_bot_protection_config(value, enabled_value=None) -> dict:
         "antiReplay": {
             "enabled": replay_enabled,
         },
+    }
+
+
+def normalize_geo_block_config(value, enabled_value=None) -> dict:
+    source = value if isinstance(value, dict) else {}
+    countries = []
+    for item in normalize_string_list(source.get("countries"), uppercase=True):
+        code = item.strip().upper()
+        if re.match(r"^[A-Z]{2}$", code) and code not in countries:
+            countries.append(code)
+    action = str(source.get("action") or "block").lower()
+    if action not in {"block", "monitor"}:
+        action = "block"
+    enabled = normalize_bool(source.get("enabled"), normalize_bool(enabled_value, False))
+    return {
+        "enabled": enabled and bool(countries),
+        "countries": countries[:64],
+        "action": action,
     }
 
 

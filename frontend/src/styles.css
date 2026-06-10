@@ -1612,6 +1612,41 @@ td {
   padding: 18px 22px 22px;
 }
 
+.geo-block-form {
+  display: grid;
+  gap: 18px;
+  padding: 18px 22px 22px;
+}
+
+.country-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.country-picker button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #fff;
+  color: var(--text);
+  text-align: left;
+}
+
+.country-picker button span {
+  font-weight: 800;
+  color: var(--teal);
+}
+
+.country-picker button.active {
+  border-color: var(--teal);
+  background: #e7faf7;
+}
+
 .bot-control-row {
   display: flex;
   min-height: 38px;
@@ -1836,7 +1871,8 @@ td {
 
   .flood-section,
   .http-flood-form,
-  .bot-protect-form {
+  .bot-protect-form,
+  .geo-block-form {
     padding-left: 16px;
     padding-right: 16px;
   }

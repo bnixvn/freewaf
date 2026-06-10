@@ -1,6 +1,7 @@
 import unittest
 import tempfile
 import os
+import gzip
 from pathlib import Path
 import sys
 from unittest import mock
@@ -499,6 +500,37 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn('limit_req_zone "$binary_remote_addr|$request_method|$request_uri|$http_user_agent" zone=sfl_replay_site_demo:10m rate=1r/s;', config)
         self.assertIn("limit_req zone=sfl_replay_site_demo burst=1 nodelay;", config)
         self.assertIn('add_header X-FreeWAF-Dynamic-Protection "html,watermark" always;', config)
+
+    def test_geo_block_emits_country_geo_map_and_block(self):
+        with tempfile.TemporaryDirectory() as directory:
+            geoip_file = Path(directory) / "dbip-country-lite.csv.gz"
+            with gzip.open(geoip_file, "wt", encoding="utf-8", newline="") as target:
+                target.write("8.8.8.0,8.8.8.255,US\n")
+                target.write("1.1.1.0,1.1.1.255,AU\n")
+            state = make_state(
+                sites=[
+                    {
+                        "id": "site-demo",
+                        "name": "Demo",
+                        "hostnames": ["localhost"],
+                        "origin": "http://127.0.0.1:9090",
+                        "listen": 8080,
+                        "mode": "block",
+                        "enabled": True,
+                        "features": {"geoBlock": True},
+                        "geoBlock": {"enabled": True, "countries": ["US"], "action": "block"},
+                    }
+                ]
+            )
+
+            with mock.patch.dict(os.environ, {"GEOIP_DB_FILE": str(geoip_file)}, clear=False):
+                config = generate_nginx_config(state)
+
+        self.assertIn("geo $sfl_geo_block_site_demo", config)
+        self.assertIn("8.8.8.0/24 1;", config)
+        self.assertNotIn("1.1.1.0/24 1;", config)
+        self.assertIn("if ($sfl_geo_block_site_demo = 1)", config)
+        self.assertIn("Geo block matched country: US", config)
 
     def test_acl_challenge_rate_limit_uses_cookie_aware_keys(self):
         state = make_state(

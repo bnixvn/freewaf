@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+import csv
+import gzip
+import ipaddress
 import json
 import re
 import shlex
@@ -21,6 +24,7 @@ BOT_CHALLENGE_UA_PATTERN = (
     r"bot|crawler|spider|externalagent|facebookexternalhit|headlesschrome|phantomjs|"
     r"selenium|playwright|puppeteer)"
 )
+GEO_CIDR_CACHE = {}
 
 
 def nginx_output_file(root_dir: Path) -> Path:
@@ -121,6 +125,10 @@ def generate_nginx_common_blocks(state: dict) -> list[str]:
 
     if (rate_limit.get("enabled") and uses_global_rate) or acl_zones or bot_zones:
         blocks.extend(["limit_req_status 429;", ""])
+
+    geo_maps = render_geo_block_maps(enabled_sites)
+    if geo_maps:
+        blocks.extend(geo_maps)
 
     access_maps = render_access_maps(state, enabled_access_rules)
     if access_maps:
@@ -351,6 +359,75 @@ def render_geo_map(variable_name: str, items: list[str]) -> str:
         lines.append(f"    {item} 1;")
     lines.append("}")
     return "\n".join(lines)
+
+
+def render_geo_block_maps(sites: list[dict]) -> list[str]:
+    blocks = []
+    for site in sites:
+        config = site_geo_block(site)
+        if not config.get("enabled"):
+            continue
+        variable = geo_block_var_name(site)
+        countries = config.get("countries") or []
+        cidrs = geo_block_cidrs(countries)
+        lines = [
+            f"geo ${variable} {{",
+            "    default 0;",
+        ]
+        if cidrs:
+            lines.append(f"    # Geo Block: {', '.join(countries)}")
+            for cidr in cidrs:
+                lines.append(f"    {cidr} 1;")
+        else:
+            lines.append("    # Geo Block has no CIDR data. Check GEOIP_DB_FILE.")
+        lines.append("}")
+        blocks.extend(["\n".join(lines), ""])
+    return blocks
+
+
+def geo_block_cidrs(countries: list[str]) -> list[str]:
+    country_set = frozenset(str(country or "").strip().upper() for country in countries if str(country or "").strip())
+    if not country_set:
+        return []
+    db_file = geoip_db_file()
+    if not db_file.exists() or not db_file.is_file():
+        return []
+    try:
+        mtime = db_file.stat().st_mtime
+    except OSError:
+        return []
+    cache_key = (str(db_file), mtime, tuple(sorted(country_set)))
+    cached = GEO_CIDR_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    cidrs = []
+    try:
+        with gzip.open(db_file, "rt", encoding="utf-8", newline="") as source:
+            for row in csv.reader(source):
+                if len(row) < 3:
+                    continue
+                code = str(row[2] or "").strip().upper()
+                if code not in country_set:
+                    continue
+                try:
+                    start_address = ipaddress.ip_address(row[0].strip())
+                    end_address = ipaddress.ip_address(row[1].strip())
+                except ValueError:
+                    continue
+                if start_address.version != end_address.version:
+                    continue
+                cidrs.extend(str(network) for network in ipaddress.summarize_address_range(start_address, end_address))
+    except (OSError, gzip.BadGzipFile, csv.Error):
+        cidrs = []
+
+    GEO_CIDR_CACHE.clear()
+    GEO_CIDR_CACHE[cache_key] = cidrs
+    return cidrs
+
+
+def geoip_db_file() -> Path:
+    return Path(os.environ.get("GEOIP_DB_FILE", "/var/lib/freewaf/geoip/dbip-country-lite.csv.gz"))
 
 
 def site_hostnames(site: dict) -> list[str]:
@@ -592,6 +669,7 @@ def render_site_waf_directives(site: dict, state: dict) -> list[str]:
         else:
             lines.extend(render_rule_if(rule, "block", rule_index))
 
+    lines.extend(render_geo_block(site))
     lines.extend(render_bot_protection(site))
     lines.extend(render_acl_notes(site))
     return lines
@@ -1025,9 +1103,29 @@ def site_features(site: dict) -> dict:
     return {
         "httpFlood": features.get("httpFlood") is not False,
         "botProtection": features.get("botProtection") is not False,
+        "geoBlock": bool(features.get("geoBlock")),
         "auth": bool(features.get("auth")),
         "attacks": features.get("attacks") is not False,
     }
+
+
+def site_geo_block(site: dict) -> dict:
+    features = site_features(site)
+    source = site.get("geoBlock") if isinstance(site.get("geoBlock"), dict) else {}
+    countries = []
+    for item in source.get("countries") or []:
+        code = str(item or "").strip().upper()
+        if re.match(r"^[A-Z]{2}$", code) and code not in countries:
+            countries.append(code)
+    action = str(source.get("action") or "block").lower()
+    if action not in {"block", "monitor"}:
+        action = "block"
+    enabled = features["geoBlock"] and source.get("enabled") is not False and bool(countries)
+    return {"enabled": enabled, "countries": countries, "action": action}
+
+
+def geo_block_var_name(site: dict) -> str:
+    return f"sfl_geo_block_{safe_identifier(site.get('id') or site.get('name') or 'site')}"
 
 
 def site_bot_protection(site: dict) -> dict:
@@ -1145,6 +1243,52 @@ def render_bot_protection(site: dict) -> list[str]:
             "        set $sfl_challenge 1;",
             "        set $sfl_verdict challenge;",
             "        set $sfl_reason \"Bot protection matched suspicious headers\";",
+            "    }",
+            "",
+        ]
+    )
+    return lines
+
+
+def render_geo_block(site: dict) -> list[str]:
+    config = site_geo_block(site)
+    if not config.get("enabled"):
+        return []
+
+    effect = "monitor" if site.get("mode") == "monitor" or config.get("action") == "monitor" else "block"
+    match_var = "$sfl_geo_block_hit"
+    reason = nginx_string(f"Geo block matched country: {', '.join(config.get('countries') or [])}")
+    lines = [
+        f"    set {match_var} 0;",
+        f"    if (${geo_block_var_name(site)} = 1) {{",
+        f"        set {match_var} 1;",
+        "    }",
+        "    if ($sfl_allow = 1) {",
+        f"        set {match_var} 0;",
+        "    }",
+        "    if ($sfl_block = 1) {",
+        f"        set {match_var} 0;",
+        "    }",
+    ]
+
+    if effect == "monitor":
+        lines.extend(
+            [
+                f"    if ({match_var} = 1) {{",
+                "        set $sfl_verdict monitor;",
+                f"        set $sfl_reason \"{reason}\";",
+                "    }",
+                "",
+            ]
+        )
+        return lines
+
+    lines.extend(
+        [
+            f"    if ({match_var} = 1) {{",
+            "        set $sfl_block 1;",
+            "        set $sfl_verdict block;",
+            f"        set $sfl_reason \"{reason}\";",
             "    }",
             "",
         ]
