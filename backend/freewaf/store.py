@@ -1107,12 +1107,9 @@ def normalize_positive_int(value, fallback: int) -> int:
 
 
 def normalize_ip_items(items) -> list[str]:
-    values = normalize_string_list(items)
+    values = ip_item_candidates(items)
     normalized = []
     for value in values:
-        value = str(value).split("#", 1)[0].strip()
-        if not value:
-            continue
         try:
             if "/" in value:
                 item = str(ipaddress.ip_network(value, strict=False))
@@ -1122,6 +1119,46 @@ def normalize_ip_items(items) -> list[str]:
             raise StoreError(400, f"Invalid IP/CIDR entry: {value}") from None
         normalized.append(item)
     return list(dict.fromkeys(normalized))
+
+
+def ip_item_candidates(items) -> list[str]:
+    if items is None:
+        return []
+    if isinstance(items, list):
+        chunks = [str(item or "") for item in items]
+    else:
+        chunks = str(items or "").replace(",", "\n").replace(";", "\n").splitlines()
+
+    candidates = []
+    saw_content = False
+    for chunk in chunks:
+        line = chunk.split("#", 1)[0].strip()
+        if not line:
+            continue
+        saw_content = True
+        for token in re.split(r"\s+", line):
+            candidate = normalize_ip_token(token)
+            if not candidate:
+                continue
+            candidates.append(candidate)
+
+    if saw_content and not candidates:
+        raise StoreError(400, "No IP/CIDR entries found")
+    return list(dict.fromkeys(candidates))
+
+
+def normalize_ip_token(token: str) -> str:
+    item = str(token or "").strip().strip("[](){}<>\"'`")
+    item = item.rstrip(".,;")
+    if not item or not re.search(r"\d", item):
+        return ""
+
+    if re.match(r"^\d{1,3}(?:\.\d{1,3}){3}:\d+$", item):
+        item = item.rsplit(":", 1)[0]
+
+    if "." not in item and ":" not in item and "/" not in item:
+        return ""
+    return item
 
 
 def normalize_reference_url(value, strict: bool = True) -> str:

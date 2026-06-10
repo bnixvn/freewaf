@@ -28,7 +28,7 @@ from .nginx import (
     write_nginx_config,
 )
 from .defaults import utc_now
-from .store import Store, StoreError, build_stats, resolve_data_file
+from .store import Store, StoreError, build_stats, normalize_ip_items, resolve_data_file
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -810,12 +810,7 @@ def fetch_reference_text(url: str) -> str:
 
 
 def ip_items_from_reference_text(text: str) -> list[str]:
-    items = []
-    for line in str(text or "").replace(",", "\n").splitlines():
-        item = line.split("#", 1)[0].strip()
-        if item:
-            items.append(item)
-    return list(dict.fromkeys(items))
+    return normalize_ip_items(text)
 
 
 def is_ip_group_sync_due(group: dict) -> bool:

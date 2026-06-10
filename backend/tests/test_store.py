@@ -72,7 +72,13 @@ class StoreTests(unittest.TestCase):
                         "id": "ipgroup-feed",
                         "name": "Threat feed",
                         "referenceUrl": "https://example.test/feed.txt",
-                        "items": ["192.0.2.10 # comment", "# ignored", "198.51.100.0/24"],
+                        "items": [
+                            "192.0.2.10 # comment",
+                            "# ignored",
+                            "198.51.100.0/24",
+                            "203.0.113.10 office host",
+                            "2001:db8::/32 ipv6 network",
+                        ],
                         "lastSyncedAt": "2026-06-10T00:00:00+00:00",
                         "lastSyncStatus": "ok",
                         "lastSyncMessage": "2 entries synced",
@@ -83,7 +89,7 @@ class StoreTests(unittest.TestCase):
 
         group = state["ipGroups"][0]
         self.assertEqual(group["referenceUrl"], "https://example.test/feed.txt")
-        self.assertEqual(group["items"], ["192.0.2.10", "198.51.100.0/24"])
+        self.assertEqual(group["items"], ["192.0.2.10", "198.51.100.0/24", "203.0.113.10", "2001:db8::/32"])
         self.assertEqual(group["lastSyncStatus"], "ok")
 
     def test_site_features_are_normalized(self):

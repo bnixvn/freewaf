@@ -151,13 +151,13 @@ class CertificateServerTests(unittest.TestCase):
 
             with mock.patch(
                 "freewaf.server.fetch_reference_text",
-                return_value="203.0.113.10\n198.51.100.0/24 # test\n",
+                return_value="203.0.113.10 office host\n198.51.100.0/24 # test\n2001:db8::/32 ipv6\n",
             ):
                 synced = sync_ip_group_reference(store, group["id"])
 
-        self.assertEqual(synced["items"], ["203.0.113.10", "198.51.100.0/24"])
+        self.assertEqual(synced["items"], ["203.0.113.10", "198.51.100.0/24", "2001:db8::/32"])
         self.assertEqual(synced["lastSyncStatus"], "ok")
-        self.assertEqual(synced["lastSyncMessage"], "2 entries synced")
+        self.assertEqual(synced["lastSyncMessage"], "3 entries synced")
 
 
 class LogPaginationTests(unittest.TestCase):

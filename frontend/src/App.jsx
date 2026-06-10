@@ -18,6 +18,7 @@ import {
   Shield,
   ShieldCheck,
   Trash2,
+  Upload,
   UserPlus,
   X
 } from 'lucide-react';
@@ -502,7 +503,7 @@ export default function App() {
     const payload = {
       ...group,
       enabled: group.enabled === 'true' || group.enabled === true,
-      items: listFromText(group.items, /[\n,]+/)
+      items: group.items
     };
     const id = payload.id;
     delete payload.id;
@@ -1886,6 +1887,7 @@ function CertificateModal({ certificate, onClose, onSave }) {
 }
 
 function IpGroupModal({ group, onClose, onSave }) {
+  const fileInputRef = useRef(null);
   const [form, setForm] = useState(() => ({
     ...defaultIpGroup,
     ...(group || {}),
@@ -1898,12 +1900,30 @@ function IpGroupModal({ group, onClose, onSave }) {
     setForm((current) => ({ ...current, [name]: value }));
   }
 
+  async function importTextFile(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    setForm((current) => ({
+      ...current,
+      items: [current.items, text].filter(Boolean).join(current.items ? '\n' : '')
+    }));
+    event.target.value = '';
+  }
+
   return (
     <Modal title={group ? 'Edit IP Group' : 'Add IP Group'} onClose={onClose}>
       <form onSubmit={(event) => { event.preventDefault(); onSave(form); }}>
         <div className="form-grid">
           <TextField label="Name" value={form.name} onChange={(value) => update('name', value)} full required />
           <TextField label="Reference" value={form.referenceUrl} onChange={(value) => update('referenceUrl', value)} placeholder="http://example.com/ip-list.txt" full />
+          <div className="ip-import-actions full">
+            <button type="button" className="outline-action" onClick={() => fileInputRef.current?.click()}>
+              <Upload size={16} /> Import .txt
+            </button>
+            <span className="form-note">Supports IP/CIDR lists with spaces, commas, semicolons, and # comments.</span>
+            <input ref={fileInputRef} className="hidden-file-input" type="file" accept=".txt,text/plain" onChange={importTextFile} />
+          </div>
           <TextAreaField label="Content" value={form.items} onChange={(value) => update('items', value)} placeholder="192.0.2.10/32" />
           <SelectField label="Enabled" value={form.enabled} onChange={(value) => update('enabled', value)} options={['true', 'false']} />
           <TextAreaField label="Description" value={form.description} onChange={(value) => update('description', value)} />
