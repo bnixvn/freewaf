@@ -1288,9 +1288,6 @@ def runtime_payload(state: dict, admin_port: int, demo_origin_port: int, demo_en
         "demoOriginPort": demo_origin_port if demo_enabled else None,
         "demoOriginEnabled": demo_enabled,
         "nginx": nginx_runtime(ROOT_DIR),
-        "auth": {
-            "file": os.environ.get("NGINX_AUTH_FILE", ""),
-        },
         "certbot": {
             "command": os.environ.get("CERTBOT_CMD", "certbot"),
             "authMethod": os.environ.get("CERTBOT_AUTH_METHOD", "nginx"),

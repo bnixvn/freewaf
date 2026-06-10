@@ -360,8 +360,6 @@ def create_default_state(now: str | None = None) -> dict:
                     "httpFlood": True,
                     "botProtection": True,
                     "geoBlock": False,
-                    "auth": False,
-                    "attacks": True,
                 },
                 "botProtection": {
                     "enabled": True,

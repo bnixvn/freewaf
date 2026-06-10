@@ -597,10 +597,6 @@ def render_proxy_server(
     lines.extend(render_modsecurity_directives(site))
     lines.extend(render_compression_directives(proxy))
 
-    auth_lines = render_auth_feature(site)
-    if auth_lines:
-        lines.extend(auth_lines)
-
     lines.extend(render_site_waf_directives(site, state))
     lines.extend(
         [
@@ -1440,8 +1436,6 @@ def site_features(site: dict) -> dict:
         "httpFlood": features.get("httpFlood") is not False,
         "botProtection": features.get("botProtection") is not False,
         "geoBlock": bool(features.get("geoBlock")),
-        "auth": bool(features.get("auth")),
-        "attacks": features.get("attacks") is not False,
     }
 
 
@@ -1517,24 +1511,7 @@ def should_emit_rule_for_site(rule: dict, site: dict) -> bool:
     features = site_features(site)
     if rule.get("id") in BOT_RULE_IDS:
         return features["botProtection"]
-    return features["attacks"]
-
-
-def render_auth_feature(site: dict) -> list[str]:
-    if not site_features(site).get("auth"):
-        return []
-    auth_file = os.environ.get("NGINX_AUTH_FILE", "").strip()
-    if auth_file:
-        return [
-            "    auth_basic \"FreeWAF\";",
-            f"    auth_basic_user_file {nginx_path(auth_file)};",
-            "",
-        ]
-    return [
-        "    # Auth feature is enabled for this site.",
-        "    # Set NGINX_AUTH_FILE to emit native auth_basic directives.",
-        "",
-    ]
+    return True
 
 
 def render_bot_protection(site: dict) -> list[str]:

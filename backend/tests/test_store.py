@@ -257,7 +257,7 @@ class StoreTests(unittest.TestCase):
                             "httpFlood": False,
                             "botProtection": False,
                             "auth": True,
-                            "attacks": True,
+                            "attacks": False,
                         },
                     }
                 ],
@@ -268,8 +268,8 @@ class StoreTests(unittest.TestCase):
         features = state["sites"][0]["features"]
         self.assertFalse(features["httpFlood"])
         self.assertFalse(features["botProtection"])
-        self.assertTrue(features["auth"])
-        self.assertTrue(features["attacks"])
+        self.assertNotIn("auth", features)
+        self.assertNotIn("attacks", features)
 
     def test_http_flood_acl_options_are_normalized(self):
         state = normalize_state(

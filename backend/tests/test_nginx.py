@@ -850,7 +850,7 @@ class NginxGeneratorTests(unittest.TestCase):
                     "listen": 8080,
                     "mode": "block",
                     "enabled": True,
-                    "features": {"httpFlood": False, "botProtection": True, "attacks": False},
+                    "features": {"httpFlood": False, "botProtection": True},
                     "botProtection": {
                         "enabled": True,
                         "antiBotChallenge": False,
@@ -911,7 +911,7 @@ class NginxGeneratorTests(unittest.TestCase):
                     "listen": 8080,
                     "mode": "block",
                     "enabled": True,
-                    "features": {"httpFlood": True, "botProtection": False, "attacks": True},
+                    "features": {"httpFlood": True, "botProtection": False},
                     "acl": {
                         "enabled": True,
                         "accessLimit": {
@@ -947,7 +947,7 @@ class NginxGeneratorTests(unittest.TestCase):
                     "listen": 8080,
                     "mode": "block",
                     "enabled": True,
-                    "features": {"httpFlood": True, "botProtection": False, "attacks": True},
+                    "features": {"httpFlood": True, "botProtection": False},
                     "acl": {
                         "enabled": True,
                         "rateLimitMode": "global",
@@ -979,7 +979,7 @@ class NginxGeneratorTests(unittest.TestCase):
                     "listen": 8080,
                     "mode": "block",
                     "enabled": True,
-                    "features": {"httpFlood": True, "botProtection": False, "attacks": True},
+                    "features": {"httpFlood": True, "botProtection": False},
                     "acl": {
                         "enabled": True,
                         "rateLimitMode": "custom",
@@ -1001,7 +1001,7 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("limit_req zone=sfl_acl_site_demo_fp burst=200;", config)
         self.assertNotIn("limit_req zone=sfl_acl_site_demo burst=200 nodelay;", config)
 
-    def test_site_features_gate_native_modules(self):
+    def test_legacy_site_feature_switches_are_ignored(self):
         state = make_state(
             sites=[
                 {
@@ -1025,9 +1025,10 @@ class NginxGeneratorTests(unittest.TestCase):
 
         self.assertNotIn("limit_req_zone", config)
         self.assertNotIn("limit_req zone=freewaf_rate", config)
-        self.assertNotIn("SQL injection probes", config)
+        self.assertIn("SQL injection probes", config)
         self.assertNotIn("Scanner user agents", config)
-        self.assertIn("Auth feature is enabled", config)
+        self.assertNotIn("Auth feature is enabled", config)
+        self.assertNotIn("auth_basic", config)
 
 
 if __name__ == "__main__":
