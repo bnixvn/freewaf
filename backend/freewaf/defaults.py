@@ -249,10 +249,18 @@ def create_default_state(now: str | None = None) -> dict:
                     "defaultServer": False,
                     "strictHost": False,
                     "accessLog": True,
+                    "modifyHostHeader": True,
+                    "forwardedHeaders": True,
                     "hostHeader": "$http_host",
                     "xForwardedProto": "$scheme",
                     "xForwardedHost": "$http_host",
                     "proxySslServerName": True,
+                },
+                "modSecurity": {
+                    "enabled": True,
+                    "mode": "on",
+                    "ruleset": "comodo",
+                    "requestBodyLimit": 13107200,
                 },
                 "redirect": {
                     "statusCode": 301,

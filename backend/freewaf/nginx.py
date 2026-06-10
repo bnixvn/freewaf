@@ -595,6 +595,7 @@ def render_proxy_server(
     if proxy.get("strictHost"):
         lines.extend(render_strict_host(site))
 
+    lines.extend(render_modsecurity_directives(site))
     lines.extend(render_compression_directives(proxy))
 
     auth_lines = render_auth_feature(site)
@@ -733,23 +734,34 @@ def render_application_location(site: dict, state: dict, upstream_name: str, ups
             "        try_files $uri $uri/ =404;",
         ]
 
-    return [
+    lines = [
         "        proxy_http_version 1.1;",
         "        proxy_set_header Upgrade $http_upgrade;",
         "        proxy_set_header Connection $sfl_connection_upgrade;",
-        f"        proxy_set_header Host {proxy.get('hostHeader') or '$http_host'};",
         "        proxy_set_header X-Real-IP $remote_addr;",
-        f"        proxy_set_header X-Forwarded-For {xff_value(proxy)};",
-        f"        proxy_set_header X-Forwarded-Proto {proxy.get('xForwardedProto') or '$scheme'};",
-        f"        proxy_set_header X-Forwarded-Host {proxy.get('xForwardedHost') or '$http_host'};",
-        "        proxy_set_header X-FreeWAF $sfl_verdict;",
-        *render_hsts_header(proxy, is_ssl),
-        *render_dynamic_protection_headers(site),
-        *render_proxy_ssl(upstream_scheme, proxy),
-        *render_rate_limit(state, site),
-        *render_bot_replay_limit(site),
-        f"        proxy_pass {upstream_scheme}://{upstream_name};",
     ]
+    if proxy.get("modifyHostHeader"):
+        lines.append(f"        proxy_set_header Host {proxy.get('hostHeader') or '$http_host'};")
+    if proxy.get("forwardedHeaders"):
+        lines.extend(
+            [
+                f"        proxy_set_header X-Forwarded-For {xff_value(proxy)};",
+                f"        proxy_set_header X-Forwarded-Proto {proxy.get('xForwardedProto') or '$scheme'};",
+                f"        proxy_set_header X-Forwarded-Host {proxy.get('xForwardedHost') or '$http_host'};",
+            ]
+        )
+    lines.extend(
+        [
+            "        proxy_set_header X-FreeWAF $sfl_verdict;",
+            *render_hsts_header(proxy, is_ssl),
+            *render_dynamic_protection_headers(site),
+            *render_proxy_ssl(upstream_scheme, proxy),
+            *render_rate_limit(state, site),
+            *render_bot_replay_limit(site),
+            f"        proxy_pass {upstream_scheme}://{upstream_name};",
+        ]
+    )
+    return lines
 
 
 def static_root(site: dict) -> str:
@@ -817,11 +829,46 @@ def site_proxy(site: dict) -> dict:
         "defaultServer": bool(proxy.get("defaultServer")),
         "strictHost": bool(proxy.get("strictHost")),
         "accessLog": proxy.get("accessLog") is not False,
+        "modifyHostHeader": proxy.get("modifyHostHeader") is not False,
+        "forwardedHeaders": proxy.get("forwardedHeaders") is not False,
         "hostHeader": nginx_value(proxy.get("hostHeader") or "$http_host"),
         "xForwardedProto": nginx_value(proxy.get("xForwardedProto") or "$scheme"),
         "xForwardedHost": nginx_value(proxy.get("xForwardedHost") or "$http_host"),
         "proxySslServerName": proxy.get("proxySslServerName") is not False,
     }
+
+
+def render_modsecurity_directives(site: dict) -> list[str]:
+    config = site.get("modSecurity") if isinstance(site.get("modSecurity"), dict) else {}
+    if not config.get("enabled"):
+        return []
+    if os.environ.get("NGINX_HAS_MODSECURITY", "false").lower() != "true":
+        return [
+            "    # ModSecurity is enabled for this application, but NGINX_HAS_MODSECURITY is not true.",
+            "",
+        ]
+
+    ruleset = str(config.get("ruleset") or "comodo").lower()
+    if ruleset == "owasp":
+        rules_file = os.environ.get("NGINX_MODSECURITY_OWASP_RULES_FILE", "/etc/freewaf/modsecurity/owasp-crs.conf")
+    else:
+        rules_file = os.environ.get("NGINX_MODSECURITY_COMODO_RULES_FILE", "/etc/freewaf/modsecurity/comodo.conf")
+    rules_file = rules_file.strip()
+    if not rules_file:
+        return [
+            f"    # ModSecurity {nginx_comment(ruleset)} rules file is not configured.",
+            "",
+        ]
+
+    engine = "DetectionOnly" if config.get("mode") == "detection_only" or site.get("mode") == "monitor" else "On"
+    body_limit = min(max(int(config.get("requestBodyLimit") or 13107200), 131072), 1073741824)
+    return [
+        "    modsecurity on;",
+        f"    modsecurity_rules_file {nginx_path(rules_file)};",
+        f"    modsecurity_rules 'SecRuleEngine {engine}';",
+        f"    modsecurity_rules 'SecRequestBodyLimit {body_limit}';",
+        "",
+    ]
 
 
 def render_ipv6_listen(port: int, is_ssl: bool, proxy: dict) -> list[str]:

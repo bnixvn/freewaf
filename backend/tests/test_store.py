@@ -266,7 +266,18 @@ class StoreTests(unittest.TestCase):
                         "listen": 443,
                         "tls": {"enabled": True, "redirectHttp": True, "httpListen": 80},
                         "redirect_status_code": 301,
-                        "proxy": {"hsts": True, "reset_xff": True},
+                        "proxy": {
+                            "hsts": True,
+                            "reset_xff": True,
+                            "modify_host_header": False,
+                            "forwarded_headers": False,
+                        },
+                        "modsecurity": {
+                            "enabled": True,
+                            "mode": "detection_only",
+                            "ruleset": "owasp",
+                            "request_body_limit": 8388608,
+                        },
                         "acl_enabled": True,
                     }
                 ],
@@ -281,6 +292,12 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(site["ports"], ["80", "443_ssl"])
         self.assertEqual(site["proxy"]["redirectStatusCode"], 301)
         self.assertTrue(site["proxy"]["hsts"])
+        self.assertFalse(site["proxy"]["modifyHostHeader"])
+        self.assertFalse(site["proxy"]["forwardedHeaders"])
+        self.assertTrue(site["modSecurity"]["enabled"])
+        self.assertEqual(site["modSecurity"]["mode"], "detection_only")
+        self.assertEqual(site["modSecurity"]["ruleset"], "owasp")
+        self.assertEqual(site["modSecurity"]["requestBodyLimit"], 8388608)
         self.assertTrue(site["acl"]["enabled"])
         self.assertEqual(site["acl"]["accessLimit"]["count"], 200)
 

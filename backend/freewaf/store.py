@@ -33,6 +33,8 @@ ACCESS_ACTIONS = {"allow", "deny", "monitor"}
 ACL_ACTIONS = {"allow", "block", "challenge_v1", "monitor"}
 ACL_RATE_LIMIT_MODES = {"global", "custom"}
 APPLICATION_TYPES = {"reverse_proxy", "static_files", "redirect"}
+MODSECURITY_MODES = {"on", "detection_only"}
+MODSECURITY_RULESETS = {"comodo", "owasp"}
 ACCESS_CONDITION_TARGETS = {"source_ip", "uri", "host", "user_agent", "method"}
 ACCESS_CONDITION_OPERATORS = {
     "equals",
@@ -546,6 +548,8 @@ def normalize_stored_site(site: dict) -> dict:
     features = normalize_site_features(site.get("features"))
     bot_protection = normalize_bot_protection_config(site.get("botProtection") or site.get("bot_protection"), features.get("botProtection"))
     geo_block = normalize_geo_block_config(site.get("geoBlock") or site.get("geo_block"), features.get("geoBlock"))
+    mode = site.get("mode") if site.get("mode") in MODES else "block"
+    modsecurity = normalize_modsecurity_config(site.get("modSecurity") or site.get("modsecurity"), features.get("attacks"), mode)
     features["botProtection"] = bot_protection["enabled"]
     features["geoBlock"] = geo_block["enabled"]
     return {
@@ -566,7 +570,8 @@ def normalize_stored_site(site: dict) -> dict:
         "features": features,
         "botProtection": bot_protection,
         "geoBlock": geo_block,
-        "mode": site.get("mode") if site.get("mode") in MODES else "block",
+        "modSecurity": modsecurity,
+        "mode": mode,
         "enabled": normalize_bool(enabled_value, False),
         "createdAt": site.get("createdAt") or now,
         "updatedAt": site.get("updatedAt") or now,
@@ -717,6 +722,8 @@ def normalize_site_input(payload: dict, site_id: str | None, now: str) -> dict:
     features = normalize_site_features(payload.get("features"))
     bot_protection = normalize_bot_protection_config(payload.get("botProtection") or payload.get("bot_protection"), features.get("botProtection"))
     geo_block = normalize_geo_block_config(payload.get("geoBlock") or payload.get("geo_block"), features.get("geoBlock"))
+    mode = payload.get("mode") if payload.get("mode") in MODES else "block"
+    modsecurity = normalize_modsecurity_config(payload.get("modSecurity") or payload.get("modsecurity"), features.get("attacks"), mode)
     features["botProtection"] = bot_protection["enabled"]
     features["geoBlock"] = geo_block["enabled"]
     return {
@@ -737,7 +744,8 @@ def normalize_site_input(payload: dict, site_id: str | None, now: str) -> dict:
         "features": features,
         "botProtection": bot_protection,
         "geoBlock": geo_block,
-        "mode": payload.get("mode") if payload.get("mode") in MODES else "block",
+        "modSecurity": modsecurity,
+        "mode": mode,
         "enabled": payload.get("enabled") is not False,
         "createdAt": now,
         "updatedAt": now,
@@ -1075,10 +1083,27 @@ def normalize_proxy_config(value, tls: dict, redirect_status_code=None) -> dict:
         "defaultServer": normalize_bool(proxy_value(source, "defaultServer", "default_server"), False),
         "strictHost": normalize_bool(proxy_value(source, "strictHost", "strict_host"), False),
         "accessLog": normalize_bool(proxy_value(source, "accessLog", "access_log"), True),
+        "modifyHostHeader": normalize_bool(proxy_value(source, "modifyHostHeader", "modify_host_header"), True),
+        "forwardedHeaders": normalize_bool(proxy_value(source, "forwardedHeaders", "forwarded_headers"), True),
         "hostHeader": normalize_proxy_header(proxy_value(source, "hostHeader", "host") or "$http_host"),
         "xForwardedProto": normalize_proxy_header(proxy_value(source, "xForwardedProto", "xfp") or "$scheme"),
         "xForwardedHost": normalize_proxy_header(proxy_value(source, "xForwardedHost", "xfh") or "$http_host"),
         "proxySslServerName": normalize_bool(proxy_value(source, "proxySslServerName", "proxy_ssl_server_name"), True),
+    }
+
+
+def normalize_modsecurity_config(value, attacks_enabled=None, site_mode: str = "block") -> dict:
+    source = value if isinstance(value, dict) else {}
+    mode = str(source.get("mode") or ("detection_only" if site_mode == "monitor" else "on")).lower()
+    ruleset = str(source.get("ruleset") or "comodo").lower()
+    return {
+        "enabled": normalize_bool(source.get("enabled"), normalize_bool(attacks_enabled, True)),
+        "mode": mode if mode in MODSECURITY_MODES else "on",
+        "ruleset": ruleset if ruleset in MODSECURITY_RULESETS else "comodo",
+        "requestBodyLimit": min(
+            max(normalize_positive_int(source.get("requestBodyLimit") or source.get("request_body_limit"), 13107200), 131072),
+            1073741824,
+        ),
     }
 
 

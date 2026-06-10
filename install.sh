@@ -11,6 +11,9 @@ DEMO_ORIGIN_PORT="${DEMO_ORIGIN_PORT:-9090}"
 ENABLE_DEMO_ORIGIN="${ENABLE_DEMO_ORIGIN:-true}"
 REPO_URL="${FREEWAF_REPO_URL:-}"
 REPO_BRANCH="${FREEWAF_REPO_BRANCH:-main}"
+ENABLE_MODSECURITY="${FREEWAF_ENABLE_MODSECURITY:-true}"
+COMODO_RULES_FILE="${FREEWAF_COMODO_RULES_FILE:-}"
+NGINX_HAS_MODSECURITY=false
 
 log() {
   printf '\n[freewaf] %s\n' "$*" >&2
@@ -179,6 +182,72 @@ install_geoip_database() {
   rm -f "$tmp_file"
 }
 
+install_modsecurity() {
+  local modsec_dir="/etc/freewaf/modsecurity"
+  local owasp_rules="/usr/share/modsecurity-crs/owasp-crs.load"
+  local module_file="/usr/lib/nginx/modules/ngx_http_modsecurity_module.so"
+
+  if [ "$ENABLE_MODSECURITY" != "true" ]; then
+    log "Skipping ModSecurity because FREEWAF_ENABLE_MODSECURITY is not true"
+    return
+  fi
+
+  if ! apt-cache show libnginx-mod-http-modsecurity >/dev/null 2>&1; then
+    log "ModSecurity Nginx package is unavailable on this OS; native Nginx protection remains active"
+    return
+  fi
+
+  log "Installing ModSecurity and OWASP CRS payload protection"
+  if ! apt-get install -y libnginx-mod-http-modsecurity modsecurity-crs; then
+    log "ModSecurity installation failed; native Nginx protection remains active"
+    return
+  fi
+
+  install -d -m 0755 "$modsec_dir"
+  install -d -o www-data -g www-data -m 0750 /var/cache/modsecurity
+  touch /var/log/nginx/freewaf_modsecurity_audit.log
+  chown www-data:adm /var/log/nginx/freewaf_modsecurity_audit.log 2>/dev/null || chown www-data:www-data /var/log/nginx/freewaf_modsecurity_audit.log
+  chmod 0640 /var/log/nginx/freewaf_modsecurity_audit.log
+
+  cat > "${modsec_dir}/base.conf" <<'EOF'
+SecRequestBodyAccess On
+SecRequestBodyNoFilesLimit 1048576
+SecRequestBodyLimitAction Reject
+SecResponseBodyAccess Off
+SecAuditEngine RelevantOnly
+SecAuditLogRelevantStatus "^(?:5|4(?!04))"
+SecAuditLogParts ABIJDEFHZ
+SecAuditLogType Serial
+SecAuditLog /var/log/nginx/freewaf_modsecurity_audit.log
+SecTmpDir /var/cache/modsecurity
+SecDataDir /var/cache/modsecurity
+EOF
+
+  printf 'Include %s\n' "${modsec_dir}/base.conf" > "${modsec_dir}/owasp-crs.conf"
+  if [ -f "$owasp_rules" ]; then
+    printf 'Include %s\n' "$owasp_rules" >> "${modsec_dir}/owasp-crs.conf"
+  else
+    log "OWASP CRS package installed without ${owasp_rules}; check the distro package layout"
+  fi
+
+  printf 'Include %s\n' "${modsec_dir}/base.conf" > "${modsec_dir}/comodo.conf"
+  if [ -n "$COMODO_RULES_FILE" ] && [ -f "$COMODO_RULES_FILE" ]; then
+    printf 'Include %s\n' "$COMODO_RULES_FILE" >> "${modsec_dir}/comodo.conf"
+    log "Using Comodo rules from ${COMODO_RULES_FILE}"
+  elif [ -f "$owasp_rules" ]; then
+    printf 'Include %s\n' "$owasp_rules" >> "${modsec_dir}/comodo.conf"
+    log "No Comodo rules file supplied; Comodo selection will safely fall back to OWASP CRS"
+  else
+    log "No Comodo or OWASP rules file found; ModSecurity will inspect bodies without a managed ruleset"
+  fi
+
+  if [ -f "$module_file" ]; then
+    NGINX_HAS_MODSECURITY=true
+  else
+    log "ModSecurity package installed, but ${module_file} was not found"
+  fi
+}
+
 write_env() {
   log "Writing ${ENV_FILE}"
   install -d -m 0755 "$ENV_DIR"
@@ -196,6 +265,9 @@ NGINX_RELOAD_CMD="/usr/sbin/nginx -s reload"
 NGINX_AUTO_WRITE=false
 NGINX_AUTH_FILE=
 NGINX_HAS_BROTLI=false
+NGINX_HAS_MODSECURITY=${NGINX_HAS_MODSECURITY}
+NGINX_MODSECURITY_COMODO_RULES_FILE=/etc/freewaf/modsecurity/comodo.conf
+NGINX_MODSECURITY_OWASP_RULES_FILE=/etc/freewaf/modsecurity/owasp-crs.conf
 NGINX_CHAOS_CHALLENGE_URL=
 NGINX_FREEWAF_STATIC_DIR=
 NGINX_STATIC_ROOT=${APP_DIR}/public/static
@@ -317,6 +389,7 @@ main() {
   copy_app "$src"
   build_frontend
   install_geoip_database
+  install_modsecurity
   write_env
   refresh_nginx_config
   write_systemd

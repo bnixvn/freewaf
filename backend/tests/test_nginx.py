@@ -322,6 +322,76 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("proxy_pass https://backend_site_shop_shop_example_test;", config)
         self.assertIn("proxy_pass https://backend_site_shop_www_shop_example_test;", config)
 
+    def test_generates_modsecurity_and_explicit_forwarding_controls(self):
+        state = make_state(
+            sites=[
+                {
+                    "id": "site-secure",
+                    "name": "Secure",
+                    "hostnames": ["secure.example.test"],
+                    "origin": "http://127.0.0.1:9090",
+                    "ports": ["80"],
+                    "proxy": {
+                        "modifyHostHeader": False,
+                        "forwardedHeaders": True,
+                        "resetXff": True,
+                        "xForwardedHost": "$host",
+                        "xForwardedProto": "https",
+                    },
+                    "modSecurity": {
+                        "enabled": True,
+                        "mode": "on",
+                        "ruleset": "comodo",
+                        "requestBodyLimit": 8388608,
+                    },
+                    "mode": "block",
+                    "enabled": True,
+                }
+            ],
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "NGINX_HAS_MODSECURITY": "true",
+                "NGINX_MODSECURITY_COMODO_RULES_FILE": "/etc/freewaf/modsecurity/comodo.conf",
+            },
+            clear=False,
+        ):
+            config = generate_nginx_config(state)
+
+        self.assertIn("modsecurity on;", config)
+        self.assertIn("modsecurity_rules_file /etc/freewaf/modsecurity/comodo.conf;", config)
+        self.assertIn("modsecurity_rules 'SecRuleEngine On';", config)
+        self.assertIn("modsecurity_rules 'SecRequestBodyLimit 8388608';", config)
+        self.assertNotIn("proxy_set_header Host $http_host;", config)
+        self.assertIn("proxy_set_header X-Forwarded-For $remote_addr;", config)
+        self.assertIn("proxy_set_header X-Forwarded-Proto https;", config)
+        self.assertIn("proxy_set_header X-Forwarded-Host $host;", config)
+
+    def test_omits_forwarded_headers_when_disabled(self):
+        state = make_state(
+            sites=[
+                {
+                    "id": "site-private",
+                    "name": "Private",
+                    "hostnames": ["private.example.test"],
+                    "origin": "http://127.0.0.1:9090",
+                    "ports": ["80"],
+                    "proxy": {"forwardedHeaders": False},
+                    "mode": "block",
+                    "enabled": True,
+                }
+            ],
+        )
+
+        config = generate_nginx_config(state)
+
+        self.assertNotIn("proxy_set_header X-Forwarded-For", config)
+        self.assertNotIn("proxy_set_header X-Forwarded-Proto", config)
+        self.assertNotIn("proxy_set_header X-Forwarded-Host", config)
+        self.assertIn("proxy_set_header X-Real-IP $remote_addr;", config)
+
     def test_redirect_application_returns_configured_address(self):
         state = make_state(
             sites=[

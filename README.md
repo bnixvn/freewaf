@@ -19,6 +19,7 @@ A fresh VPS with root access is recommended. If the server already has custom Ng
 - Python backend: stores state, serves the API, generates Nginx config, and can run `nginx -t` or reload Nginx.
 - React dashboard: manages applications, certificates, IP groups, access rules, users, logs, and settings.
 - Nginx: performs reverse proxy and WAF enforcement on public ports.
+- ModSecurity: inspects request bodies and enforces Comodo-compatible or OWASP CRS rules before proxying.
 - systemd: runs the admin panel as the `freewaf` service.
 
 Default install paths:
@@ -51,6 +52,7 @@ sudo bash install.sh
 The installer will:
 
 - Install Nginx, certbot, Python 3, and Node.js 20+ when needed.
+- Install the Nginx ModSecurity connector and OWASP CRS when available.
 - Build the React dashboard.
 - Copy the application to `/opt/freewaf`.
 - Create the `freewaf` systemd service.
@@ -84,6 +86,15 @@ Allow installation on an unsupported OS:
 ```bash
 sudo FREEWAF_ALLOW_UNSUPPORTED=true bash install.sh
 ```
+
+Use an installed Comodo/CWAF rules entry file:
+
+```bash
+sudo FREEWAF_COMODO_RULES_FILE=/path/to/comodo-entry.conf \
+  FREEWAF_REPO_URL=https://github.com/bnixvn/freewaf.git bash install.sh
+```
+
+Comodo rules are distributed separately by the vendor. When no Comodo entry file is supplied, the `Comodo WAF Rules` application option safely falls back to the packaged OWASP Core Rule Set.
 
 ## Operations
 
@@ -143,8 +154,11 @@ Each application can configure:
 - SafeLine-style listening ports such as `80` and `443_ssl`.
 - SSL certificate.
 - HTTP to HTTPS redirect.
+- HTTP/2.
 - HSTS, gzip, and Brotli.
+- Host header and X-Forwarded-Host/X-Forwarded-Proto forwarding.
 - X-Forwarded-For reset behavior.
+- Per-application ModSecurity mode, ruleset, and request body limit.
 - Strict Host validation.
 - Per-application access logs.
 - HTTP Flood limit.
@@ -239,18 +253,35 @@ Detection rules support these targets:
 - method
 - ip
 
-Native Nginx handles URI, method, IP, and common headers well. Deep request body inspection requires ModSecurity, Lua, or njs.
+Native Nginx handles URI, method, IP, and common headers. ModSecurity performs deep POST, JSON, multipart, and other request body inspection before a request reaches the upstream.
 
-## Native Nginx Limits
+## ModSecurity and Comodo Rules
 
-FreeWAF currently enforces rules using native Nginx directives, so there are known limits:
+The installer creates:
 
-- It does not include SafeLine CE detector/FVM/chaos modules.
-- Deep POST body, multipart, and JSON payload parsing are not fully enforced.
-- Basic Attack Limit and Basic Error Limit are stored in the model, but accurate counting requires a detector/state module.
-- Brotli is emitted only when `NGINX_HAS_BROTLI=true` and your Nginx build includes the Brotli module.
+```text
+/etc/freewaf/modsecurity/base.conf
+/etc/freewaf/modsecurity/comodo.conf
+/etc/freewaf/modsecurity/owasp-crs.conf
+/var/log/nginx/freewaf_modsecurity_audit.log
+```
 
-For deeper WAF behavior, the next step is integrating ModSecurity + OWASP CRS, Lua, or njs.
+Applications can run ModSecurity in `Block` or `Detection Only` mode. Start new or sensitive applications in Detection Only mode, review the audit log, then switch to Block.
+
+The actual Comodo/CWAF rules package is not redistributed by FreeWAF. Set `FREEWAF_COMODO_RULES_FILE` while installing, or update `/etc/freewaf/modsecurity/comodo.conf` to include the vendor-provided entry file.
+
+## Origin Firewall and CPGuard
+
+`X-Real-IP` and `X-Forwarded-For` let the upstream application identify the client, but they do not change the TCP source IP seen by CPGuard or another host firewall. The origin sees the FreeWAF proxy IP at the network layer.
+
+To avoid CPGuard blocking the FreeWAF server:
+
+- Block malicious payloads with ModSecurity at FreeWAF before proxying.
+- Enable `Clear and Rewrite X-Forwarded-For` at the outermost proxy.
+- Allowlist the FreeWAF proxy IP in CPGuard/origin firewall.
+- Restrict origin HTTP/HTTPS access to the FreeWAF proxy IP where possible.
+
+FreeWAF does not include SafeLine CE detector/FVM/chaos modules. Basic Attack Limit and Basic Error Limit still require a detector/state module for exact counting. Brotli is emitted only when `NGINX_HAS_BROTLI=true` and the Nginx build includes the Brotli module.
 
 ## Environment Variables
 
@@ -269,6 +300,9 @@ NGINX_TEST_CMD="/usr/sbin/nginx -t"
 NGINX_RELOAD_CMD="/usr/sbin/nginx -s reload"
 NGINX_AUTO_WRITE=false
 NGINX_STATIC_ROOT=/opt/freewaf/public/static
+NGINX_HAS_MODSECURITY=true
+NGINX_MODSECURITY_COMODO_RULES_FILE=/etc/freewaf/modsecurity/comodo.conf
+NGINX_MODSECURITY_OWASP_RULES_FILE=/etc/freewaf/modsecurity/owasp-crs.conf
 CERTBOT_CMD=/usr/bin/certbot
 CERTBOT_AUTH_METHOD=nginx
 CERTBOT_WEBROOT=/var/www/html
