@@ -368,7 +368,7 @@ def render_site_server(site: dict, state: dict, certificates: dict[str, dict], h
     first_https_port = https_ports[0] if https_ports else int(site.get("listen") or 443)
     if has_tls and proxy.get("forceHttps") and redirect_code:
         for port in http_ports or [int(tls.get("httpListen") or 80)]:
-            blocks.append(render_redirect_server(render_site, server_name, port, first_https_port, proxy, redirect_code))
+            blocks.append(render_redirect_server(render_site, state, server_name, port, first_https_port, proxy, redirect_code))
     else:
         for port in http_ports:
             blocks.append(render_proxy_server(render_site, state, certificates, upstream_name, upstream_scheme, port, False, server_name, proxy))
@@ -402,15 +402,41 @@ def render_upstream(name: str, upstreams: list[str]) -> str:
     return "\n".join(lines)
 
 
-def render_redirect_server(site: dict, server_name: str, port: int, https_port: int, proxy: dict, redirect_code: int) -> str:
+def render_redirect_server(site: dict, state: dict, server_name: str, port: int, https_port: int, proxy: dict, redirect_code: int) -> str:
     listen_suffix = " default_server" if proxy.get("defaultServer") else ""
     lines = [
         "server {",
         f"    listen 0.0.0.0:{port}{listen_suffix};",
         *render_ipv6_listen(port, False, proxy),
         f"    server_name {server_name};",
+        "",
+        "    set $sfl_block 0;",
+        "    set $sfl_allow 0;",
+        "    set $sfl_challenge 0;",
+        "    set $sfl_verdict allow;",
+        "    set $sfl_reason \"Allowed\";",
+        "",
         *render_log_directives(site, proxy),
-        f"    return {redirect_code} https://$host:{https_port}$request_uri;",
+        "    error_page 460 = @freewaf_block;",
+        "    error_page 461 = @freewaf_challenge;",
+        *render_rate_limit_error_page(site),
+        "",
+        *render_site_waf_directives(site, state),
+        "",
+        *render_safeline_locations(site),
+        "",
+        *render_internal_waf_locations(site),
+        "",
+        "    location / {",
+        "        if ($sfl_block = 1) {",
+        "            return 460;",
+        "        }",
+        "        if ($sfl_challenge = 1) {",
+        "            return 461;",
+        "        }",
+        *render_rate_limit(state, site),
+        f"        return {redirect_code} https://$host:{https_port}$request_uri;",
+        "    }",
         "}",
     ]
     return "\n".join(lines)
@@ -437,27 +463,6 @@ def render_proxy_server(
     if proxy.get("defaultServer"):
         listen_flags.append("default_server")
     listen_suffix = f" {' '.join(listen_flags)}" if listen_flags else ""
-
-    rules = [
-        rule
-        for rule in state.get("rules", [])
-        if rule.get("enabled")
-        and rule.get("action") != "allow"
-        and (rule.get("siteId") == "*" or rule.get("siteId") == site.get("id"))
-        and should_emit_rule_for_site(rule, site)
-    ]
-    allow_rules = [
-        rule
-        for rule in state.get("rules", [])
-        if rule.get("enabled")
-        and rule.get("action") == "allow"
-        and (rule.get("siteId") == "*" or rule.get("siteId") == site.get("id"))
-    ]
-    access_rules = [
-        (index, rule)
-        for index, rule in enumerate([rule for rule in state.get("accessRules", []) if rule.get("enabled")], start=1)
-        if rule.get("siteId") in {"*", site.get("id")}
-    ]
 
     lines = [
         "server {",
@@ -500,6 +505,53 @@ def render_proxy_server(
     if auth_lines:
         lines.extend(auth_lines)
 
+    lines.extend(render_site_waf_directives(site, state))
+    lines.extend(
+        [
+            "",
+            *render_safeline_locations(site),
+            "",
+            *render_internal_waf_locations(site),
+            "",
+            "    location / {",
+            "        if ($sfl_block = 1) {",
+            "            return 460;",
+            "        }",
+            "        if ($sfl_challenge = 1) {",
+            "            return 461;",
+            "        }",
+            *render_application_location(site, state, upstream_name, upstream_scheme, proxy, is_ssl),
+            "    }",
+            "}",
+        ]
+    )
+
+    return "\n".join(lines)
+
+
+def render_site_waf_directives(site: dict, state: dict) -> list[str]:
+    rules = [
+        rule
+        for rule in state.get("rules", [])
+        if rule.get("enabled")
+        and rule.get("action") != "allow"
+        and (rule.get("siteId") == "*" or rule.get("siteId") == site.get("id"))
+        and should_emit_rule_for_site(rule, site)
+    ]
+    allow_rules = [
+        rule
+        for rule in state.get("rules", [])
+        if rule.get("enabled")
+        and rule.get("action") == "allow"
+        and (rule.get("siteId") == "*" or rule.get("siteId") == site.get("id"))
+    ]
+    access_rules = [
+        (index, rule)
+        for index, rule in enumerate([rule for rule in state.get("accessRules", []) if rule.get("enabled")], start=1)
+        if rule.get("siteId") in {"*", site.get("id")}
+    ]
+
+    lines = []
     rule_index = 0
     for access_index, access_rule in [item for item in access_rules if item[1].get("action") == "allow"]:
         rule_index += 1
@@ -523,51 +575,37 @@ def render_proxy_server(
 
     lines.extend(render_bot_protection(site))
     lines.extend(render_acl_notes(site))
-    lines.extend(
-        [
-            "",
-            *render_safeline_locations(site),
-            "",
-            "    location @freewaf_block {",
-            "        internal;",
-            "        add_header X-FreeWAF-Verdict block always;",
-            "        default_type text/html;",
-            f"        return 403 '{block_page(site)}';",
-            "    }",
-            "",
-            "    location @freewaf_rate_limited {",
-            "        internal;",
-            "        set $sfl_verdict block;",
-            "        set $sfl_reason \"HTTP flood rate limit\";",
-            "        add_header X-FreeWAF-Verdict block always;",
-            "        default_type text/html;",
-            f"        return 429 '{rate_limit_page(site)}';",
-            "    }",
-            "",
-            "    location @freewaf_challenge {",
-            "        internal;",
-            "        set $sfl_verdict challenge;",
-            "        set $sfl_reason \"Browser challenge required\";",
-            "        add_header X-FreeWAF-Verdict challenge always;",
-            "        add_header Set-Cookie \"freewaf_challenge=passed; Max-Age=1800; Path=/; SameSite=Lax\" always;",
-            "        add_header Cache-Control \"no-store\" always;",
-            "        return 302 $request_uri;",
-            "    }",
-            "",
-            "    location / {",
-            "        if ($sfl_block = 1) {",
-            "            return 460;",
-            "        }",
-            "        if ($sfl_challenge = 1) {",
-            "            return 461;",
-            "        }",
-            *render_application_location(site, state, upstream_name, upstream_scheme, proxy, is_ssl),
-            "    }",
-            "}",
-        ]
-    )
+    return lines
 
-    return "\n".join(lines)
+
+def render_internal_waf_locations(site: dict) -> list[str]:
+    return [
+        "    location @freewaf_block {",
+        "        internal;",
+        "        add_header X-FreeWAF-Verdict block always;",
+        "        default_type text/html;",
+        f"        return 403 '{block_page(site)}';",
+        "    }",
+        "",
+        "    location @freewaf_rate_limited {",
+        "        internal;",
+        "        set $sfl_verdict block;",
+        "        set $sfl_reason \"HTTP flood rate limit\";",
+        "        add_header X-FreeWAF-Verdict block always;",
+        "        default_type text/html;",
+        f"        return 429 '{rate_limit_page(site)}';",
+        "    }",
+        "",
+        "    location @freewaf_challenge {",
+        "        internal;",
+        "        set $sfl_verdict challenge;",
+        "        set $sfl_reason \"Browser challenge required\";",
+        "        add_header X-FreeWAF-Verdict challenge always;",
+        "        add_header Set-Cookie \"freewaf_challenge=passed; Max-Age=1800; Path=/; SameSite=Lax\" always;",
+        "        add_header Cache-Control \"no-store\" always;",
+        "        return 302 $request_uri;",
+        "    }",
+    ]
 
 
 def application_type(site: dict) -> str:

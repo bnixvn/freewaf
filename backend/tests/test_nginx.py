@@ -205,6 +205,47 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("ssl_certificate_key nginx/certs/demo.key;", config)
         self.assertIn("return 301 https://$host:443$request_uri;", config)
 
+    def test_force_https_redirect_server_enforces_waf_before_redirect(self):
+        state = make_state(
+            certificates=[
+                {
+                    "id": "cert-demo",
+                    "name": "Demo cert",
+                    "certFile": "nginx/certs/demo.crt",
+                    "keyFile": "nginx/certs/demo.key",
+                }
+            ],
+            sites=[
+                {
+                    "id": "site-demo",
+                    "name": "Demo",
+                    "hostnames": ["example.test"],
+                    "origin": "http://127.0.0.1:9090",
+                    "ports": ["80", "443_ssl"],
+                    "listen": 443,
+                    "tls": {
+                        "enabled": True,
+                        "certificateId": "cert-demo",
+                        "redirectHttp": True,
+                        "httpListen": 80,
+                        "http2": True,
+                    },
+                    "proxy": {"forceHttps": True},
+                    "mode": "block",
+                    "enabled": True,
+                }
+            ],
+        )
+        config = generate_nginx_config(state)
+        http_server = config[config.find("listen 0.0.0.0:80;") : config.find("listen 0.0.0.0:443")]
+
+        self.assertIn("set $sfl_challenge 0;", http_server)
+        self.assertIn("if ($sfl_bad_bot_ua = 1)", http_server)
+        self.assertIn("if ($sfl_block = 1)", http_server)
+        self.assertIn("if ($sfl_challenge = 1)", http_server)
+        self.assertIn("limit_req zone=freewaf_rate", http_server)
+        self.assertIn("return 301 https://$host:443$request_uri;", http_server)
+
     def test_generates_safeline_like_upstreams_and_proxy_options(self):
         state = make_state(
             certificates=[
