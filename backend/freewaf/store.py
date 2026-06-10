@@ -1588,8 +1588,9 @@ def build_stats(state: dict) -> dict:
 
     bot_types = summarize_bot_types(logs)
     countries = summarize_countries(logs)
+    real_countries = [item for item in countries if is_real_country_code(item["code"])]
     blocked_countries = sorted(
-        [item for item in countries if item["blocked"] > 0],
+        [item for item in real_countries if item["blocked"] > 0],
         key=lambda item: item["blocked"],
         reverse=True,
     )
@@ -1616,9 +1617,9 @@ def build_stats(state: dict) -> dict:
         "botChallengeTotal": sum(item["challenged"] for item in bot_types),
         "topCountries": countries[:12],
         "blockedCountries": blocked_countries[:12],
-        "countryCount": len(countries),
+        "countryCount": len(real_countries),
         "blockedCountryCount": len(blocked_countries),
-        "protectedCountryCount": sum(1 for item in countries if item["protected"] > 0),
+        "protectedCountryCount": sum(1 for item in real_countries if item["protected"] > 0),
         "geoAttribution": geoip_attribution(),
         "topRules": counter_items(top_rules),
         "topSites": counter_items(top_sites),
@@ -1725,6 +1726,10 @@ def normalize_country(name, code) -> dict:
     clean_code = str(code or "ZZ").strip().upper()[:3] or "ZZ"
     clean_name = str(name or "").strip() or ("Unknown" if clean_code == "ZZ" else clean_code)
     return {"code": clean_code, "name": clean_name}
+
+
+def is_real_country_code(code: str) -> bool:
+    return str(code or "").upper() not in {"", "ZZ", "LO"}
 
 
 def geoip_reader():
