@@ -268,9 +268,18 @@ h2 {
   justify-content: flex-end;
 }
 
+.dashboard-actions.compact {
+  min-height: 30px;
+}
+
+.compact-action {
+  min-height: 30px;
+  padding: 0 10px;
+}
+
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(176px, 1fr));
+  grid-template-columns: repeat(5, minmax(138px, 1fr));
   gap: 10px;
 }
 
@@ -278,6 +287,7 @@ h2 {
 .panel,
 .table-panel,
 .settings-tile,
+.dashboard-insight-band,
 .incident-item {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -286,8 +296,8 @@ h2 {
 }
 
 .metric-card {
-  min-height: 88px;
-  padding: 12px 14px;
+  min-height: 74px;
+  padding: 10px 12px;
 }
 
 .metric-label {
@@ -301,15 +311,15 @@ h2 {
 
 .metric-value {
   overflow-wrap: anywhere;
-  font-size: 28px;
+  font-size: 24px;
   line-height: 1;
   font-weight: 700;
 }
 
 .metric-note {
-  margin-top: 8px;
+  margin-top: 6px;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .grid-two {
@@ -323,6 +333,10 @@ h2 {
 .table-panel,
 .settings-tile {
   padding: 14px;
+}
+
+.dashboard-insight-band {
+  padding: 12px;
 }
 
 .panel-heading {
@@ -347,6 +361,80 @@ h2 {
   gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(320px, 0.82fr);
+  gap: 10px;
+  align-items: stretch;
+}
+
+.dashboard-traffic-panel,
+.dashboard-insight-band {
+  grid-column: 1 / span 2;
+}
+
+.dashboard-qps-panel,
+.dashboard-status-panel {
+  grid-column: 3;
+}
+
+.dashboard-insight-band {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.compact-insight-column {
+  min-width: 0;
+}
+
+.compact-insight-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.compact-insight-heading h2 {
+  margin-bottom: 0;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compact-insight-scroll {
+  max-height: 150px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+  scrollbar-width: thin;
+}
+
+.dashboard-insight-band .insight-list {
+  gap: 5px;
+}
+
+.dashboard-insight-band .insight-row {
+  gap: 2px;
+}
+
+.dashboard-insight-band .insight-row-top {
+  font-size: 11px;
+}
+
+.dashboard-insight-band .insight-row-top span,
+.dashboard-insight-band .insight-detail {
+  font-size: 10px;
+}
+
+.dashboard-insight-band .insight-note,
+.dashboard-insight-band .attribution-link {
+  margin-top: 6px;
+  font-size: 11px;
 }
 
 .dashboard-insights {
@@ -587,6 +675,11 @@ h2 {
   border-top: 1px solid var(--line);
 }
 
+.chart.compact {
+  height: 116px;
+  padding-top: 4px;
+}
+
 .bar-wrap {
   position: relative;
   display: grid;
@@ -594,6 +687,10 @@ h2 {
   align-items: end;
   gap: 3px;
   min-width: 0;
+}
+
+.chart.compact .bar-wrap {
+  grid-template-rows: 13px minmax(0, 1fr) 10px;
 }
 
 .bar-value,
@@ -683,7 +780,7 @@ h2 {
 }
 
 .traffic-widget {
-  min-height: 186px;
+  min-height: 0;
 }
 
 .traffic-widget-heading {
@@ -691,7 +788,7 @@ h2 {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 
 .traffic-widget-heading h2 {
@@ -742,7 +839,7 @@ h2 {
   display: flex;
   align-items: flex-end;
   gap: 5px;
-  height: 124px;
+  height: 104px;
   padding: 8px 2px 0;
 }
 
@@ -769,7 +866,7 @@ h2 {
 .request-status-chart {
   display: block;
   width: 100%;
-  height: 166px;
+  height: 146px;
   overflow: visible;
 }
 
@@ -1971,10 +2068,19 @@ td {
   }
 
   .metric-grid,
+  .dashboard-grid,
+  .dashboard-insight-band,
   .grid-two,
   .dashboard-insights,
   .settings-grid {
     grid-template-columns: 1fr;
+  }
+
+  .dashboard-traffic-panel,
+  .dashboard-insight-band,
+  .dashboard-qps-panel,
+  .dashboard-status-panel {
+    grid-column: 1;
   }
 
   .flood-edit-grid {
@@ -1998,7 +2104,7 @@ td {
   }
 
   .metric-value {
-    font-size: 28px;
+    font-size: 24px;
   }
 
   .form-grid {

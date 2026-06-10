@@ -1117,9 +1117,9 @@ function DashboardView({ data, resetStatistics }) {
 
   return (
     <>
-      <div className="dashboard-actions">
-        <button className="tool-button danger" onClick={resetStatistics}>
-          <Trash2 size={18} /> Reset Statistics
+      <div className="dashboard-actions compact">
+        <button className="tool-button danger compact-action" onClick={resetStatistics}>
+          <Trash2 size={18} /> Reset
         </button>
       </div>
       <div className="metric-grid">
@@ -1129,60 +1129,8 @@ function DashboardView({ data, resetStatistics }) {
         <Metric label="Bot Types" value={formatCompact(stats.botTypeCount)} note={`${formatCompact(stats.botRequestTotal)} bot-like requests`} />
         <Metric label="Blocked Requests" value={formatCompact(blockedTotal)} note={`${stats.blockRate ?? 0}% hard block rate`} />
       </div>
-      <div className="dashboard-insights">
-        <section className="panel insight-panel">
-          <div className="panel-heading">
-            <h2>Top 10 Bot Types</h2>
-            <span className="pill">{formatCompact(stats.botChallengeTotal)} challenged</span>
-          </div>
-          <InsightRows
-            rows={botTypes}
-            empty="No bot-like traffic detected."
-            maxValue={Math.max(1, ...botTypes.map((item) => Number(item.count || 0)))}
-            barValue={(item) => Number(item.count || 0)}
-            valueLabel={(item) => `${formatCompact(item.count)} requests`}
-            detailLabel={(item) => `${formatCompact(item.challenged)} challenged / ${formatCompact(item.blocked)} blocked`}
-          />
-        </section>
-        <section className="panel insight-panel">
-          <div className="panel-heading">
-            <h2>Top 10 Country Requests</h2>
-            <span className="pill">{formatCompact(stats.countryCount)} seen</span>
-          </div>
-          <InsightRows
-            rows={countries}
-            empty="No country data available."
-            maxValue={Math.max(1, ...countries.map((item) => Number(item.count || 0)))}
-            label={(item) => countryDisplayName(item)}
-            barValue={(item) => Number(item.count || 0)}
-            valueLabel={(item) => `${formatCompact(item.count)} requests`}
-            detailLabel={(item) => `${formatCompact(item.protected)} protected`}
-          />
-          {stats.geoAttribution?.available && (
-            <a className="attribution-link" href={stats.geoAttribution.url} target="_blank" rel="noreferrer">
-              IP geolocation by {stats.geoAttribution.provider}
-            </a>
-          )}
-        </section>
-        <section className="panel insight-panel">
-          <div className="panel-heading">
-            <h2>Top 10 Countries With Blocks</h2>
-            <span className="pill">{formatCompact(stats.blockedCountryCount)}</span>
-          </div>
-          <InsightRows
-            rows={blockedCountries}
-            empty="No countries with hard blocks."
-            maxValue={Math.max(1, ...blockedCountries.map((item) => Number(item.blocked || 0)))}
-            label={(item) => countryDisplayName(item)}
-            barValue={(item) => Number(item.blocked || 0)}
-            valueLabel={(item) => `${formatCompact(item.blocked)} blocked`}
-            detailLabel={(item) => `${formatCompact(item.challenged)} challenged`}
-          />
-          <div className="insight-note">Top signal: {topRule}</div>
-        </section>
-      </div>
-      <div className="grid-two">
-        <section className="panel">
+      <div className="dashboard-grid">
+        <section className="panel dashboard-traffic-panel">
           <div className="panel-heading traffic-heading">
             <h2>Traffic Window</h2>
             <div className="traffic-pills">
@@ -1193,29 +1141,90 @@ function DashboardView({ data, resetStatistics }) {
               <span className="pill">5 minute buckets</span>
             </div>
           </div>
-          <Timeline points={timeline} />
+          <Timeline points={timeline} compact />
         </section>
-        <div className="current-traffic-stack">
-          <section className="panel traffic-widget">
-            <div className="traffic-widget-heading">
-              <div className="traffic-title-row">
-                <h2>Query Per Second</h2>
-                <span className="qps-badge"><BarChart3 size={14} /> {formatQps(qpsValue)}</span>
-              </div>
-              <RefreshCw size={17} className="traffic-refresh-icon" />
+        <section className="panel traffic-widget dashboard-qps-panel">
+          <div className="traffic-widget-heading">
+            <div className="traffic-title-row">
+              <h2>Query Per Second</h2>
+              <span className="qps-badge"><BarChart3 size={14} /> {formatQps(qpsValue)}</span>
             </div>
-            <QpsBars points={qpsTimeline} />
-          </section>
-          <section className="panel traffic-widget">
-            <div className="traffic-widget-heading">
-              <h2>Requests Status</h2>
-              <span className="traffic-max">Max <strong>{formatCompact(requestsMax)}</strong></span>
-            </div>
-            <RequestsStatusChart points={timeline} />
-          </section>
-        </div>
+            <RefreshCw size={17} className="traffic-refresh-icon" />
+          </div>
+          <QpsBars points={qpsTimeline} />
+        </section>
+        <section className="dashboard-insight-band">
+          <CompactInsightColumn
+            title="Top 10 Bot Types"
+            pill={`${formatCompact(stats.botChallengeTotal)} challenged`}
+            rows={botTypes}
+            empty="No bot-like traffic detected."
+            maxValue={Math.max(1, ...botTypes.map((item) => Number(item.count || 0)))}
+            barValue={(item) => Number(item.count || 0)}
+            valueLabel={(item) => `${formatCompact(item.count)} requests`}
+            detailLabel={(item) => `${formatCompact(item.challenged)} challenged / ${formatCompact(item.blocked)} blocked`}
+          />
+          <CompactInsightColumn
+            title="Top 10 Country Requests"
+            pill={`${formatCompact(stats.countryCount)} seen`}
+            rows={countries}
+            empty="No country data available."
+            maxValue={Math.max(1, ...countries.map((item) => Number(item.count || 0)))}
+            label={(item) => countryDisplayName(item)}
+            barValue={(item) => Number(item.count || 0)}
+            valueLabel={(item) => `${formatCompact(item.count)} requests`}
+            detailLabel={(item) => `${formatCompact(item.protected)} protected`}
+            footer={stats.geoAttribution?.available ? (
+              <a className="attribution-link" href={stats.geoAttribution.url} target="_blank" rel="noreferrer">
+                IP geolocation by {stats.geoAttribution.provider}
+              </a>
+            ) : null}
+          />
+          <CompactInsightColumn
+            title="Top 10 Countries With Blocks"
+            pill={`${formatCompact(stats.blockedCountryCount)}`}
+            rows={blockedCountries}
+            empty="No countries with hard blocks."
+            maxValue={Math.max(1, ...blockedCountries.map((item) => Number(item.blocked || 0)))}
+            label={(item) => countryDisplayName(item)}
+            barValue={(item) => Number(item.blocked || 0)}
+            valueLabel={(item) => `${formatCompact(item.blocked)} blocked`}
+            detailLabel={(item) => `${formatCompact(item.challenged)} challenged`}
+            footer={<div className="insight-note">Top signal: {topRule}</div>}
+          />
+        </section>
+        <section className="panel traffic-widget dashboard-status-panel">
+          <div className="traffic-widget-heading">
+            <h2>Requests Status</h2>
+            <span className="traffic-max">Max <strong>{formatCompact(requestsMax)}</strong></span>
+          </div>
+          <RequestsStatusChart points={timeline} />
+        </section>
       </div>
     </>
+  );
+}
+
+function CompactInsightColumn({ title, pill, rows, empty, maxValue, label, barValue, valueLabel, detailLabel, footer }) {
+  return (
+    <div className="compact-insight-column">
+      <div className="compact-insight-heading">
+        <h2>{title}</h2>
+        <span className="pill">{pill}</span>
+      </div>
+      <div className="compact-insight-scroll">
+        <InsightRows
+          rows={rows}
+          empty={empty}
+          maxValue={maxValue}
+          label={label}
+          barValue={barValue}
+          valueLabel={valueLabel}
+          detailLabel={detailLabel}
+        />
+      </div>
+      {footer}
+    </div>
   );
 }
 
@@ -1784,11 +1793,11 @@ function Metric({ label, value, note }) {
   );
 }
 
-function Timeline({ points = [] }) {
+function Timeline({ points = [], compact = false }) {
   const [hovered, setHovered] = useState(null);
   const max = Math.max(1, ...points.map((point) => Number(point.total || 0)));
   return (
-    <div className="chart" aria-label="Traffic chart" onMouseLeave={() => setHovered(null)}>
+    <div className={`chart ${compact ? 'compact' : ''}`} aria-label="Traffic chart" onMouseLeave={() => setHovered(null)}>
       {points.map((point, index) => {
         const total = Number(point.total || 0);
         const protectedCount = Number(point.protected ?? (Number(point.blocked || 0) + Number(point.challenged || 0)));
