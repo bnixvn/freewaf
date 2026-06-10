@@ -11,6 +11,14 @@ from urllib.parse import urlparse
 
 NATIVE_TARGETS = {"all", "url", "headers", "method", "ip"}
 BOT_RULE_IDS = {"builtin-scanner-agent"}
+BOT_BLOCK_UA_PATTERN = (
+    r"(?:sqlmap|nikto|acunetix|nessus|nuclei|wpscan|masscan|nmap|zgrab|gobuster|"
+    r"dirbuster|ffuf|jaeles|zmeu|commix|havij|netsparker|openvas|arachni)"
+)
+BOT_CHALLENGE_UA_PATTERN = (
+    r"(?:curl|wget|python-requests|python-urllib|aiohttp|httpx|scrapy|libwww-perl|"
+    r"go-http-client|java/|okhttp|apache-httpclient|node-fetch|axios|perl|ruby)"
+)
 
 
 def nginx_output_file(root_dir: Path) -> Path:
@@ -78,7 +86,7 @@ def generate_nginx_common_blocks(state: dict) -> list[str]:
         "    default \"Allowed\";",
         "}",
         "",
-        "log_format freewaf escape=json '{\"time\":\"$time_iso8601\",\"remote_addr\":\"$remote_addr\",\"host\":\"$host\",\"method\":\"$request_method\",\"uri\":\"$request_uri\",\"status\":$status,\"bytes\":$body_bytes_sent,\"request_time\":$request_time,\"upstream_status\":\"$upstream_status\",\"verdict\":\"$sfl_verdict\",\"reason\":\"$sfl_reason\"}';",
+        "log_format freewaf escape=json '{\"time\":\"$time_iso8601\",\"remote_addr\":\"$remote_addr\",\"host\":\"$host\",\"method\":\"$request_method\",\"uri\":\"$request_uri\",\"status\":$status,\"bytes\":$body_bytes_sent,\"request_time\":$request_time,\"upstream_status\":\"$upstream_status\",\"verdict\":\"$sfl_verdict\",\"reason\":\"$sfl_reason\",\"user_agent\":\"$http_user_agent\",\"referer\":\"$http_referer\"}';",
         "",
         "map $http_upgrade $sfl_connection_upgrade {",
         "    default upgrade;",
@@ -87,17 +95,19 @@ def generate_nginx_common_blocks(state: dict) -> list[str]:
         "",
     ]
 
+    if any(site_features(site).get("botProtection") for site in enabled_sites):
+        blocks.extend(render_bot_detection_maps())
+
+    if any_uses_challenge(enabled_sites):
+        blocks.extend(render_challenge_maps())
+
     rate_limit = state.get("settings", {}).get("rateLimit", {})
     uses_global_rate = any(
         site_features(site).get("httpFlood") and not active_acl_access_limit(site)
         for site in enabled_sites
     )
     if rate_limit.get("enabled") and uses_global_rate:
-        blocks.extend(
-            [
-                f"limit_req_zone $binary_remote_addr zone=freewaf_rate:10m rate={nginx_rate(rate_limit)};",
-            ]
-        )
+        blocks.extend(render_global_rate_limit_zones(rate_limit))
 
     acl_zones = render_acl_limit_zones(enabled_sites)
     if acl_zones:
@@ -222,7 +232,8 @@ def parse_nginx_logs(root_dir: Path, limit: int = 500) -> list[dict]:
                     "durationMs": int(float(raw.get("request_time") or 0) * 1000),
                     "reason": reason,
                     "matchedRules": [{"name": reason, "severity": "medium", "action": verdict}] if verdict != "allow" else [],
-                    "userAgent": "",
+                    "userAgent": str(raw.get("user_agent") or ""),
+                    "referer": str(raw.get("referer") or ""),
                     "requestSize": 0,
                 }
             )
@@ -258,6 +269,59 @@ def render_access_maps(state: dict, access_rules: list[dict]) -> list[str]:
             continue
         blocks.append(render_geo_map(f"sfl_access_ip_{index}", items))
     return blocks
+
+
+def render_bot_detection_maps() -> list[str]:
+    return [
+        "map $http_user_agent $sfl_bad_bot_ua {",
+        "    default 0;",
+        f"    ~*{BOT_BLOCK_UA_PATTERN} 1;",
+        "}",
+        "",
+        "map $http_user_agent $sfl_suspicious_ua {",
+        "    default 0;",
+        f"    ~*{BOT_CHALLENGE_UA_PATTERN} 1;",
+        "}",
+        "",
+        "map $http_user_agent $sfl_missing_user_agent {",
+        "    default 0;",
+        "    '' 1;",
+        "}",
+        "",
+        "map $http_accept $sfl_missing_accept {",
+        "    default 0;",
+        "    '' 1;",
+        "}",
+        "",
+        "map $http_referer $sfl_bad_referer {",
+        "    default 0;",
+        f"    ~*{BOT_BLOCK_UA_PATTERN} 1;",
+        "}",
+        "",
+        "map $request_method $sfl_unsafe_method {",
+        "    default 0;",
+        "    ~*^(?:TRACE|TRACK|CONNECT)$ 1;",
+        "}",
+        "",
+    ]
+
+
+def render_challenge_maps() -> list[str]:
+    return [
+        "map $cookie_freewaf_challenge $sfl_challenge_passed {",
+        "    default 0;",
+        "    passed 1;",
+        "}",
+        "",
+    ]
+
+
+def render_global_rate_limit_zones(rate_limit: dict) -> list[str]:
+    rate = nginx_rate(rate_limit)
+    return [
+        f"limit_req_zone $binary_remote_addr zone=freewaf_rate:10m rate={rate};",
+        f"limit_req_zone \"$remote_addr|$request_method|$http_user_agent\" zone=freewaf_rate_fingerprint:10m rate={rate};",
+    ]
 
 
 def render_geo_map(variable_name: str, items: list[str]) -> str:
@@ -403,12 +467,14 @@ def render_proxy_server(
         "",
         "    set $sfl_block 0;",
         "    set $sfl_allow 0;",
+        "    set $sfl_challenge 0;",
         "    set $sfl_verdict allow;",
         "    set $sfl_reason \"Allowed\";",
         "",
         *render_log_directives(site, proxy),
         "    error_page 460 = @freewaf_block;",
-        "    error_page 429 = /.safeline/acl_page;",
+        "    error_page 461 = @freewaf_challenge;",
+        *render_rate_limit_error_page(site),
         "    error_page 502 =502 /.safeline/bad_gateway_page;",
         "    error_page 504 =504 /.safeline/gateway_timeout_page;",
         "",
@@ -455,6 +521,7 @@ def render_proxy_server(
         else:
             lines.extend(render_rule_if(rule, "block", rule_index))
 
+    lines.extend(render_bot_protection(site))
     lines.extend(render_acl_notes(site))
     lines.extend(
         [
@@ -468,9 +535,31 @@ def render_proxy_server(
             f"        return 403 '{block_page(site)}';",
             "    }",
             "",
+            "    location @freewaf_rate_limited {",
+            "        internal;",
+            "        set $sfl_verdict block;",
+            "        set $sfl_reason \"HTTP flood rate limit\";",
+            "        add_header X-FreeWAF-Verdict block always;",
+            "        default_type text/html;",
+            f"        return 429 '{rate_limit_page(site)}';",
+            "    }",
+            "",
+            "    location @freewaf_challenge {",
+            "        internal;",
+            "        set $sfl_verdict challenge;",
+            "        set $sfl_reason \"Browser challenge required\";",
+            "        add_header X-FreeWAF-Verdict challenge always;",
+            "        add_header Set-Cookie \"freewaf_challenge=passed; Max-Age=1800; Path=/; SameSite=Lax\" always;",
+            "        add_header Cache-Control \"no-store\" always;",
+            "        return 302 $request_uri;",
+            "    }",
+            "",
             "    location / {",
             "        if ($sfl_block = 1) {",
             "            return 460;",
+            "        }",
+            "        if ($sfl_challenge = 1) {",
+            "            return 461;",
             "        }",
             *render_application_location(site, state, upstream_name, upstream_scheme, proxy, is_ssl),
             "    }",
@@ -752,9 +841,28 @@ def render_acl_limit_zones(sites: list[dict]) -> list[str]:
         limit = active_acl_access_limit(site)
         if not limit:
             continue
+        if acl_limit_action(limit) == "challenge_v1":
+            zones.extend(
+                [
+                    f"map $cookie_freewaf_challenge ${acl_key_name(site)} {{",
+                    "    default $binary_remote_addr;",
+                    "    passed \"\";",
+                    "}",
+                    "",
+                    f"map $cookie_freewaf_challenge ${acl_fingerprint_key_name(site)} {{",
+                    "    default \"$remote_addr|$request_method|$http_user_agent\";",
+                    "    passed \"\";",
+                    "}",
+                    "",
+                ]
+            )
         zones.append(
-            f"limit_req_zone $binary_remote_addr zone={acl_zone_name(site)}:10m rate={nginx_acl_rate(limit)};"
+            f"limit_req_zone {acl_limit_key(site, limit)} zone={acl_zone_name(site)}:10m rate={nginx_acl_rate(limit)};"
         )
+        if site_features(site).get("httpFlood"):
+            zones.append(
+                f"limit_req_zone {acl_fingerprint_limit_key(site, limit)} zone={acl_fingerprint_zone_name(site)}:10m rate={nginx_acl_rate(limit)};"
+            )
     return zones
 
 
@@ -768,6 +876,39 @@ def active_acl_access_limit(site: dict) -> dict | None:
 
 def acl_zone_name(site: dict) -> str:
     return f"sfl_acl_{safe_identifier(site.get('id') or site.get('name') or 'site')}"
+
+
+def acl_fingerprint_zone_name(site: dict) -> str:
+    return f"{acl_zone_name(site)}_fp"
+
+
+def acl_key_name(site: dict) -> str:
+    return f"sfl_acl_key_{safe_identifier(site.get('id') or site.get('name') or 'site')}"
+
+
+def acl_fingerprint_key_name(site: dict) -> str:
+    return f"{acl_key_name(site)}_fp"
+
+
+def acl_limit_key(site: dict, limit: dict) -> str:
+    if acl_limit_action(limit) == "challenge_v1":
+        return f"${acl_key_name(site)}"
+    return "$binary_remote_addr"
+
+
+def acl_fingerprint_limit_key(site: dict, limit: dict) -> str:
+    if acl_limit_action(limit) == "challenge_v1":
+        return f"${acl_fingerprint_key_name(site)}"
+    return "\"$remote_addr|$request_method|$http_user_agent\""
+
+
+def acl_limit_action(limit: dict | None) -> str:
+    action = str((limit or {}).get("action") or "block").lower()
+    return action if action in {"allow", "block", "challenge_v1", "monitor"} else "block"
+
+
+def any_uses_challenge(sites: list[dict]) -> bool:
+    return any(site_features(site).get("botProtection") or acl_limit_action(active_acl_access_limit(site)) == "challenge_v1" for site in sites)
 
 
 def nginx_acl_rate(limit: dict) -> str:
@@ -811,6 +952,79 @@ def render_auth_feature(site: dict) -> list[str]:
         "    # Set NGINX_AUTH_FILE to emit native auth_basic directives.",
         "",
     ]
+
+
+def render_bot_protection(site: dict) -> list[str]:
+    if not site_features(site).get("botProtection"):
+        return []
+
+    effect = "monitor" if site.get("mode") == "monitor" else "block"
+    lines = [
+        "    set $sfl_bot_block 0;",
+        "    set $sfl_bot_challenge 0;",
+        "    if ($sfl_bad_bot_ua = 1) {",
+        "        set $sfl_bot_block 1;",
+        "    }",
+        "    if ($sfl_bad_referer = 1) {",
+        "        set $sfl_bot_block 1;",
+        "    }",
+        "    if ($sfl_unsafe_method = 1) {",
+        "        set $sfl_bot_block 1;",
+        "    }",
+        "    if ($sfl_suspicious_ua = 1) {",
+        "        set $sfl_bot_challenge 1;",
+        "    }",
+        "    if ($sfl_missing_user_agent = 1) {",
+        "        set $sfl_bot_challenge 1;",
+        "    }",
+        "    if ($sfl_missing_accept = 1) {",
+        "        set $sfl_bot_challenge 1;",
+        "    }",
+        "    if ($sfl_challenge_passed = 1) {",
+        "        set $sfl_bot_challenge 0;",
+        "    }",
+        "    if ($sfl_allow = 1) {",
+        "        set $sfl_bot_block 0;",
+        "        set $sfl_bot_challenge 0;",
+        "    }",
+        "    if ($sfl_block = 1) {",
+        "        set $sfl_bot_block 0;",
+        "        set $sfl_bot_challenge 0;",
+        "    }",
+    ]
+
+    if effect == "monitor":
+        lines.extend(
+            [
+                "    if ($sfl_bot_block = 1) {",
+                "        set $sfl_verdict monitor;",
+                "        set $sfl_reason \"Bot protection matched scanner headers\";",
+                "    }",
+                "    if ($sfl_bot_challenge = 1) {",
+                "        set $sfl_verdict monitor;",
+                "        set $sfl_reason \"Bot protection matched suspicious headers\";",
+                "    }",
+                "",
+            ]
+        )
+        return lines
+
+    lines.extend(
+        [
+            "    if ($sfl_bot_block = 1) {",
+            "        set $sfl_block 1;",
+            "        set $sfl_verdict block;",
+            "        set $sfl_reason \"Bot protection matched scanner headers\";",
+            "    }",
+            "    if ($sfl_bot_challenge = 1) {",
+            "        set $sfl_challenge 1;",
+            "        set $sfl_verdict challenge;",
+            "        set $sfl_reason \"Bot protection matched suspicious headers\";",
+            "    }",
+            "",
+        ]
+    )
+    return lines
 
 
 def render_access_rule_if(rule: dict, access_index: int, effect: str, rule_index: int, state: dict) -> list[str]:
@@ -1086,13 +1300,28 @@ def render_rate_limit(state: dict, site: dict) -> list[str]:
     acl_limit = active_acl_access_limit(site)
     if acl_limit:
         burst = max(1, int(acl_limit.get("count") or 200))
-        return [f"        limit_req zone={acl_zone_name(site)} burst={burst} nodelay;"]
+        lines = [f"        limit_req zone={acl_zone_name(site)} burst={burst} nodelay;"]
+        if site_features(site).get("httpFlood"):
+            lines.append(f"        limit_req zone={acl_fingerprint_zone_name(site)} burst={burst} nodelay;")
+        if acl_limit_action(acl_limit) == "monitor":
+            lines.append("        limit_req_dry_run on;")
+        return lines
 
     rate_limit = state.get("settings", {}).get("rateLimit", {})
     if not rate_limit.get("enabled") or not site_features(site).get("httpFlood"):
         return []
     burst = max(1, int(rate_limit.get("max") or 120))
-    return [f"        limit_req zone=freewaf_rate burst={burst} nodelay;"]
+    return [
+        f"        limit_req zone=freewaf_rate burst={burst} nodelay;",
+        f"        limit_req zone=freewaf_rate_fingerprint burst={burst} nodelay;",
+    ]
+
+
+def render_rate_limit_error_page(site: dict) -> list[str]:
+    acl_limit = active_acl_access_limit(site)
+    if acl_limit_action(acl_limit) == "challenge_v1":
+        return ["    error_page 429 = @freewaf_challenge;"]
+    return ["    error_page 429 = @freewaf_rate_limited;"]
 
 
 def nginx_rate(rate_limit: dict) -> str:
@@ -1152,6 +1381,12 @@ def safe_identifier(value: str) -> str:
 def block_page(site: dict) -> str:
     title = "Request blocked"
     message = f"FreeWAF blocked this request for {site.get('name', 'this site')}."
+    return error_page_html(title, message)
+
+
+def rate_limit_page(site: dict) -> str:
+    title = "Request limited"
+    message = f"FreeWAF rate-limited this request for {site.get('name', 'this site')}."
     return error_page_html(title, message)
 
 

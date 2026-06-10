@@ -402,6 +402,57 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("set $sfl_access_1_group_1 1;", config)
         self.assertIn("Deny admin path", config)
 
+    def test_bot_protection_emits_header_block_and_challenge(self):
+        config = generate_nginx_config(make_state())
+
+        self.assertIn("map $http_user_agent $sfl_bad_bot_ua", config)
+        self.assertIn("map $http_user_agent $sfl_suspicious_ua", config)
+        self.assertIn("map $cookie_freewaf_challenge $sfl_challenge_passed", config)
+        self.assertIn("set $sfl_bot_block 1;", config)
+        self.assertIn("set $sfl_challenge 1;", config)
+        self.assertIn("error_page 461 = @freewaf_challenge;", config)
+        self.assertIn("add_header Set-Cookie \"freewaf_challenge=passed;", config)
+        self.assertIn("Bot protection matched scanner headers", config)
+        self.assertIn("Bot protection matched suspicious headers", config)
+        self.assertIn('limit_req_zone "$remote_addr|$request_method|$http_user_agent" zone=freewaf_rate_fingerprint', config)
+        self.assertNotIn("$request_method$request_uri$http_user_agent", config)
+
+    def test_acl_challenge_rate_limit_uses_cookie_aware_keys(self):
+        state = make_state(
+            sites=[
+                {
+                    "id": "site-demo",
+                    "name": "Demo",
+                    "hostnames": ["localhost"],
+                    "origin": "http://127.0.0.1:9090",
+                    "listen": 8080,
+                    "mode": "block",
+                    "enabled": True,
+                    "features": {"httpFlood": True, "botProtection": False, "attacks": True},
+                    "acl": {
+                        "enabled": True,
+                        "accessLimit": {
+                            "enabled": True,
+                            "period": 10,
+                            "count": 200,
+                            "action": "challenge_v1",
+                            "blockMin": 60,
+                        },
+                    },
+                }
+            ]
+        )
+        config = generate_nginx_config(state)
+
+        self.assertIn("map $cookie_freewaf_challenge $sfl_acl_key_site_demo", config)
+        self.assertIn("map $cookie_freewaf_challenge $sfl_acl_key_site_demo_fp", config)
+        self.assertIn("passed \"\";", config)
+        self.assertIn("limit_req_zone $sfl_acl_key_site_demo zone=sfl_acl_site_demo:10m", config)
+        self.assertIn("limit_req_zone $sfl_acl_key_site_demo_fp zone=sfl_acl_site_demo_fp:10m", config)
+        self.assertIn("limit_req zone=sfl_acl_site_demo burst=200 nodelay;", config)
+        self.assertIn("limit_req zone=sfl_acl_site_demo_fp burst=200 nodelay;", config)
+        self.assertIn("error_page 429 = @freewaf_challenge;", config)
+
     def test_site_features_gate_native_modules(self):
         state = make_state(
             sites=[
