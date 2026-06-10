@@ -172,7 +172,8 @@ const defaultChallengePage = {
   primaryColor: '#18a69a',
   backgroundColor: '#f5f7f8',
   textColor: '#17202a',
-  tokenTtlMinutes: '30'
+  tokenTtlMinutes: '30',
+  waitSeconds: '5'
 };
 
 const defaultBotLoginPathPatterns = [
@@ -486,37 +487,80 @@ export default function App() {
     showToast.timer = window.setTimeout(() => setToast(null), 2400);
   }
 
+  function updateDataItem(collection, id, updater) {
+    setData((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        [collection]: (current[collection] || []).map((item) => (
+          item.id === id ? (typeof updater === 'function' ? updater(item) : { ...item, ...updater }) : item
+        ))
+      };
+    });
+  }
+
+  function updateSettingsLocal(settings) {
+    setData((current) => (current ? { ...current, settings } : current));
+  }
+
   async function toggleSite(site, enabled) {
-    await api(`/api/sites/${site.id}`, { method: 'PATCH', body: { enabled } });
-    await loadState();
+    updateDataItem('sites', site.id, { enabled });
+    try {
+      const saved = await api(`/api/sites/${site.id}`, { method: 'PATCH', body: { enabled } });
+      updateDataItem('sites', site.id, saved);
+    } catch (error) {
+      showToast(error.message, true);
+      await loadState(false, false);
+    }
   }
 
   async function toggleUnderAttack(site, enabled) {
+    const underAttack = { ...(site.underAttack || {}), enabled };
+    updateDataItem('sites', site.id, { underAttack });
     try {
-      await api(`/api/sites/${site.id}`, {
+      const saved = await api(`/api/sites/${site.id}`, {
         method: 'PATCH',
-        body: { underAttack: { ...(site.underAttack || {}), enabled } }
+        body: { underAttack }
       });
-      await loadState();
+      updateDataItem('sites', site.id, saved);
       showToast(enabled ? 'Under Attack Mode enabled' : 'Under Attack Mode disabled');
     } catch (error) {
       showToast(error.message, true);
+      await loadState(false, false);
     }
   }
 
   async function toggleRule(rule, enabled) {
-    await api(`/api/rules/${rule.id}`, { method: 'PATCH', body: { enabled } });
-    await loadState();
+    updateDataItem('rules', rule.id, { enabled });
+    try {
+      const saved = await api(`/api/rules/${rule.id}`, { method: 'PATCH', body: { enabled } });
+      updateDataItem('rules', rule.id, saved);
+    } catch (error) {
+      showToast(error.message, true);
+      await loadState(false, false);
+    }
   }
 
   async function toggleIpGroup(group, enabled) {
-    await api(`/api/ip-groups/${group.id}`, { method: 'PATCH', body: { enabled } });
-    await loadState();
+    updateDataItem('ipGroups', group.id, { enabled });
+    try {
+      const saved = await api(`/api/ip-groups/${group.id}`, { method: 'PATCH', body: { enabled } });
+      updateDataItem('ipGroups', group.id, saved);
+    } catch (error) {
+      showToast(error.message, true);
+      await loadState(false, false);
+    }
   }
 
   async function toggleAccessRule(rule, enabled) {
-    await api(`/api/access-rules/${rule.id}`, { method: 'PATCH', body: { enabled } });
-    await loadState();
+    updateDataItem('accessRules', rule.id, { enabled });
+    try {
+      const saved = await api(`/api/access-rules/${rule.id}`, { method: 'PATCH', body: { enabled } });
+      updateDataItem('accessRules', rule.id, saved);
+    } catch (error) {
+      showToast(error.message, true);
+      await loadState(false, false);
+    }
   }
 
   async function saveSite(site) {
@@ -889,33 +933,34 @@ export default function App() {
   }
 
   async function savePanelSettings(panel) {
-    await api('/api/settings', {
+    const saved = await api('/api/settings', {
       method: 'PATCH',
       body: { panel }
     });
-    await loadState();
+    updateSettingsLocal(saved);
     showToast('Panel settings saved');
   }
 
   async function saveApplicationDefaults(applicationDefaults) {
-    await api('/api/settings', {
+    const saved = await api('/api/settings', {
       method: 'PATCH',
       body: { applicationDefaults }
     });
+    updateSettingsLocal(saved);
     const result = await api('/api/nginx/apply', {
       method: 'POST',
       body: { test: true, reload: true }
     });
-    await loadState();
+    await loadState(false, false);
     showToast(result.ok ? 'Global defaults saved and Nginx reloaded' : 'Global defaults saved, but Nginx reload failed', !result.ok);
   }
 
   async function saveChallengePage(challengePage) {
-    await api('/api/settings', {
+    const saved = await api('/api/settings', {
       method: 'PATCH',
       body: { challengePage }
     });
-    await loadState();
+    updateSettingsLocal(saved);
     showToast('Challenge page saved');
   }
 
@@ -1970,6 +2015,16 @@ function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaul
             <TextField label="Background Color" value={challengeForm.backgroundColor} onChange={(value) => updateChallenge('backgroundColor', value)} type="color" />
             <TextField label="Text Color" value={challengeForm.textColor} onChange={(value) => updateChallenge('textColor', value)} type="color" />
             <TextField label="Token TTL (minutes)" value={challengeForm.tokenTtlMinutes} onChange={(value) => updateChallenge('tokenTtlMinutes', value)} type="number" />
+            <SelectField
+              label="Challenge Wait"
+              value={String(challengeForm.waitSeconds)}
+              onChange={(value) => updateChallenge('waitSeconds', value)}
+              options={[
+                { value: '3', label: '3 seconds' },
+                { value: '5', label: '5 seconds (recommended)' },
+                { value: '10', label: '10 seconds' }
+              ]}
+            />
             <div className="settings-actions full">
               <button className="tool-button primary"><Save size={18} /> Save Challenge Page</button>
             </div>
@@ -2048,6 +2103,7 @@ function Metric({ label, value, note }) {
 }
 
 function ChallengePagePreview({ form }) {
+  const waitSeconds = challengeWaitSeconds(form.waitSeconds);
   const previewStyle = {
     '--challenge-primary': form.primaryColor,
     '--challenge-background': form.backgroundColor,
@@ -2066,7 +2122,7 @@ function ChallengePagePreview({ form }) {
         <p>{form.message || 'We are verifying your browser before continuing.'}</p>
         <strong>Example Application</strong>
         <span className="challenge-preview-loader" />
-        <small>Checking browser integrity...</small>
+        <small>Checking browser integrity... {waitSeconds}s</small>
       </div>
     </div>
   );
@@ -3928,7 +3984,8 @@ function challengePageFormFromSettings(challengePage) {
   return {
     ...defaultChallengePage,
     ...(challengePage || {}),
-    tokenTtlMinutes: String(challengePage?.tokenTtlMinutes ?? defaultChallengePage.tokenTtlMinutes)
+    tokenTtlMinutes: String(challengePage?.tokenTtlMinutes ?? defaultChallengePage.tokenTtlMinutes),
+    waitSeconds: String(challengePage?.waitSeconds ?? defaultChallengePage.waitSeconds)
   };
 }
 
@@ -3942,8 +3999,14 @@ function challengePagePayload(form) {
     primaryColor: form.primaryColor,
     backgroundColor: form.backgroundColor,
     textColor: form.textColor,
-    tokenTtlMinutes: positiveInt(form.tokenTtlMinutes, 30)
+    tokenTtlMinutes: positiveInt(form.tokenTtlMinutes, 30),
+    waitSeconds: challengeWaitSeconds(form.waitSeconds)
   };
+}
+
+function challengeWaitSeconds(value) {
+  const seconds = positiveInt(value, 5);
+  return [3, 5, 10].includes(seconds) ? seconds : 5;
 }
 
 function floodActionPhrase(action, blockMin) {

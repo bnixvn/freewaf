@@ -15,6 +15,7 @@ from freewaf.server import (
     prepare_certificate_payload,
     prepare_certbot_certificate_payload,
     remove_certificate_files,
+    render_challenge_page,
     secure_link_token,
     sync_ip_group_reference,
     verify_challenge_nonce,
@@ -98,6 +99,39 @@ class CertificateServerTests(unittest.TestCase):
             self.assertTrue(verify_challenge_nonce(nonce, context))
             self.assertFalse(verify_challenge_nonce(nonce, {**context, "ip": "203.0.113.11"}))
         self.assertRegex(token, r"^[A-Za-z0-9_-]+$")
+
+    def test_challenge_nonce_enforces_configured_wait_before_verify(self):
+        context = {
+            "siteId": "site-demo",
+            "host": "demo.example.test",
+            "ip": "203.0.113.10",
+            "userAgent": "Mozilla/5.0",
+            "proto": "https",
+        }
+        with mock.patch.dict(os.environ, {"FREEWAF_CHALLENGE_SECRET": "unit-test-secret"}, clear=False):
+            with mock.patch("freewaf.server.time.time", return_value=1000):
+                nonce = challenge_nonce(context, delay_seconds=5)
+            with mock.patch("freewaf.server.time.time", return_value=1004):
+                self.assertFalse(verify_challenge_nonce(nonce, context))
+            with mock.patch("freewaf.server.time.time", return_value=1005):
+                self.assertTrue(verify_challenge_nonce(nonce, context))
+
+    def test_challenge_page_uses_configured_wait_seconds(self):
+        context = {
+            "siteId": "site-demo",
+            "host": "demo.example.test",
+            "ip": "203.0.113.10",
+            "userAgent": "Mozilla/5.0",
+            "proto": "https",
+        }
+        html = render_challenge_page(
+            {"settings": {"challengePage": {"waitSeconds": 10}}},
+            {"id": "site-demo", "name": "Demo", "enabled": True},
+            context,
+        )
+
+        self.assertIn("Checking browser integrity... 10s", html)
+        self.assertIn("10000", html)
 
     def test_delete_uploaded_cert_removes_managed_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:

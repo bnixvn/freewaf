@@ -732,9 +732,11 @@ def challenge_site(state: dict, site_id: str) -> dict | None:
     return next((site for site in state.get("sites", []) if site.get("id") == site_id and site.get("enabled")), None)
 
 
-def challenge_nonce(context: dict, ttl_seconds: int = 120) -> str:
+def challenge_nonce(context: dict, ttl_seconds: int = 120, delay_seconds: int = 0) -> str:
+    now = int(time.time())
     payload = {
-        "exp": int(time.time()) + ttl_seconds,
+        "exp": now + ttl_seconds,
+        "nbf": now + max(0, int(delay_seconds or 0)),
         "site": context["siteId"],
         "host": context["host"],
         "ip": context["ip"],
@@ -762,8 +764,14 @@ def verify_challenge_nonce(value, context: dict) -> bool:
     except (TypeError, ValueError):
         return False
     expected_ua = hashlib.sha256(context["userAgent"].encode("utf-8")).hexdigest()
+    try:
+        not_before = int(payload.get("nbf") or 0)
+    except (TypeError, ValueError):
+        return False
+    now = int(time.time())
     return (
-        expires >= int(time.time())
+        expires >= now
+        and not_before <= now
         and payload.get("site") == context["siteId"]
         and payload.get("host") == context["host"]
         and payload.get("ip") == context["ip"]
@@ -795,7 +803,9 @@ def render_challenge_page(state: dict, site: dict, context: dict) -> str:
     primary = str(settings.get("primaryColor") or "#18a69a")
     background = str(settings.get("backgroundColor") or "#f5f7f8")
     text = str(settings.get("textColor") or "#17202a")
-    nonce = json.dumps(challenge_nonce(context))
+    wait_seconds = challenge_wait_seconds(settings)
+    nonce = json.dumps(challenge_nonce(context, delay_seconds=wait_seconds))
+    wait_ms = wait_seconds * 1000
     logo = f'<img class="logo" src="{logo_url}" alt="{brand}">' if logo_url else f'<div class="brand-mark">{brand[:1] or "F"}</div>'
     support = f'<a href="{support_url}" rel="noreferrer">Contact support</a>' if support_url else ""
     return (
@@ -812,14 +822,26 @@ def render_challenge_page(state: dict, site: dict, context: dict) -> str:
         "a{display:inline-block;margin-top:20px;color:var(--primary);font-size:13px;font-weight:700;text-decoration:none}@keyframes spin{to{transform:rotate(360deg)}}"
         "</style></head><body><main>"
         f"{logo}<h1>{title}</h1><p>{message}</p><div class=\"application\">{application}</div><div class=\"loader\"></div>"
-        f"<div class=\"status\" id=\"status\">Checking browser integrity...</div>{support}"
+        f"<div class=\"status\" id=\"status\">Checking browser integrity... {wait_seconds}s</div>{support}"
         "<noscript><p>JavaScript is required to complete this security check.</p></noscript></main>"
-        "<script>(async function(){const status=document.getElementById('status');try{const response=await fetch('/.freewaf/challenge/verify',"
+        "<script>(function(){const status=document.getElementById('status');let remaining="
+        f"{wait_seconds};function tick(){{status.textContent=remaining>0?'Checking browser integrity... '+remaining+'s':'Finalizing verification...';}}"
+        "async function verify(){try{status.textContent='Finalizing verification...';const response=await fetch('/.freewaf/challenge/verify',"
         f"{{method:'POST',credentials:'same-origin',headers:{{'content-type':'application/json'}},body:JSON.stringify({{nonce:{nonce}}})}});"
         "if(!response.ok)throw new Error('Verification failed');status.textContent='Verification complete. Continuing...';"
-        "window.setTimeout(function(){window.location.reload();},350)}catch(error){status.textContent='Unable to verify this browser. Please refresh and try again.'}})();</script>"
+        "window.setTimeout(function(){window.location.reload();},350)}catch(error){status.textContent='Unable to verify this browser. Please refresh and try again.'}}"
+        "tick();window.setTimeout(function(){verify();},"
+        f"{wait_ms});if(remaining>0){{window.setInterval(function(){{remaining-=1;tick();}},1000);}}}})();</script>"
         "</body></html>"
     )
+
+
+def challenge_wait_seconds(settings: dict) -> int:
+    try:
+        seconds = int(settings.get("waitSeconds") or 5)
+    except (TypeError, ValueError):
+        seconds = 5
+    return seconds if seconds in {3, 5, 10} else 5
 
 
 def session_max_age_seconds(state: dict) -> int:

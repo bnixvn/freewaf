@@ -631,7 +631,13 @@ def normalize_challenge_page_settings(value) -> dict:
             max(normalize_positive_int(source.get("tokenTtlMinutes") or source.get("token_ttl_minutes"), defaults["tokenTtlMinutes"]), 1),
             1440,
         ),
+        "waitSeconds": normalize_challenge_wait_seconds(source.get("waitSeconds") or source.get("wait_seconds"), defaults["waitSeconds"]),
     }
+
+
+def normalize_challenge_wait_seconds(value, default: int = 5) -> int:
+    seconds = normalize_positive_int(value, default)
+    return seconds if seconds in {3, 5, 10} else default
 
 
 def normalize_stored_site(site: dict) -> dict:

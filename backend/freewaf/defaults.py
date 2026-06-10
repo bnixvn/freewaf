@@ -52,6 +52,7 @@ DEFAULT_SETTINGS = {
         "backgroundColor": "#f5f7f8",
         "textColor": "#17202a",
         "tokenTtlMinutes": 30,
+        "waitSeconds": 5,
     },
     "blockPageTitle": "Request blocked",
     "blockSupportIdPrefix": "SFL",

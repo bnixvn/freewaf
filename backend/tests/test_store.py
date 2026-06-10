@@ -367,6 +367,7 @@ class StoreTests(unittest.TestCase):
                         "backgroundColor": "bad",
                         "textColor": "#111111",
                         "tokenTtlMinutes": 99999,
+                        "waitSeconds": 10,
                     }
                 },
                 "sites": [
@@ -386,6 +387,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(challenge["primaryColor"], "#abcdef")
         self.assertEqual(challenge["backgroundColor"], "#f5f7f8")
         self.assertEqual(challenge["tokenTtlMinutes"], 1440)
+        self.assertEqual(challenge["waitSeconds"], 10)
         self.assertTrue(state["sites"][0]["underAttack"]["enabled"])
 
     def test_safeline_application_fields_are_normalized(self):
