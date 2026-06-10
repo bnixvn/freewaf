@@ -7,11 +7,14 @@ import threading
 import uuid
 import ipaddress
 import base64
+import csv
+import gzip
 import hashlib
 import hmac
 import secrets
 import struct
 import time
+from bisect import bisect_right
 from collections import Counter
 from copy import deepcopy
 from datetime import datetime
@@ -43,6 +46,24 @@ ACCESS_CONDITION_OPERATORS = {
     "in_ip_group",
     "not_in_ip_group",
 }
+BOT_TYPE_PATTERNS = [
+    ("Scanner", r"sqlmap|nikto|acunetix|nessus|nuclei|wpscan|masscan|nmap|zgrab|gobuster|dirbuster|ffuf|jaeles|openvas"),
+    ("Meta/Facebook crawler", r"meta-externalagent|facebookexternalhit|facebot"),
+    ("Googlebot", r"googlebot|adsbot-google|mediapartners-google"),
+    ("Bingbot", r"bingbot|msnbot"),
+    ("SemrushBot", r"semrushbot"),
+    ("AhrefsBot", r"ahrefsbot"),
+    ("YandexBot", r"yandexbot"),
+    ("Baiduspider", r"baiduspider"),
+    ("Headless browser", r"headlesschrome|phantomjs|selenium|playwright|puppeteer"),
+    ("HTTP client", r"curl|wget|python-requests|python-urllib|aiohttp|httpx|go-http-client|java/|okhttp|apache-httpclient|node-fetch|axios|libwww-perl|perl|ruby"),
+    ("Generic crawler", r"bot|crawler|spider|externalagent"),
+]
+BOT_TYPE_REGEXES = [(name, re.compile(pattern, re.IGNORECASE)) for name, pattern in BOT_TYPE_PATTERNS]
+GEOIP_READER_LOCK = threading.Lock()
+GEOIP_READER = None
+GEOIP_READER_PATH = None
+GEOIP_READER_MTIME = None
 ACCESS_INSERT_POSITIONS = {"first", "last"}
 USER_ROLES = {"admin", "viewer"}
 PASSWORD_ITERATIONS = 200_000
@@ -1565,6 +1586,13 @@ def build_stats(state: dict) -> dict:
     protected = blocked + challenged
     total = len(logs)
 
+    bot_types = summarize_bot_types(logs)
+    countries = summarize_countries(logs)
+    blocked_countries = sorted(
+        [item for item in countries if item["blocked"] > 0],
+        key=lambda item: item["blocked"],
+        reverse=True,
+    )
     top_rules = Counter(
         rule.get("name") or rule.get("id")
         for entry in logs
@@ -1582,10 +1610,222 @@ def build_stats(state: dict) -> dict:
         "allowed": max(total - protected - monitored, 0),
         "blockRate": round((blocked / total) * 100, 1) if total else 0,
         "protectedRate": round((protected / total) * 100, 1) if total else 0,
+        "botTypes": bot_types[:8],
+        "botTypeCount": len(bot_types),
+        "botRequestTotal": sum(item["count"] for item in bot_types),
+        "botChallengeTotal": sum(item["challenged"] for item in bot_types),
+        "topCountries": countries[:12],
+        "blockedCountries": blocked_countries[:12],
+        "countryCount": len(countries),
+        "blockedCountryCount": len(blocked_countries),
+        "protectedCountryCount": sum(1 for item in countries if item["protected"] > 0),
+        "geoAttribution": geoip_attribution(),
         "topRules": counter_items(top_rules),
         "topSites": counter_items(top_sites),
         "statusGroups": counter_items(status_groups),
         "timeline": build_timeline(logs),
+    }
+
+
+def summarize_bot_types(logs: list[dict]) -> list[dict]:
+    totals: dict[str, dict] = {}
+    for entry in logs:
+        bot_type = classify_bot_type(entry.get("userAgent") or entry.get("user_agent") or "")
+        if not bot_type:
+            continue
+        item = totals.setdefault(bot_type, {"name": bot_type, "count": 0, "blocked": 0, "challenged": 0, "protected": 0})
+        item["count"] += 1
+        verdict = entry.get("verdict")
+        if verdict == "block":
+            item["blocked"] += 1
+            item["protected"] += 1
+        elif verdict == "challenge":
+            item["challenged"] += 1
+            item["protected"] += 1
+
+    return sorted(totals.values(), key=lambda item: item["count"], reverse=True)
+
+
+def classify_bot_type(user_agent: str) -> str | None:
+    agent = str(user_agent or "")
+    if not agent:
+        return "Missing User-Agent"
+    for name, pattern in BOT_TYPE_REGEXES:
+        if pattern.search(agent):
+            return name
+    return None
+
+
+def summarize_countries(logs: list[dict]) -> list[dict]:
+    countries: dict[tuple[str, str], dict] = {}
+    cache: dict[str, dict] = {}
+    for entry in logs:
+        country = entry_country(entry, cache)
+        key = (country["code"], country["name"])
+        item = countries.setdefault(
+            key,
+            {
+                "code": country["code"],
+                "name": country["name"],
+                "count": 0,
+                "blocked": 0,
+                "challenged": 0,
+                "protected": 0,
+            },
+        )
+        item["count"] += 1
+        verdict = entry.get("verdict")
+        if verdict == "block":
+            item["blocked"] += 1
+            item["protected"] += 1
+        elif verdict == "challenge":
+            item["challenged"] += 1
+            item["protected"] += 1
+
+    return sorted(countries.values(), key=lambda item: item["count"], reverse=True)
+
+
+def entry_country(entry: dict, cache: dict[str, dict]) -> dict:
+    country = entry.get("country") if isinstance(entry.get("country"), dict) else {}
+    if country.get("name") or country.get("code"):
+        return normalize_country(country.get("name"), country.get("code"))
+    ip = str(entry.get("ip") or entry.get("remote_addr") or "").strip()
+    if ip not in cache:
+        cache[ip] = country_for_ip(ip)
+    return cache[ip]
+
+
+def country_for_ip(ip: str) -> dict:
+    ip = str(ip or "").strip()
+    if not ip:
+        return normalize_country("Unknown", "ZZ")
+    try:
+        address = ipaddress.ip_address(ip)
+    except ValueError:
+        return normalize_country("Unknown", "ZZ")
+    if address.is_loopback or address.is_private or address.is_link_local:
+        return normalize_country("Local Network", "LO")
+
+    reader = geoip_reader()
+    if not reader:
+        return normalize_country("Unknown", "ZZ")
+
+    try:
+        record = reader.get(ip) or {}
+    except Exception:
+        return normalize_country("Unknown", "ZZ")
+    country = record.get("country") if isinstance(record.get("country"), dict) else {}
+    names = country.get("names") if isinstance(country.get("names"), dict) else {}
+    name = names.get("en") or country.get("name") or record.get("country_name")
+    code = country.get("iso_code") or record.get("country_code")
+    return normalize_country(name, code)
+
+
+def normalize_country(name, code) -> dict:
+    clean_code = str(code or "ZZ").strip().upper()[:3] or "ZZ"
+    clean_name = str(name or "").strip() or ("Unknown" if clean_code == "ZZ" else clean_code)
+    return {"code": clean_code, "name": clean_name}
+
+
+def geoip_reader():
+    path = geoip_db_file()
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+
+    global GEOIP_READER, GEOIP_READER_PATH, GEOIP_READER_MTIME
+    with GEOIP_READER_LOCK:
+        if GEOIP_READER and GEOIP_READER_PATH == str(path) and GEOIP_READER_MTIME == mtime:
+            return GEOIP_READER
+        reader = open_geoip_database(path)
+        if not reader:
+            return None
+        if GEOIP_READER:
+            try:
+                GEOIP_READER.close()
+            except Exception:
+                pass
+        GEOIP_READER = reader
+        GEOIP_READER_PATH = str(path)
+        GEOIP_READER_MTIME = mtime
+        return GEOIP_READER
+
+
+def open_geoip_database(path: Path):
+    if path.name.lower().endswith(".csv.gz"):
+        try:
+            return DbIpCountryCsv(path)
+        except (OSError, ValueError, csv.Error):
+            return None
+
+    try:
+        import maxminddb
+    except Exception:
+        return None
+    try:
+        return maxminddb.open_database(str(path))
+    except Exception:
+        return None
+
+
+class DbIpCountryCsv:
+    def __init__(self, path: Path):
+        self.path = path
+        self.ranges = {4: [], 6: []}
+        with gzip.open(path, "rt", encoding="utf-8", newline="") as source:
+            for row in csv.reader(source):
+                if len(row) < 3:
+                    continue
+                try:
+                    start_address = ipaddress.ip_address(row[0].strip())
+                    end_address = ipaddress.ip_address(row[1].strip())
+                except ValueError:
+                    continue
+                if start_address.version != end_address.version:
+                    continue
+                code = str(row[2] or "ZZ").strip().upper()[:3] or "ZZ"
+                self.ranges[start_address.version].append((int(start_address), int(end_address), code))
+        for ranges in self.ranges.values():
+            ranges.sort(key=lambda item: item[0])
+        self.starts = {
+            version: [item[0] for item in ranges]
+            for version, ranges in self.ranges.items()
+        }
+
+    def get(self, ip: str) -> dict | None:
+        try:
+            address = ipaddress.ip_address(ip)
+        except ValueError:
+            return None
+        ranges = self.ranges[address.version]
+        starts = self.starts[address.version]
+        index = bisect_right(starts, int(address)) - 1
+        if index < 0:
+            return None
+        start, end, code = ranges[index]
+        if int(address) < start or int(address) > end:
+            return None
+        return {"country": {"iso_code": code, "names": {"en": code}}}
+
+    def close(self) -> None:
+        return None
+
+
+def geoip_db_file() -> Path:
+    configured = Path(os.environ.get("GEOIP_DB_FILE", "/var/lib/freewaf/geoip/dbip-country-lite.csv.gz"))
+    return configured
+
+
+def geoip_attribution() -> dict:
+    available = geoip_reader() is not None
+    return {
+        "available": available,
+        "provider": "DB-IP",
+        "url": "https://db-ip.com",
+        "database": str(geoip_db_file()),
     }
 
 

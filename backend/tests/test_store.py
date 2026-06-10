@@ -1,3 +1,4 @@
+import gzip
 import os
 import sys
 import tempfile
@@ -7,21 +8,29 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from freewaf.store import Store, build_stats, normalize_state
+from freewaf.store import Store, build_stats, country_for_ip, normalize_state
 
 
 class StoreTests(unittest.TestCase):
     def test_stats_count_challenges_as_protected_events(self):
-        stats = build_stats(
-            {
-                "logs": [
-                    {"verdict": "allow", "statusCode": 200, "siteName": "demo"},
-                    {"verdict": "block", "statusCode": 403, "siteName": "demo", "matchedRules": [{"name": "Deny IP"}]},
-                    {"verdict": "challenge", "statusCode": 200, "siteName": "demo", "matchedRules": [{"name": "Browser challenge required"}]},
-                    {"verdict": "monitor", "statusCode": 200, "siteName": "demo", "matchedRules": [{"name": "Monitor rule"}]},
-                ]
-            }
-        )
+        with mock.patch("freewaf.store.country_for_ip", side_effect=lambda ip: {"code": "US", "name": "United States"}):
+            stats = build_stats(
+                {
+                    "logs": [
+                        {"verdict": "allow", "statusCode": 200, "siteName": "demo", "ip": "203.0.113.1"},
+                        {"verdict": "block", "statusCode": 403, "siteName": "demo", "ip": "203.0.113.2", "matchedRules": [{"name": "Deny IP"}]},
+                        {
+                            "verdict": "challenge",
+                            "statusCode": 200,
+                            "siteName": "demo",
+                            "ip": "203.0.113.3",
+                            "userAgent": "meta-externalagent/1.1",
+                            "matchedRules": [{"name": "Browser challenge required"}],
+                        },
+                        {"verdict": "monitor", "statusCode": 200, "siteName": "demo", "ip": "203.0.113.4", "matchedRules": [{"name": "Monitor rule"}]},
+                    ]
+                }
+            )
 
         self.assertEqual(stats["total"], 4)
         self.assertEqual(stats["blocked"], 1)
@@ -31,6 +40,22 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(stats["allowed"], 1)
         self.assertEqual(stats["blockRate"], 25.0)
         self.assertEqual(stats["protectedRate"], 50.0)
+        meta_bot = next(item for item in stats["botTypes"] if item["name"] == "Meta/Facebook crawler")
+        self.assertEqual(meta_bot["challenged"], 1)
+        self.assertEqual(stats["topCountries"][0]["name"], "United States")
+        self.assertEqual(stats["topCountries"][0]["protected"], 2)
+        self.assertEqual(stats["blockedCountryCount"], 1)
+
+    def test_geoip_country_csv_resolves_public_ip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            geoip_file = Path(directory) / "dbip-country-lite.csv.gz"
+            with gzip.open(geoip_file, "wt", encoding="utf-8", newline="") as target:
+                target.write("8.8.8.0,8.8.8.255,US\n")
+
+            with mock.patch.dict(os.environ, {"GEOIP_DB_FILE": str(geoip_file)}):
+                country = country_for_ip("8.8.8.8")
+
+        self.assertEqual(country["code"], "US")
 
     def test_certbot_certificate_state_is_normalized(self):
         state = normalize_state(

@@ -159,6 +159,26 @@ build_frontend() {
   rm -rf "$APP_DIR/frontend/node_modules"
 }
 
+install_geoip_database() {
+  local geoip_dir="/var/lib/freewaf/geoip"
+  local geoip_file="${geoip_dir}/dbip-country-lite.csv.gz"
+  local year month url tmp_file
+  year="$(date +%Y)"
+  month="$(date +%m)"
+  url="https://download.db-ip.com/free/dbip-country-lite-${year}-${month}.csv.gz"
+  tmp_file="$(mktemp)"
+
+  log "Downloading DB-IP country database"
+  install -d -m 0755 "$geoip_dir"
+  if curl -fsSL --retry 3 --connect-timeout 15 "$url" -o "$tmp_file" && gzip -t "$tmp_file"; then
+    install -m 0644 "$tmp_file" "$geoip_file"
+    printf '%s\n' "$url" > "${geoip_file}.source"
+  else
+    log "GeoIP database download failed; country statistics will show Unknown until ${geoip_file} exists"
+  fi
+  rm -f "$tmp_file"
+}
+
 write_env() {
   log "Writing ${ENV_FILE}"
   install -d -m 0755 "$ENV_DIR"
@@ -192,6 +212,7 @@ IP_GROUP_EXTERNALIZE_COUNT=5000
 IP_GROUP_EXTERNALIZE_BYTES=262144
 STATS_LOG_SCAN_LIMIT=50000
 STATS_LOG_SCAN_MAX=250000
+GEOIP_DB_FILE=/var/lib/freewaf/geoip/dbip-country-lite.csv.gz
 EOF
   chmod 0600 "$ENV_FILE"
 }
@@ -295,6 +316,7 @@ main() {
   src="$(source_dir)"
   copy_app "$src"
   build_frontend
+  install_geoip_database
   write_env
   refresh_nginx_config
   write_systemd

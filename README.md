@@ -282,11 +282,25 @@ IP_GROUP_EXTERNALIZE_COUNT=5000
 IP_GROUP_EXTERNALIZE_BYTES=262144
 STATS_LOG_SCAN_LIMIT=50000
 STATS_LOG_SCAN_MAX=250000
+GEOIP_DB_FILE=/var/lib/freewaf/geoip/dbip-country-lite.csv.gz
 ```
 
 After changing environment variables:
 
 ```bash
+sudo systemctl restart freewaf
+```
+
+The installer downloads the current DB-IP country lite CSV to `GEOIP_DB_FILE`. To refresh it manually:
+
+```bash
+YEAR=$(date +%Y)
+MONTH=$(date +%m)
+sudo install -d -m 0755 /var/lib/freewaf/geoip
+curl -fsSL "https://download.db-ip.com/free/dbip-country-lite-${YEAR}-${MONTH}.csv.gz" \
+  -o /tmp/dbip-country-lite.csv.gz
+gzip -t /tmp/dbip-country-lite.csv.gz
+sudo install -m 0644 /tmp/dbip-country-lite.csv.gz /var/lib/freewaf/geoip/dbip-country-lite.csv.gz
 sudo systemctl restart freewaf
 ```
 

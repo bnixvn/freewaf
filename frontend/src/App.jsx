@@ -994,6 +994,9 @@ function DashboardView({ data }) {
   const protectedTotal = Number(stats.protected ?? (Number(stats.blocked || 0) + Number(stats.challenged || 0)));
   const challengedTotal = Number(stats.challenged || 0);
   const blockedTotal = Number(stats.blocked || 0);
+  const botTypes = stats.botTypes || [];
+  const countries = stats.topCountries || [];
+  const blockedCountries = stats.blockedCountries || countries.filter((country) => Number(country.blocked || 0) > 0);
   const trafficWindow = timeline.reduce((totals, point) => ({
     total: totals.total + Number(point.total || 0),
     protected: totals.protected + Number(point.protected ?? (Number(point.blocked || 0) + Number(point.challenged || 0))),
@@ -1006,7 +1009,60 @@ function DashboardView({ data }) {
         <Metric label="Requests" value={formatCompact(stats.total)} note="Analyzed request events" />
         <Metric label="Protected" value={formatCompact(protectedTotal)} note={`${stats.protectedRate ?? stats.blockRate}% challenge or block rate`} />
         <Metric label="Challenges" value={formatCompact(challengedTotal)} note={`${formatCompact(blockedTotal)} hard blocks`} />
-        <Metric label="Top Signal" value={topRule} note="Most frequent matched rule" />
+        <Metric label="Bot Types" value={formatCompact(stats.botTypeCount)} note={`${formatCompact(stats.botRequestTotal)} bot-like requests`} />
+        <Metric label="Blocked Countries" value={formatCompact(stats.blockedCountryCount)} note={`${formatCompact(stats.protectedCountryCount)} protected countries`} />
+      </div>
+      <div className="dashboard-insights">
+        <section className="panel insight-panel">
+          <div className="panel-heading">
+            <h2>Bot Types</h2>
+            <span className="pill">{formatCompact(stats.botChallengeTotal)} challenged</span>
+          </div>
+          <InsightRows
+            rows={botTypes}
+            empty="No bot-like traffic detected."
+            maxValue={Math.max(1, ...botTypes.map((item) => Number(item.count || 0)))}
+            barValue={(item) => Number(item.count || 0)}
+            valueLabel={(item) => `${formatCompact(item.count)} requests`}
+            detailLabel={(item) => `${formatCompact(item.challenged)} challenged / ${formatCompact(item.blocked)} blocked`}
+          />
+        </section>
+        <section className="panel insight-panel">
+          <div className="panel-heading">
+            <h2>Countries</h2>
+            <span className="pill">{formatCompact(stats.countryCount)} seen</span>
+          </div>
+          <InsightRows
+            rows={countries}
+            empty="No country data available."
+            maxValue={Math.max(1, ...countries.map((item) => Number(item.count || 0)))}
+            label={(item) => countryDisplayName(item)}
+            barValue={(item) => Number(item.count || 0)}
+            valueLabel={(item) => `${formatCompact(item.count)} requests`}
+            detailLabel={(item) => `${formatCompact(item.protected)} protected`}
+          />
+          {stats.geoAttribution?.available && (
+            <a className="attribution-link" href={stats.geoAttribution.url} target="_blank" rel="noreferrer">
+              IP geolocation by {stats.geoAttribution.provider}
+            </a>
+          )}
+        </section>
+        <section className="panel insight-panel">
+          <div className="panel-heading">
+            <h2>Blocked Countries</h2>
+            <span className="pill">{formatCompact(stats.blockedCountryCount)}</span>
+          </div>
+          <InsightRows
+            rows={blockedCountries}
+            empty="No countries with hard blocks."
+            maxValue={Math.max(1, ...blockedCountries.map((item) => Number(item.blocked || 0)))}
+            label={(item) => countryDisplayName(item)}
+            barValue={(item) => Number(item.blocked || 0)}
+            valueLabel={(item) => `${formatCompact(item.blocked)} blocked`}
+            detailLabel={(item) => `${formatCompact(item.challenged)} challenged`}
+          />
+          <div className="insight-note">Top signal: {topRule}</div>
+        </section>
       </div>
       <div className="grid-two">
         <section className="panel">
@@ -1613,6 +1669,30 @@ function Timeline({ points = [] }) {
               <span className="bar-protected" style={{ height: `${protectedHeight}%` }} />
             </div>
             <span className="bar-time">{showTick ? point.label : ''}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function InsightRows({ rows = [], empty, maxValue = 1, label, barValue, valueLabel, detailLabel }) {
+  if (!rows.length) {
+    return <p className="muted">{empty}</p>;
+  }
+  return (
+    <div className="insight-list">
+      {rows.map((item) => {
+        const value = Number(barValue ? barValue(item) : item.count ?? item.blocked ?? item.protected ?? 0);
+        const width = Math.max(4, Math.round((value / maxValue) * 100));
+        return (
+          <div className="insight-row" key={`${item.code || ''}-${item.name}`}>
+            <div className="insight-row-top">
+              <strong>{label ? label(item) : item.name}</strong>
+              <span>{valueLabel(item)}</span>
+            </div>
+            <div className="insight-bar"><span style={{ width: `${width}%` }} /></div>
+            <div className="insight-detail">{detailLabel(item)}</div>
           </div>
         );
       })}
@@ -3233,4 +3313,19 @@ function formatCompact(value) {
   if (number >= 1000000) return `${(number / 1000000).toFixed(1)}m`;
   if (number >= 1000) return `${(number / 1000).toFixed(1)}k`;
   return String(number);
+}
+
+function countryDisplayName(country) {
+  const code = String(country?.code || '').toUpperCase();
+  if (code === 'ZZ') return 'Unknown';
+  if (code === 'LO') return 'Local Network';
+  if (code.length === 2 && typeof Intl !== 'undefined' && Intl.DisplayNames) {
+    try {
+      const display = new Intl.DisplayNames(['en'], { type: 'region' }).of(code);
+      if (display) return display;
+    } catch {
+      // Fall back to the backend label below.
+    }
+  }
+  return country?.name || code || 'Unknown';
 }
