@@ -70,10 +70,11 @@ DEFAULT_BOT_LOGIN_PATH_PATTERNS = [
 ]
 
 DEFAULT_BOT_RATE_CHALLENGE = {
-    "enabled": True,
+    "enabled": False,
     "windowSeconds": 10,
-    "challengeCount": 100,
-    "blockCount": 200,
+    "challengeCount": 300,
+    "blockCount": 700,
+    "blockMinutes": 30,
 }
 
 
@@ -335,6 +336,7 @@ def create_default_state(now: str | None = None) -> dict:
                         "enabled": True,
                         "period": 10,
                         "count": 200,
+                        "blockCount": 500,
                         "action": "challenge_v1",
                         "blockMin": 60,
                     },

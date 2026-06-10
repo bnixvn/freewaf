@@ -295,6 +295,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(acl["rateLimitMode"], "global")
         self.assertTrue(acl["waitingRoom"])
         self.assertEqual(acl["accessLimit"]["action"], "challenge_v1")
+        self.assertEqual(acl["accessLimit"]["blockCount"], 500)
 
     def test_bot_protection_options_are_normalized(self):
         state = normalize_state(
@@ -348,10 +349,11 @@ class StoreTests(unittest.TestCase):
         protection = state["sites"][0]["botProtection"]
         self.assertTrue(protection["loginChallenge"]["enabled"])
         self.assertTrue(any("wp-login" in pattern for pattern in protection["loginChallenge"]["pathPatterns"]))
-        self.assertTrue(protection["rateChallenge"]["enabled"])
+        self.assertFalse(protection["rateChallenge"]["enabled"])
         self.assertEqual(protection["rateChallenge"]["windowSeconds"], 10)
-        self.assertEqual(protection["rateChallenge"]["challengeCount"], 100)
-        self.assertEqual(protection["rateChallenge"]["blockCount"], 200)
+        self.assertEqual(protection["rateChallenge"]["challengeCount"], 300)
+        self.assertEqual(protection["rateChallenge"]["blockCount"], 700)
+        self.assertEqual(protection["rateChallenge"]["blockMinutes"], 30)
 
     def test_challenge_page_and_under_attack_are_normalized(self):
         state = normalize_state(
@@ -437,6 +439,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(site["modSecurity"]["requestBodyLimit"], 8388608)
         self.assertTrue(site["acl"]["enabled"])
         self.assertEqual(site["acl"]["accessLimit"]["count"], 200)
+        self.assertEqual(site["acl"]["accessLimit"]["blockCount"], 500)
 
     def test_access_rule_insert_position_first_moves_rule_to_top(self):
         with tempfile.TemporaryDirectory() as directory:

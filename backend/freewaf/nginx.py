@@ -511,6 +511,7 @@ def render_redirect_server(site: dict, state: dict, server_name: str, port: int,
         "    error_page 461 = @freewaf_challenge;",
         *render_rate_limit_error_page(site),
         "",
+        *render_modsecurity_directives(site),
         *render_site_waf_directives(site, state),
         "",
         *render_safeline_locations(site),
@@ -524,6 +525,7 @@ def render_redirect_server(site: dict, state: dict, server_name: str, port: int,
         "        if ($sfl_challenge = 1) {",
         "            return 461;",
         "        }",
+        *render_http_flood_modsecurity_rules(site),
         *render_rate_limit(state, site),
         *render_bot_replay_limit(site),
         f"        return {redirect_code} https://$host:{https_port}$request_uri;",
@@ -786,6 +788,7 @@ def render_application_location(site: dict, state: dict, upstream_name: str, ups
         address = nginx_path(redirect.get("address") or "http://127.0.0.1")
         status = int(redirect.get("statusCode") or proxy.get("redirectStatusCode") or 301)
         return [
+            *render_http_flood_modsecurity_rules(site),
             *render_bot_rate_modsecurity_rules(site),
             *render_hsts_header(proxy, is_ssl),
             *render_dynamic_protection_headers(site),
@@ -796,6 +799,7 @@ def render_application_location(site: dict, state: dict, upstream_name: str, ups
     if app_type == "static_files":
         root = static_root(site)
         return [
+            *render_http_flood_modsecurity_rules(site),
             *render_bot_rate_modsecurity_rules(site),
             *render_hsts_header(proxy, is_ssl),
             *render_dynamic_protection_headers(site),
@@ -805,6 +809,7 @@ def render_application_location(site: dict, state: dict, upstream_name: str, ups
         ]
 
     lines = [
+        *render_http_flood_modsecurity_rules(site),
         *render_bot_rate_modsecurity_rules(site),
         "        proxy_http_version 1.1;",
         "        proxy_set_header Upgrade $http_upgrade;",
@@ -937,7 +942,8 @@ def site_modsecurity(site: dict, defaults: dict | None = None) -> dict:
 def render_modsecurity_directives(site: dict) -> list[str]:
     config = site.get("modSecurity") if isinstance(site.get("modSecurity"), dict) else {}
     bot_rate_required = bot_rate_challenge_required(site)
-    if not config.get("enabled") and not bot_rate_required:
+    http_flood_required = http_flood_cooldown_required(site)
+    if not config.get("enabled") and not bot_rate_required and not http_flood_required:
         return []
     if os.environ.get("NGINX_HAS_MODSECURITY", "false").lower() != "true":
         lines = []
@@ -945,6 +951,8 @@ def render_modsecurity_directives(site: dict) -> list[str]:
             lines.append("    # ModSecurity is enabled for this application, but NGINX_HAS_MODSECURITY is not true.")
         if bot_rate_required:
             lines.append("    # Bot Protect rate thresholds require ModSecurity, but NGINX_HAS_MODSECURITY is not true.")
+        if http_flood_required:
+            lines.append("    # HTTP Flood temporary block thresholds require ModSecurity, but NGINX_HAS_MODSECURITY is not true.")
         lines.append("")
         return lines
 
@@ -980,6 +988,17 @@ def bot_rate_challenge_required(site: dict) -> bool:
     return bool(protection.get("antiBotChallenge") and rate.get("enabled"))
 
 
+def http_flood_cooldown_required(site: dict) -> bool:
+    limit = active_acl_access_limit(site)
+    if not limit or not site_features(site).get("httpFlood"):
+        return False
+    if acl_limit_action(limit) not in {"block", "challenge_v1"}:
+        return False
+    count = max(1, int(limit.get("count") or 200))
+    block_count = int(limit.get("blockCount") or 0)
+    return block_count > count
+
+
 def render_bot_rate_modsecurity_rules(site: dict, indent: str = "        ") -> list[str]:
     protection = site_bot_protection(site)
     rate = protection.get("rateChallenge") or {}
@@ -993,32 +1012,54 @@ def render_bot_rate_modsecurity_rules(site: dict, indent: str = "        ") -> l
     window_seconds = bot_rate_window_seconds(rate)
     challenge_count = max(1, int(rate.get("challengeCount") or DEFAULT_BOT_RATE_CHALLENGE["challengeCount"]))
     block_count = max(challenge_count + 1, int(rate.get("blockCount") or DEFAULT_BOT_RATE_CHALLENGE["blockCount"]))
+    block_seconds = bot_rate_block_minutes(rate) * 60
     site_key = safe_identifier(site.get("id") or site.get("name") or "site").lower()
     window_var = f"freewaf_{site_key}_bot_window"
     count_var = f"freewaf_{site_key}_bot_count"
+    blocked_var = f"freewaf_{site_key}_bot_blocked"
+    ua_hash_var = f"freewaf_{site_key}_bot_ua_hash"
+    accept_hash_var = f"freewaf_{site_key}_bot_accept_hash"
+    language_hash_var = f"freewaf_{site_key}_bot_language_hash"
+    client_hints_hash_var = f"freewaf_{site_key}_bot_client_hints_hash"
+    fingerprint_key = (
+        f"freewaf_{site_key}_bot_%{{REMOTE_ADDR}}_%{{tx.{ua_hash_var}}}_"
+        f"%{{tx.{accept_hash_var}}}_%{{tx.{language_hash_var}}}_%{{tx.{client_hints_hash_var}}}"
+    )
     marker = f"FREEWAF_BOT_RATE_DONE_{safe_identifier(site.get('id') or site.get('name') or 'site').upper()}"
     base = modsecurity_rule_id_base(site)
     rules = [
         (
-            f'SecAction "id:{base + 1},phase:1,nolog,pass,initcol:ip=%{{REMOTE_ADDR}},'
+            f'SecAction "id:{base + 1},phase:1,nolog,pass,'
+            f'setvar:tx.{ua_hash_var}=none,setvar:tx.{accept_hash_var}=none,'
+            f'setvar:tx.{language_hash_var}=none,setvar:tx.{client_hints_hash_var}=none,'
             f'setvar:tx.{window_var}=%{{TIME_YEAR}}-%{{TIME_MON}}-%{{TIME_DAY}}-%{{TIME_HOUR}}-%{{TIME_MIN}}"'
         ),
-        *render_bot_rate_second_bucket_rules(window_seconds, window_var, base),
+        render_modsecurity_header_hash_rule("REQUEST_HEADERS:User-Agent", ua_hash_var, base + 20),
+        render_modsecurity_header_hash_rule("REQUEST_HEADERS:Accept", accept_hash_var, base + 21),
+        render_modsecurity_header_hash_rule("REQUEST_HEADERS:Accept-Language", language_hash_var, base + 22),
+        render_modsecurity_header_hash_rule("REQUEST_HEADERS:Sec-CH-UA", client_hints_hash_var, base + 23),
+        f'SecAction "id:{base + 29},phase:1,nolog,pass,initcol:global={fingerprint_key}"',
+        *render_modsecurity_second_bucket_rules(window_seconds, window_var, base + 30),
         (
-            f'SecRule IP:{window_var} "!@streq %{{tx.{window_var}}}" "id:{base + 80},phase:1,nolog,pass,'
-            f'setvar:ip.{count_var}=0,setvar:ip.{window_var}=%{{tx.{window_var}}}"'
+            f'SecRule GLOBAL:{blocked_var} "@eq 1" '
+            f'"id:{base + 79},phase:1,deny,status:460,log,msg:FreeWAFBotRateCooldown"'
         ),
-        f'SecAction "id:{base + 81},phase:1,nolog,pass,setvar:ip.{count_var}=+1"',
         (
-            f'SecRule IP:{count_var} "@gt {block_count}" '
-            f'"id:{base + 82},phase:1,deny,status:460,log,msg:FreeWAFBotRateBlock"'
+            f'SecRule GLOBAL:{window_var} "!@streq %{{tx.{window_var}}}" "id:{base + 80},phase:1,nolog,pass,'
+            f'setvar:global.{count_var}=0,setvar:global.{window_var}=%{{tx.{window_var}}}"'
+        ),
+        f'SecAction "id:{base + 81},phase:1,nolog,pass,setvar:global.{count_var}=+1"',
+        (
+            f'SecRule GLOBAL:{count_var} "@gt {block_count}" '
+            f'"id:{base + 82},phase:1,deny,status:460,log,msg:FreeWAFBotRateBlock,'
+            f'setvar:global.{blocked_var}=1,expirevar:global.{blocked_var}={block_seconds}"'
         ),
         (
             f'SecRule REQUEST_COOKIES:freewaf_challenge "@rx .+" '
             f'"id:{base + 83},phase:1,nolog,pass,skipAfter:{marker}"'
         ),
         (
-            f'SecRule IP:{count_var} "@gt {challenge_count}" '
+            f'SecRule GLOBAL:{count_var} "@gt {challenge_count}" '
             f'"id:{base + 84},phase:1,deny,status:461,nolog,msg:FreeWAFBotRateChallenge"'
         ),
         f"SecMarker {marker}",
@@ -1026,7 +1067,14 @@ def render_bot_rate_modsecurity_rules(site: dict, indent: str = "        ") -> l
     return [f"{indent}modsecurity_rules '{rule}';" for rule in rules]
 
 
-def render_bot_rate_second_bucket_rules(window_seconds: int, window_var: str, base: int) -> list[str]:
+def render_modsecurity_header_hash_rule(target: str, tx_var: str, rule_id: int) -> str:
+    return (
+        f'SecRule {target} "@rx .+" '
+        f'"id:{rule_id},phase:1,nolog,pass,t:none,t:sha1,t:hexEncode,setvar:tx.{tx_var}=%{{MATCHED_VAR}}"'
+    )
+
+
+def render_modsecurity_second_bucket_rules(window_seconds: int, window_var: str, first_rule_id: int) -> list[str]:
     if window_seconds >= 60:
         return []
     rules = []
@@ -1034,7 +1082,7 @@ def render_bot_rate_second_bucket_rules(window_seconds: int, window_var: str, ba
         end = min(start + window_seconds - 1, 59)
         regex = modsecurity_second_range_regex(start, end)
         rules.append(
-            f'SecRule TIME_SEC "{regex}" "id:{base + 2 + bucket},phase:1,nolog,pass,'
+            f'SecRule TIME_SEC "{regex}" "id:{first_rule_id + bucket},phase:1,nolog,pass,'
             f'setvar:tx.{window_var}=%{{tx.{window_var}}}-{bucket}"'
         )
     return rules
@@ -1055,10 +1103,53 @@ def bot_rate_window_seconds(rate: dict) -> int:
     return value if value in {5, 10, 15, 20, 30, 60} else DEFAULT_BOT_RATE_CHALLENGE["windowSeconds"]
 
 
+def bot_rate_block_minutes(rate: dict) -> int:
+    value = int(rate.get("blockMinutes") or rate.get("blockMin") or DEFAULT_BOT_RATE_CHALLENGE["blockMinutes"])
+    return value if value in {10, 30, 60} else DEFAULT_BOT_RATE_CHALLENGE["blockMinutes"]
+
+
+def render_http_flood_modsecurity_rules(site: dict, indent: str = "        ") -> list[str]:
+    if not http_flood_cooldown_required(site) or os.environ.get("NGINX_HAS_MODSECURITY", "false").lower() != "true":
+        return []
+
+    limit = active_acl_access_limit(site) or {}
+    window_seconds = max(1, int(limit.get("period") or 10))
+    count = max(1, int(limit.get("count") or 200))
+    block_count = max(count + 1, int(limit.get("blockCount") or 500))
+    block_seconds = max(1, int(limit.get("blockMin") or 60)) * 60
+    site_key = safe_identifier(site.get("id") or site.get("name") or "site").lower()
+    window_var = f"freewaf_{site_key}_flood_window"
+    count_var = f"freewaf_{site_key}_flood_count"
+    blocked_var = f"freewaf_{site_key}_flood_blocked"
+    base = modsecurity_rule_id_base(site) + 200
+    rules = [
+        (
+            f'SecAction "id:{base + 1},phase:1,nolog,pass,initcol:ip=%{{REMOTE_ADDR}},'
+            f'setvar:tx.{window_var}=%{{TIME_YEAR}}-%{{TIME_MON}}-%{{TIME_DAY}}-%{{TIME_HOUR}}-%{{TIME_MIN}}"'
+        ),
+        *render_modsecurity_second_bucket_rules(window_seconds, window_var, base + 10),
+        (
+            f'SecRule IP:{blocked_var} "@eq 1" '
+            f'"id:{base + 69},phase:1,deny,status:460,log,msg:FreeWAFHttpFloodCooldown"'
+        ),
+        (
+            f'SecRule IP:{window_var} "!@streq %{{tx.{window_var}}}" "id:{base + 70},phase:1,nolog,pass,'
+            f'setvar:ip.{count_var}=0,setvar:ip.{window_var}=%{{tx.{window_var}}}"'
+        ),
+        f'SecAction "id:{base + 71},phase:1,nolog,pass,setvar:ip.{count_var}=+1"',
+        (
+            f'SecRule IP:{count_var} "@gt {block_count}" '
+            f'"id:{base + 72},phase:1,deny,status:460,log,msg:FreeWAFHttpFloodBlock,'
+            f'setvar:ip.{blocked_var}=1,expirevar:ip.{blocked_var}={block_seconds}"'
+        ),
+    ]
+    return [f"{indent}modsecurity_rules '{rule}';" for rule in rules]
+
+
 def modsecurity_rule_id_base(site: dict) -> int:
     value = safe_identifier(site.get("id") or site.get("name") or "site")
     digest = sum((index + 1) * ord(char) for index, char in enumerate(value)) % 100000
-    return 8_600_000 + (digest * 100)
+    return 8_600_000 + (digest * 1000)
 
 
 def render_ipv6_listen(port: int, is_ssl: bool, proxy: dict) -> list[str]:
@@ -1385,6 +1476,9 @@ def site_bot_protection(site: dict) -> dict:
     login_patterns = [str(item).strip() for item in (login.get("pathPatterns") or DEFAULT_BOT_LOGIN_PATH_PATTERNS) if str(item).strip()]
     challenge_count = max(1, parse_int(rate.get("challengeCount")) or DEFAULT_BOT_RATE_CHALLENGE["challengeCount"])
     block_count = max(challenge_count + 1, parse_int(rate.get("blockCount")) or DEFAULT_BOT_RATE_CHALLENGE["blockCount"])
+    block_minutes = parse_int(rate.get("blockMinutes") or rate.get("blockMin")) or DEFAULT_BOT_RATE_CHALLENGE["blockMinutes"]
+    if block_minutes not in {10, 30, 60}:
+        block_minutes = DEFAULT_BOT_RATE_CHALLENGE["blockMinutes"]
     dynamic_enabled = enabled and bool(dynamic.get("enabled"))
     return {
         "enabled": enabled,
@@ -1394,10 +1488,11 @@ def site_bot_protection(site: dict) -> dict:
             "pathPatterns": login_patterns[:64],
         },
         "rateChallenge": {
-            "enabled": anti_bot and rate.get("enabled") is not False,
+            "enabled": anti_bot and bool(rate.get("enabled", DEFAULT_BOT_RATE_CHALLENGE["enabled"])),
             "windowSeconds": bot_rate_window_seconds(rate),
             "challengeCount": challenge_count,
             "blockCount": block_count,
+            "blockMinutes": block_minutes,
         },
         "dynamicProtection": {
             "enabled": dynamic_enabled,

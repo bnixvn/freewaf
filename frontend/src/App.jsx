@@ -121,6 +121,7 @@ const defaultSite = {
   aclAccessEnabled: 'true',
   aclAccessPeriod: '10',
   aclAccessCount: '200',
+  aclAccessBlockCount: '500',
   aclAccessAction: 'challenge_v1',
   aclAccessBlockMin: '60',
   aclAttackEnabled: 'true',
@@ -137,8 +138,6 @@ const defaultSite = {
   featureHttpFlood: 'true',
   featureBotProtection: 'true',
   featureGeoBlock: 'false',
-  featureAuth: 'false',
-  featureAttacks: 'true',
   mode: 'block',
   enabled: 'true'
 };
@@ -188,10 +187,11 @@ const defaultBotLoginPathPatterns = [
 ];
 
 const defaultBotRateChallenge = {
-  enabled: true,
+  enabled: false,
   windowSeconds: 10,
-  challengeCount: 100,
-  blockCount: 200
+  challengeCount: 300,
+  blockCount: 700,
+  blockMinutes: 30
 };
 
 const botRateWindowOptions = [5, 10, 15, 20, 30, 60].map((seconds) => ({
@@ -199,13 +199,15 @@ const botRateWindowOptions = [5, 10, 15, 20, 30, 60].map((seconds) => ({
   label: `${seconds} seconds`
 }));
 
+const temporaryBlockMinuteOptions = [10, 30, 60].map((minutes) => ({
+  value: String(minutes),
+  label: `${minutes} minutes`
+}));
+
 const siteFeatureLabels = {
   httpFlood: 'HTTP FLOOD',
   botProtection: 'BOT PROTECT',
-  geoBlock: 'GEO BLOCK',
-  auth: 'AUTH',
-  attacks: 'ATTACKS',
-  acl: 'ACL'
+  geoBlock: 'GEO BLOCK'
 };
 
 const defaultRule = {
@@ -654,6 +656,7 @@ export default function App() {
             enabled: boolValue(site.aclAccessEnabled),
             period: Number(site.aclAccessPeriod || 10),
             count: Number(site.aclAccessCount || 200),
+            blockCount: Number(site.aclAccessBlockCount || 500),
             action: site.aclAccessAction || 'challenge_v1',
             blockMin: Number(site.aclAccessBlockMin || 60)
           },
@@ -676,9 +679,7 @@ export default function App() {
         features: {
           httpFlood: boolValue(site.featureHttpFlood),
           botProtection: boolValue(site.featureBotProtection),
-          geoBlock: boolValue(site.featureGeoBlock),
-          auth: boolValue(site.featureAuth),
-          attacks: boolValue(site.featureAttacks)
+          geoBlock: boolValue(site.featureGeoBlock)
         },
         botProtection: botProtectPayloadFromConfig(site.botProtection, boolValue(site.featureBotProtection)),
         geoBlock: geoBlockPayloadFromConfig(site.geoBlock, boolValue(site.featureGeoBlock)),
@@ -2528,7 +2529,7 @@ function HttpFloodModal({ site, settings, onClose, onSave }) {
             onEdit={editAccess}
             disabled={accessDisabled}
           >
-            <LimitEditFields prefix="access" form={form} updateLimit={updateLimit} />
+            <LimitEditFields prefix="access" form={form} updateLimit={updateLimit} includeBlockCount />
           </FloodLimitCard>
         </FloodSection>
 
@@ -2622,12 +2623,13 @@ function BotProtectModal({ site, onClose, onSave }) {
             <strong>Traffic rate</strong>
             <Switch checked={boolValue(form.rateChallenge)} onChange={(checked) => update('rateChallenge', String(checked))} />
             <Info size={16} />
-            <span className="muted">Count source IP requests in short windows, then challenge first and block harder bursts.</span>
+            <span className="muted">Counts the client fingerprint in short windows, then challenges first and blocks harder bursts temporarily.</span>
           </div>
           <div className="bot-threshold-grid">
             <SelectField label="Window" value={form.rateWindowSeconds} onChange={(value) => update('rateWindowSeconds', value)} options={botRateWindowOptions} />
             <TextField label="Challenge after" value={form.rateChallengeCount} onChange={(value) => update('rateChallengeCount', value)} type="number" />
             <TextField label="Block after" value={form.rateBlockCount} onChange={(value) => update('rateBlockCount', value)} type="number" />
+            <SelectField label="Block for" value={form.rateBlockMinutes} onChange={(value) => update('rateBlockMinutes', value)} options={temporaryBlockMinuteOptions} />
           </div>
         </div>
 
@@ -2789,11 +2791,14 @@ function FloodLimitCard({ title, enabled, onToggle, summary, editing, onEdit, di
   );
 }
 
-function LimitEditFields({ prefix, form, updateLimit, includeStatusCodes = false }) {
+function LimitEditFields({ prefix, form, updateLimit, includeStatusCodes = false, includeBlockCount = false }) {
   return (
     <>
-      <TextField label="Requests" value={form[`${prefix}Count`]} onChange={(value) => updateLimit(prefix, 'Count', value)} type="number" />
+      <TextField label={includeBlockCount ? 'Challenge after' : 'Requests'} value={form[`${prefix}Count`]} onChange={(value) => updateLimit(prefix, 'Count', value)} type="number" />
       <TextField label="Within seconds" value={form[`${prefix}Period`]} onChange={(value) => updateLimit(prefix, 'Period', value)} type="number" />
+      {includeBlockCount && (
+        <TextField label="Block after" value={form[`${prefix}BlockCount`]} onChange={(value) => updateLimit(prefix, 'BlockCount', value)} type="number" />
+      )}
       <SelectField label="Action" value={form[`${prefix}Action`]} onChange={(value) => updateLimit(prefix, 'Action', value)} options={floodActionOptions} />
       <TextField label="Block minutes" value={form[`${prefix}BlockMin`]} onChange={(value) => updateLimit(prefix, 'BlockMin', value)} type="number" />
       {includeStatusCodes && (
@@ -2840,6 +2845,7 @@ function SiteModal({ site, certificates, onClose, onSave }) {
     aclAccessEnabled: String(site?.acl?.accessLimit?.enabled ?? true),
     aclAccessPeriod: String(site?.acl?.accessLimit?.period ?? defaultSite.aclAccessPeriod),
     aclAccessCount: String(site?.acl?.accessLimit?.count ?? defaultSite.aclAccessCount),
+    aclAccessBlockCount: String(site?.acl?.accessLimit?.blockCount ?? defaultSite.aclAccessBlockCount),
     aclAccessAction: site?.acl?.accessLimit?.action || defaultSite.aclAccessAction,
     aclAccessBlockMin: String(site?.acl?.accessLimit?.blockMin ?? defaultSite.aclAccessBlockMin),
     aclAttackEnabled: String(site?.acl?.attackLimit?.enabled ?? true),
@@ -2856,8 +2862,6 @@ function SiteModal({ site, certificates, onClose, onSave }) {
     featureHttpFlood: String(site?.features?.httpFlood ?? true),
     featureBotProtection: String(site?.features?.botProtection ?? true),
     featureGeoBlock: String(site?.features?.geoBlock ?? false),
-    featureAuth: String(site?.features?.auth ?? false),
-    featureAttacks: String(site?.features?.attacks ?? true),
     enabled: String(site?.enabled ?? true)
   }));
 
@@ -4057,6 +4061,7 @@ function httpFloodFormFromSite(site, settings) {
     accessEnabled: String(access.enabled ?? true),
     accessPeriod: String(access.period ?? global.period),
     accessCount: String(access.count ?? global.count),
+    accessBlockCount: String(access.blockCount ?? 500),
     accessAction: access.action || 'challenge_v1',
     accessBlockMin: String(access.blockMin ?? 60),
     attackEnabled: String(attack.enabled ?? true),
@@ -4087,13 +4092,17 @@ function httpFloodPayload(form) {
 }
 
 function floodLimitPayload(form, prefix) {
-  return {
+  const payload = {
     enabled: boolValue(form[`${prefix}Enabled`]),
     period: positiveInt(form[`${prefix}Period`], prefix === 'attack' ? 60 : 10),
     count: positiveInt(form[`${prefix}Count`], prefix === 'access' ? 200 : 10),
     action: form[`${prefix}Action`] || (prefix === 'access' ? 'challenge_v1' : 'block'),
     blockMin: positiveInt(form[`${prefix}BlockMin`], prefix === 'access' ? 60 : 30)
   };
+  if (prefix === 'access') {
+    payload.blockCount = Math.max(payload.count + 1, positiveInt(form.accessBlockCount, 500));
+  }
+  return payload;
 }
 
 function globalRateLimit(settings) {
@@ -4116,7 +4125,9 @@ function accessLimitSummary(form, settings) {
     const global = globalRateLimit(settings);
     return `An IP follows the global policy: ${global.count} requests within ${global.period} seconds.`;
   }
-  return `An IP that makes ${positiveInt(form.accessCount, 200)} requests within ${positiveInt(form.accessPeriod, 10)} seconds will ${floodActionPhrase(form.accessAction, form.accessBlockMin)}.`;
+  const challengeCount = positiveInt(form.accessCount, 200);
+  const blockCount = Math.max(challengeCount + 1, positiveInt(form.accessBlockCount, 500));
+  return `IP/fingerprint over ${challengeCount} requests within ${positiveInt(form.accessPeriod, 10)} seconds will ${floodActionPhrase(form.accessAction, form.accessBlockMin)}; over ${blockCount} is temporarily blocked.`;
 }
 
 function attackLimitSummary(form) {
@@ -4210,6 +4221,11 @@ function challengeWaitSeconds(value) {
   return [3, 5, 10].includes(seconds) ? seconds : 5;
 }
 
+function temporaryBlockMinutes(value) {
+  const minutes = positiveInt(value, defaultBotRateChallenge.blockMinutes);
+  return [10, 30, 60].includes(minutes) ? minutes : defaultBotRateChallenge.blockMinutes;
+}
+
 function floodActionPhrase(action, blockMin) {
   const minutes = positiveInt(blockMin, 30);
   if (action === 'challenge_v1') return `require Anti-Bot challenge when accessing again within the next ${minutes} minutes`;
@@ -4227,6 +4243,7 @@ function botProtectFormFromSite(site) {
     rateWindowSeconds: String(config.rateChallenge.windowSeconds),
     rateChallengeCount: String(config.rateChallenge.challengeCount),
     rateBlockCount: String(config.rateChallenge.blockCount),
+    rateBlockMinutes: String(config.rateChallenge.blockMinutes),
     dynamicHtml: String(config.dynamicProtection.html),
     dynamicJs: String(config.dynamicProtection.js),
     dynamicWatermark: String(config.dynamicProtection.watermark),
@@ -4245,6 +4262,7 @@ function botProtectPayload(form) {
   const dynamicEnabled = dynamicHtml || dynamicJs || dynamicWatermark;
   const challengeCount = positiveInt(form.rateChallengeCount, defaultBotRateChallenge.challengeCount);
   const blockCount = Math.max(challengeCount + 1, positiveInt(form.rateBlockCount, defaultBotRateChallenge.blockCount));
+  const blockMinutes = temporaryBlockMinutes(form.rateBlockMinutes);
   return {
     enabled: antiBotChallenge || dynamicEnabled || antiReplay,
     antiBotChallenge,
@@ -4256,7 +4274,8 @@ function botProtectPayload(form) {
       enabled: rateChallenge,
       windowSeconds: positiveInt(form.rateWindowSeconds, defaultBotRateChallenge.windowSeconds),
       challengeCount,
-      blockCount
+      blockCount,
+      blockMinutes
     },
     dynamicProtection: {
       enabled: dynamicEnabled,
@@ -4281,11 +4300,13 @@ function botProtectPayloadFromConfig(config, enabledFallback = true) {
   const loginEnabled = Boolean(antiBotChallenge) && Boolean(login.enabled ?? true) && loginPatterns.length > 0;
   const challengeCount = positiveInt(rate.challengeCount, defaultBotRateChallenge.challengeCount);
   const blockCount = Math.max(challengeCount + 1, positiveInt(rate.blockCount, defaultBotRateChallenge.blockCount));
+  const blockMinutes = temporaryBlockMinutes(rate.blockMinutes ?? rate.blockMin ?? defaultBotRateChallenge.blockMinutes);
   const rateChallenge = {
-    enabled: Boolean(antiBotChallenge) && Boolean(rate.enabled ?? true),
+    enabled: Boolean(antiBotChallenge) && Boolean(rate.enabled ?? defaultBotRateChallenge.enabled),
     windowSeconds: positiveInt(rate.windowSeconds, defaultBotRateChallenge.windowSeconds),
     challengeCount,
-    blockCount
+    blockCount,
+    blockMinutes
   };
   const html = Boolean(dynamic.html);
   const js = Boolean(dynamic.js);
@@ -4351,10 +4372,7 @@ function normalizedSiteFeatures(site) {
   return {
     httpFlood: features.httpFlood !== false,
     botProtection: features.botProtection !== false,
-    geoBlock: features.geoBlock === true,
-    auth: features.auth === true,
-    attacks: features.attacks !== false,
-    acl: site?.acl?.enabled !== false
+    geoBlock: features.geoBlock === true
   };
 }
 

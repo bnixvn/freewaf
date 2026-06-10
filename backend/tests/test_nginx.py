@@ -699,7 +699,31 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("Deny admin path", config)
 
     def test_bot_protection_emits_header_block_login_challenge_and_rate_rules(self):
-        state = make_state(settings=make_settings(mod_security={"enabled": False}))
+        state = make_state(
+            settings=make_settings(mod_security={"enabled": False}),
+            sites=[
+                {
+                    "id": "site-demo",
+                    "name": "Demo",
+                    "hostnames": ["localhost"],
+                    "origin": "http://127.0.0.1:9090",
+                    "listen": 8080,
+                    "mode": "block",
+                    "enabled": True,
+                    "features": {"botProtection": True},
+                    "botProtection": {
+                        "antiBotChallenge": True,
+                        "rateChallenge": {
+                            "enabled": True,
+                            "windowSeconds": 10,
+                            "challengeCount": 300,
+                            "blockCount": 700,
+                            "blockMinutes": 30,
+                        },
+                    },
+                }
+            ],
+        )
         with mock.patch.dict(
             os.environ,
             {
@@ -723,12 +747,60 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("Bot protection matched scanner headers", config)
         self.assertIn("Bot protection protected login path", config)
         self.assertIn("modsecurity_rules_file /etc/freewaf/modsecurity/base.conf;", config)
-        self.assertIn('SecRule IP:freewaf_site_demo_bot_count "@gt 200"', config)
-        self.assertIn('SecRule IP:freewaf_site_demo_bot_count "@gt 100"', config)
+        self.assertIn("REQUEST_HEADERS:User-Agent", config)
+        self.assertIn("REQUEST_HEADERS:Accept-Language", config)
+        self.assertIn("initcol:global=freewaf_site_demo_bot_%{REMOTE_ADDR}_%{tx.freewaf_site_demo_bot_ua_hash}", config)
+        self.assertIn('SecRule GLOBAL:freewaf_site_demo_bot_count "@gt 700"', config)
+        self.assertIn("expirevar:global.freewaf_site_demo_bot_blocked=1800", config)
+        self.assertIn('SecRule GLOBAL:freewaf_site_demo_bot_count "@gt 300"', config)
+        self.assertNotIn('SecRule IP:freewaf_site_demo_bot_count', config)
         self.assertIn("status:461", config)
         self.assertIn('REQUEST_COOKIES:freewaf_challenge "@rx .+"', config)
         self.assertGreater(config.find("freewaf_site_demo_bot_count"), config.find("    location / {"))
         self.assertIn('limit_req_zone "$remote_addr|$request_method|$http_user_agent" zone=freewaf_rate_fingerprint', config)
+
+    def test_http_flood_emits_temporary_block_cooldown_rules(self):
+        state = make_state(
+            settings=make_settings(mod_security={"enabled": False}),
+            sites=[
+                {
+                    "id": "site-demo",
+                    "name": "Demo",
+                    "hostnames": ["localhost"],
+                    "origin": "http://127.0.0.1:9090",
+                    "listen": 8080,
+                    "mode": "block",
+                    "enabled": True,
+                    "features": {"httpFlood": True, "botProtection": False},
+                    "acl": {
+                        "enabled": True,
+                        "accessLimit": {
+                            "enabled": True,
+                            "period": 10,
+                            "count": 200,
+                            "blockCount": 500,
+                            "action": "challenge_v1",
+                            "blockMin": 60,
+                        },
+                    },
+                }
+            ],
+        )
+        with mock.patch.dict(
+            os.environ,
+            {
+                "NGINX_HAS_MODSECURITY": "true",
+                "NGINX_MODSECURITY_BASE_RULES_FILE": "/etc/freewaf/modsecurity/base.conf",
+            },
+            clear=False,
+        ):
+            config = generate_nginx_config(state)
+
+        self.assertIn("modsecurity_rules_file /etc/freewaf/modsecurity/base.conf;", config)
+        self.assertIn('SecRule IP:freewaf_site_demo_flood_count "@gt 500"', config)
+        self.assertIn('SecRule IP:freewaf_site_demo_flood_blocked "@eq 1"', config)
+        self.assertIn("expirevar:ip.freewaf_site_demo_flood_blocked=3600", config)
+        self.assertIn("limit_req zone=sfl_acl_site_demo burst=200 nodelay;", config)
 
     def test_under_attack_uses_signed_challenge_cookie(self):
         state = make_state(

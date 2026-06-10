@@ -77,6 +77,7 @@ ACCESS_INSERT_POSITIONS = {"first", "last"}
 USER_ROLES = {"admin", "viewer"}
 PASSWORD_ITERATIONS = 200_000
 BOT_RATE_WINDOW_SECONDS = {5, 10, 15, 20, 30, 60}
+BOT_RATE_BLOCK_MINUTES = {10, 30, 60}
 
 
 class StoreError(Exception):
@@ -1256,7 +1257,7 @@ def normalize_acl_config(value, enabled_value=None) -> dict:
         "waitingRoom": normalize_bool(source.get("waitingRoom") if "waitingRoom" in source else source.get("waiting_room"), False),
         "accessLimit": normalize_acl_limit(
             source.get("accessLimit") or source.get("access_limit"),
-            {"enabled": True, "period": 10, "count": 200, "action": "challenge_v1", "blockMin": 60},
+            {"enabled": True, "period": 10, "count": 200, "blockCount": 500, "action": "challenge_v1", "blockMin": 60},
         ),
         "attackLimit": normalize_acl_limit(
             source.get("attackLimit") or source.get("attack_limit"),
@@ -1279,6 +1280,9 @@ def normalize_acl_limit(value, defaults: dict, include_status_codes: bool = Fals
         "action": normalize_acl_action(source.get("action") or defaults["action"]),
         "blockMin": normalize_positive_int(source.get("blockMin") or source.get("block_min"), defaults["blockMin"]),
     }
+    if "blockCount" in defaults:
+        block_count = normalize_positive_int(source.get("blockCount") or source.get("block_count"), defaults["blockCount"])
+        limit["blockCount"] = min(max(block_count, limit["count"] + 1), 1000000)
     if include_status_codes:
         limit["statusCodes"] = normalize_status_codes(source.get("statusCodes") or source.get("status_codes") or defaults["statusCodes"])
     return limit
@@ -1401,11 +1405,15 @@ def normalize_bot_rate_challenge_config(value, anti_bot_enabled: bool) -> dict:
     block_count = min(max(normalize_positive_int(source.get("blockCount") or source.get("block_count"), defaults["blockCount"]), 1), 1000000)
     if block_count <= challenge_count:
         block_count = challenge_count + 1
+    block_minutes = normalize_positive_int(source.get("blockMinutes") or source.get("block_minutes") or source.get("blockMin") or source.get("block_min"), defaults["blockMinutes"])
+    if block_minutes not in BOT_RATE_BLOCK_MINUTES:
+        block_minutes = defaults["blockMinutes"]
     return {
-        "enabled": normalize_bool(source.get("enabled"), anti_bot_enabled),
+        "enabled": normalize_bool(source.get("enabled"), defaults["enabled"] if anti_bot_enabled else False),
         "windowSeconds": window,
         "challengeCount": challenge_count,
         "blockCount": block_count,
+        "blockMinutes": block_minutes,
     }
 
 
