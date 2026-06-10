@@ -330,6 +330,41 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(protection["rateChallenge"]["challengeCount"], 100)
         self.assertEqual(protection["rateChallenge"]["blockCount"], 200)
 
+    def test_challenge_page_and_under_attack_are_normalized(self):
+        state = normalize_state(
+            {
+                "settings": {
+                    "challengePage": {
+                        "brandName": "My WAF",
+                        "title": "Checking",
+                        "message": "Please wait",
+                        "logoUrl": "https://example.test/logo.png",
+                        "supportUrl": "https://example.test/support",
+                        "primaryColor": "#ABCDEF",
+                        "backgroundColor": "bad",
+                        "textColor": "#111111",
+                        "tokenTtlMinutes": 99999,
+                    }
+                },
+                "sites": [
+                    {
+                        "id": "site-demo",
+                        "name": "Demo",
+                        "hostnames": ["demo.example.test"],
+                        "origin": "http://127.0.0.1:9090",
+                        "underAttack": {"enabled": True},
+                    }
+                ],
+            }
+        )
+
+        challenge = state["settings"]["challengePage"]
+        self.assertEqual(challenge["brandName"], "My WAF")
+        self.assertEqual(challenge["primaryColor"], "#abcdef")
+        self.assertEqual(challenge["backgroundColor"], "#f5f7f8")
+        self.assertEqual(challenge["tokenTtlMinutes"], 1440)
+        self.assertTrue(state["sites"][0]["underAttack"]["enabled"])
+
     def test_safeline_application_fields_are_normalized(self):
         state = normalize_state(
             {

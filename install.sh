@@ -259,11 +259,19 @@ EOF
 
 write_env() {
   log "Writing ${ENV_FILE}"
+  local challenge_secret="${FREEWAF_CHALLENGE_SECRET:-}"
+  if [ -z "$challenge_secret" ] && [ -f "$ENV_FILE" ]; then
+    challenge_secret="$(sed -n 's/^FREEWAF_CHALLENGE_SECRET=//p' "$ENV_FILE" | head -n 1)"
+  fi
+  if [ -z "$challenge_secret" ]; then
+    challenge_secret="$(openssl rand -hex 32)"
+  fi
   install -d -m 0755 "$ENV_DIR"
   cat > "$ENV_FILE" <<EOF
 ADMIN_PORT=${ADMIN_PORT}
 DEMO_ORIGIN_PORT=${DEMO_ORIGIN_PORT}
 ENABLE_DEMO_ORIGIN=${ENABLE_DEMO_ORIGIN}
+FREEWAF_CHALLENGE_SECRET=${challenge_secret}
 DATA_FILE=${APP_DIR}/data/state.json
 NGINX_OUTPUT_FILE=${APP_DIR}/nginx/generated/freewaf.conf
 NGINX_ACCESS_LOG=${APP_DIR}/logs/freewaf_access.log

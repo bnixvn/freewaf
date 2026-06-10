@@ -527,6 +527,8 @@ class NginxGeneratorTests(unittest.TestCase):
                     "origin": "http://127.0.0.1:9090",
                     "ports": ["80"],
                     "proxy": {"forwardedHeaders": False},
+                    "features": {"botProtection": False},
+                    "acl": {"enabled": False},
                     "mode": "block",
                     "enabled": True,
                 }
@@ -572,6 +574,8 @@ class NginxGeneratorTests(unittest.TestCase):
                     "ports": ["80"],
                     "listen": 80,
                     "static": {"root": "/srv/static/site-static"},
+                    "features": {"botProtection": False},
+                    "acl": {"enabled": False},
                     "mode": "block",
                     "enabled": True,
                 }
@@ -702,23 +706,51 @@ class NginxGeneratorTests(unittest.TestCase):
 
         self.assertIn("map $http_user_agent $sfl_bad_bot_ua", config)
         self.assertNotIn("map $http_user_agent $sfl_suspicious_ua", config)
-        self.assertIn("map $cookie_freewaf_challenge $sfl_challenge_passed", config)
+        self.assertIn("secure_link \"$cookie_freewaf_challenge,$cookie_freewaf_challenge_expires\";", config)
         self.assertIn("set $sfl_bot_block 1;", config)
         self.assertIn("set $sfl_challenge 1;", config)
         self.assertIn("$request_uri ~*", config)
         self.assertIn("wp-login", config)
         self.assertIn("error_page 461 = @freewaf_challenge;", config)
-        self.assertIn("document.cookie=\"freewaf_challenge=passed;", config)
-        self.assertNotIn("add_header Set-Cookie \"freewaf_challenge=passed;", config)
+        self.assertIn("location = /.freewaf/challenge/verify", config)
+        self.assertNotIn("freewaf_challenge=passed", config)
         self.assertIn("Bot protection matched scanner headers", config)
         self.assertIn("Bot protection protected login path", config)
         self.assertIn("modsecurity_rules_file /etc/freewaf/modsecurity/base.conf;", config)
         self.assertIn('SecRule IP:freewaf_site_demo_bot_count "@gt 200"', config)
         self.assertIn('SecRule IP:freewaf_site_demo_bot_count "@gt 100"', config)
         self.assertIn("status:461", config)
-        self.assertIn("REQUEST_COOKIES:freewaf_challenge", config)
+        self.assertIn('REQUEST_COOKIES:freewaf_challenge "@rx .+"', config)
         self.assertGreater(config.find("freewaf_site_demo_bot_count"), config.find("    location / {"))
         self.assertIn('limit_req_zone "$remote_addr|$request_method|$http_user_agent" zone=freewaf_rate_fingerprint', config)
+
+    def test_under_attack_uses_signed_challenge_cookie(self):
+        state = make_state(
+            sites=[
+                {
+                    "id": "site-demo",
+                    "name": "Demo",
+                    "hostnames": ["demo.example.test"],
+                    "origin": "http://127.0.0.1:9090",
+                    "listen": 8080,
+                    "mode": "block",
+                    "enabled": True,
+                    "features": {"botProtection": False},
+                    "underAttack": {"enabled": True},
+                }
+            ]
+        )
+
+        with mock.patch.dict(os.environ, {"FREEWAF_CHALLENGE_SECRET": "unit-test-secret", "ADMIN_PORT": "7001"}, clear=False):
+            config = generate_nginx_config(state)
+
+        self.assertIn("map \"$request_method:$uri\" $sfl_under_attack_bypass", config)
+        self.assertIn("secure_link \"$cookie_freewaf_challenge,$cookie_freewaf_challenge_expires\";", config)
+        self.assertIn("$secure_link_expires|$host|$remote_addr|$http_user_agent|unit-test-secret", config)
+        self.assertIn("location @freewaf_challenge", config)
+        self.assertIn("location = /.freewaf/challenge/verify", config)
+        self.assertIn("proxy_set_header X-FreeWAF-Challenge-Site \"site-demo\";", config)
+        self.assertIn("set $sfl_reason \"Under Attack Mode browser challenge\";", config)
         self.assertNotIn("$request_method$request_uri$http_user_agent", config)
 
     def test_social_crawler_user_agents_are_not_challenged_by_default(self):

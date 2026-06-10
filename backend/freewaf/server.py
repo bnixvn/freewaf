@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import html
 import json
 import mimetypes
 import os
@@ -27,7 +31,7 @@ from .nginx import (
     site_ports,
     write_nginx_config,
 )
-from .defaults import utc_now
+from .defaults import challenge_secret, utc_now
 from .store import Store, StoreError, build_stats, country_for_ip, normalize_ip_items, resolve_data_file
 
 
@@ -121,6 +125,10 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
             parsed = urlparse(self.path)
             query = parse_qs(parsed.query)
 
+            if self.headers.get("X-FreeWAF-Challenge-Render") == "1":
+                self.serve_challenge_page()
+                return
+
             if parsed.path == "/api/health":
                 self.send_json(200, {"ok": True, "adminPort": admin_port, "waf": "nginx"})
                 return
@@ -171,6 +179,10 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
 
         def do_POST(self):
             try:
+                if urlparse(self.path).path == "/.freewaf/challenge/verify":
+                    self.verify_challenge()
+                    return
+
                 if self.path == "/api/auth/setup":
                     payload = self.read_payload()
                     if store.has_users():
@@ -481,6 +493,57 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
             user = next((item for item in store.get_state().get("users", []) if item["id"] == user_id and item.get("enabled")), None)
             return user
 
+        def serve_challenge_page(self) -> None:
+            context = internal_challenge_context(self.headers)
+            if not context:
+                self.send_json(403, {"error": "Invalid challenge request"})
+                return
+            state = store.get_state()
+            site = challenge_site(state, context["siteId"])
+            if not site:
+                self.send_json(404, {"error": "Application not found"})
+                return
+            body = render_challenge_page(state, site, context)
+            self.send_html(
+                200,
+                body,
+                headers=[
+                    ("Cache-Control", "no-store, no-cache, must-revalidate"),
+                    ("X-Content-Type-Options", "nosniff"),
+                    ("Referrer-Policy", "no-referrer"),
+                ],
+            )
+
+        def verify_challenge(self) -> None:
+            context = internal_challenge_context(self.headers)
+            if not context:
+                self.send_json(403, {"error": "Invalid challenge request"})
+                return
+            state = store.get_state()
+            site = challenge_site(state, context["siteId"])
+            if not site:
+                self.send_json(404, {"error": "Application not found"})
+                return
+            payload = self.read_payload()
+            if not verify_challenge_nonce(payload.get("nonce"), context):
+                self.send_json(403, {"error": "Challenge expired or invalid"})
+                return
+            settings = state.get("settings", {}).get("challengePage", {})
+            ttl_minutes = clamp(parse_int(settings.get("tokenTtlMinutes"), 30), 1, 1440)
+            max_age = ttl_minutes * 60
+            expires = int(time.time()) + max_age
+            token = secure_link_token(context, expires)
+            secure = context["proto"] == "https"
+            self.send_json(
+                200,
+                {"ok": True, "expiresAt": expires},
+                headers=[
+                    ("Set-Cookie", challenge_cookie("freewaf_challenge", token, max_age, secure)),
+                    ("Set-Cookie", challenge_cookie("freewaf_challenge_expires", str(expires), max_age, secure)),
+                    ("Cache-Control", "no-store"),
+                ],
+            )
+
         def serve_static(self, request_path: str):
             if not FRONTEND_DIST.exists():
                 body = (
@@ -523,20 +586,30 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 raise ValueError("JSON body must be an object")
             return payload
 
-        def send_json(self, status: int, payload: dict, headers: dict | None = None):
+        def send_json(self, status: int, payload: dict, headers=None):
             body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
             self.send_response(status)
             self.send_header("content-type", "application/json; charset=utf-8")
             self.send_header("content-length", str(len(body)))
-            for key, value in (headers or {}).items():
+            for key, value in response_headers(headers):
                 self.send_header(key, value)
             self.end_headers()
             self.wfile.write(body)
 
-        def send_empty(self, status: int, headers: dict | None = None):
+        def send_html(self, status: int, content: str, headers=None):
+            body = content.encode("utf-8")
+            self.send_response(status)
+            self.send_header("content-type", "text/html; charset=utf-8")
+            self.send_header("content-length", str(len(body)))
+            for key, value in response_headers(headers):
+                self.send_header(key, value)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def send_empty(self, status: int, headers=None):
             self.send_response(status)
             self.send_header("content-length", "0")
-            for key, value in (headers or {}).items():
+            for key, value in response_headers(headers):
                 self.send_header(key, value)
             self.end_headers()
 
@@ -627,6 +700,126 @@ def totp_setup_uri(user: dict) -> str:
 def is_public_api_path(path: str) -> bool:
     parsed = urlparse(path)
     return parsed.path in {"/api/health", "/api/auth/status", "/api/auth/setup", "/api/auth/login", "/api/auth/logout"}
+
+
+def response_headers(headers) -> list[tuple[str, str]]:
+    if not headers:
+        return []
+    return list(headers.items()) if isinstance(headers, dict) else list(headers)
+
+
+def internal_challenge_context(headers) -> dict | None:
+    supplied_secret = str(headers.get("X-FreeWAF-Challenge-Secret") or "")
+    if not supplied_secret or not hmac.compare_digest(supplied_secret, challenge_secret()):
+        return None
+    site_id = str(headers.get("X-FreeWAF-Challenge-Site") or "").strip()
+    host = str(headers.get("X-FreeWAF-Challenge-Host") or "").strip().lower()
+    ip = str(headers.get("X-Real-IP") or "").strip()
+    user_agent = str(headers.get("User-Agent") or "")
+    proto = str(headers.get("X-Forwarded-Proto") or "http").strip().lower()
+    if not site_id or not host or not ip:
+        return None
+    return {
+        "siteId": site_id,
+        "host": host,
+        "ip": ip,
+        "userAgent": user_agent,
+        "proto": "https" if proto == "https" else "http",
+    }
+
+
+def challenge_site(state: dict, site_id: str) -> dict | None:
+    return next((site for site in state.get("sites", []) if site.get("id") == site_id and site.get("enabled")), None)
+
+
+def challenge_nonce(context: dict, ttl_seconds: int = 120) -> str:
+    payload = {
+        "exp": int(time.time()) + ttl_seconds,
+        "site": context["siteId"],
+        "host": context["host"],
+        "ip": context["ip"],
+        "ua": hashlib.sha256(context["userAgent"].encode("utf-8")).hexdigest(),
+    }
+    encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")).decode("ascii").rstrip("=")
+    signature = hmac.new(challenge_secret().encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).digest()
+    return f"{encoded}.{base64.urlsafe_b64encode(signature).decode('ascii').rstrip('=')}"
+
+
+def verify_challenge_nonce(value, context: dict) -> bool:
+    try:
+        encoded, supplied_signature = str(value or "").split(".", 1)
+        expected_signature = base64.urlsafe_b64encode(
+            hmac.new(challenge_secret().encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).digest()
+        ).decode("ascii").rstrip("=")
+        if not hmac.compare_digest(supplied_signature, expected_signature):
+            return False
+        padded = encoded + "=" * (-len(encoded) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return False
+    try:
+        expires = int(payload.get("exp") or 0)
+    except (TypeError, ValueError):
+        return False
+    expected_ua = hashlib.sha256(context["userAgent"].encode("utf-8")).hexdigest()
+    return (
+        expires >= int(time.time())
+        and payload.get("site") == context["siteId"]
+        and payload.get("host") == context["host"]
+        and payload.get("ip") == context["ip"]
+        and payload.get("ua") == expected_ua
+    )
+
+
+def secure_link_token(context: dict, expires: int) -> str:
+    value = f"{expires}|{context['host']}|{context['ip']}|{context['userAgent']}|{challenge_secret()}"
+    digest = hashlib.md5(value.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def challenge_cookie(name: str, value: str, max_age: int, secure: bool) -> str:
+    flags = "HttpOnly; SameSite=Lax; Path=/"
+    if secure:
+        flags += "; Secure"
+    return f"{name}={value}; Max-Age={max_age}; {flags}"
+
+
+def render_challenge_page(state: dict, site: dict, context: dict) -> str:
+    settings = state.get("settings", {}).get("challengePage", {})
+    brand = html.escape(str(settings.get("brandName") or "FreeWAF"))
+    title = html.escape(str(settings.get("title") or "Security check"))
+    message = html.escape(str(settings.get("message") or "We are verifying your browser before continuing."))
+    application = html.escape(str(site.get("name") or context["host"]))
+    logo_url = html.escape(str(settings.get("logoUrl") or ""), quote=True)
+    support_url = html.escape(str(settings.get("supportUrl") or ""), quote=True)
+    primary = str(settings.get("primaryColor") or "#18a69a")
+    background = str(settings.get("backgroundColor") or "#f5f7f8")
+    text = str(settings.get("textColor") or "#17202a")
+    nonce = json.dumps(challenge_nonce(context))
+    logo = f'<img class="logo" src="{logo_url}" alt="{brand}">' if logo_url else f'<div class="brand-mark">{brand[:1] or "F"}</div>'
+    support = f'<a href="{support_url}" rel="noreferrer">Contact support</a>' if support_url else ""
+    return (
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        f"<title>{title}</title><style>"
+        f":root{{--primary:{primary};--background:{background};--text:{text}}}"
+        "*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:var(--background);"
+        "color:var(--text);font-family:Segoe UI,Arial,sans-serif}main{width:min(520px,100%);text-align:center}.logo{display:block;max-width:180px;"
+        "max-height:64px;margin:0 auto 24px;object-fit:contain}.brand-mark{display:grid;place-items:center;width:54px;height:54px;margin:0 auto 24px;"
+        "border-radius:8px;background:var(--primary);color:#fff;font-size:24px;font-weight:800}h1{margin:0 0 12px;font-size:28px;letter-spacing:0}"
+        "p{margin:0 auto 18px;max-width:460px;line-height:1.6;opacity:.75}.application{font-size:13px;font-weight:700;opacity:.6}"
+        ".loader{width:34px;height:34px;margin:26px auto;border:3px solid color-mix(in srgb,var(--primary) 20%,transparent);"
+        "border-top-color:var(--primary);border-radius:50%;animation:spin .8s linear infinite}.status{min-height:22px;font-size:13px;opacity:.72}"
+        "a{display:inline-block;margin-top:20px;color:var(--primary);font-size:13px;font-weight:700;text-decoration:none}@keyframes spin{to{transform:rotate(360deg)}}"
+        "</style></head><body><main>"
+        f"{logo}<h1>{title}</h1><p>{message}</p><div class=\"application\">{application}</div><div class=\"loader\"></div>"
+        f"<div class=\"status\" id=\"status\">Checking browser integrity...</div>{support}"
+        "<noscript><p>JavaScript is required to complete this security check.</p></noscript></main>"
+        "<script>(async function(){const status=document.getElementById('status');try{const response=await fetch('/.freewaf/challenge/verify',"
+        f"{{method:'POST',credentials:'same-origin',headers:{{'content-type':'application/json'}},body:JSON.stringify({{nonce:{nonce}}})}});"
+        "if(!response.ok)throw new Error('Verification failed');status.textContent='Verification complete. Continuing...';"
+        "window.setTimeout(function(){window.location.reload();},350)}catch(error){status.textContent='Unable to verify this browser. Please refresh and try again.'}})();</script>"
+        "</body></html>"
+    )
 
 
 def session_max_age_seconds(state: dict) -> int:

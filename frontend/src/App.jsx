@@ -19,6 +19,7 @@ import {
   Server,
   Settings,
   Shield,
+  ShieldAlert,
   ShieldCheck,
   SlidersHorizontal,
   Trash2,
@@ -75,7 +76,7 @@ function createEmptyData() {
     certificates: [],
     users: [],
     logs: [],
-    settings: { panel: {}, applicationDefaults: { proxy: {}, modSecurity: {} } },
+    settings: { panel: {}, applicationDefaults: { proxy: {}, modSecurity: {} }, challengePage: {} },
     stats: { ...emptyStats, timeline: [] }
   };
 }
@@ -160,6 +161,18 @@ const defaultApplicationDefaults = {
   modSecurityMode: 'on',
   modSecurityRuleset: 'comodo',
   modSecurityRequestBodyLimit: '13107200'
+};
+
+const defaultChallengePage = {
+  brandName: 'FreeWAF',
+  title: 'Security check',
+  message: 'We are verifying your browser before continuing.',
+  logoUrl: '',
+  supportUrl: '',
+  primaryColor: '#18a69a',
+  backgroundColor: '#f5f7f8',
+  textColor: '#17202a',
+  tokenTtlMinutes: '30'
 };
 
 const defaultBotLoginPathPatterns = [
@@ -478,6 +491,19 @@ export default function App() {
     await loadState();
   }
 
+  async function toggleUnderAttack(site, enabled) {
+    try {
+      await api(`/api/sites/${site.id}`, {
+        method: 'PATCH',
+        body: { underAttack: { ...(site.underAttack || {}), enabled } }
+      });
+      await loadState();
+      showToast(enabled ? 'Under Attack Mode enabled' : 'Under Attack Mode disabled');
+    } catch (error) {
+      showToast(error.message, true);
+    }
+  }
+
   async function toggleRule(rule, enabled) {
     await api(`/api/rules/${rule.id}`, { method: 'PATCH', body: { enabled } });
     await loadState();
@@ -587,7 +613,8 @@ export default function App() {
           attacks: boolValue(site.featureAttacks)
         },
         botProtection: botProtectPayloadFromConfig(site.botProtection, boolValue(site.featureBotProtection)),
-        geoBlock: geoBlockPayloadFromConfig(site.geoBlock, boolValue(site.featureGeoBlock))
+        geoBlock: geoBlockPayloadFromConfig(site.geoBlock, boolValue(site.featureGeoBlock)),
+        underAttack: site.underAttack || { enabled: false }
       };
       const id = payload.id;
       delete payload.id;
@@ -883,6 +910,15 @@ export default function App() {
     showToast(result.ok ? 'Global defaults saved and Nginx reloaded' : 'Global defaults saved, but Nginx reload failed', !result.ok);
   }
 
+  async function saveChallengePage(challengePage) {
+    await api('/api/settings', {
+      method: 'PATCH',
+      body: { challengePage }
+    });
+    await loadState();
+    showToast('Challenge page saved');
+  }
+
   async function saveUser(user) {
     const payload = {
       ...user,
@@ -921,6 +957,7 @@ export default function App() {
       setFilter,
       setModal,
       toggleSite,
+      toggleUnderAttack,
       toggleRule,
       toggleIpGroup,
       toggleAccessRule,
@@ -937,6 +974,7 @@ export default function App() {
       applyNginx,
       savePanelSettings,
       saveApplicationDefaults,
+      saveChallengePage,
       saveUser,
       saveHttpFlood,
       saveBotProtection,
@@ -1309,7 +1347,7 @@ function CompactInsightColumn({ title, pill, rows, empty, maxValue, label, barVa
   );
 }
 
-function SitesView({ data, setModal, toggleSite, deleteSite }) {
+function SitesView({ data, setModal, toggleSite, toggleUnderAttack, deleteSite }) {
   return (
     <section className="panel">
       <div className="panel-heading">
@@ -1327,6 +1365,7 @@ function SitesView({ data, setModal, toggleSite, deleteSite }) {
             onEdit={() => setModal({ type: 'site', site })}
             onDelete={() => deleteSite(site)}
             onToggle={(checked) => toggleSite(site, checked)}
+            onToggleUnderAttack={(checked) => toggleUnderAttack(site, checked)}
             onConfigureFlood={() => setModal({ type: 'httpFlood', site })}
             onConfigureBot={() => setModal({ type: 'botProtect', site })}
             onConfigureGeo={() => setModal({ type: 'geoBlock', site })}
@@ -1337,7 +1376,7 @@ function SitesView({ data, setModal, toggleSite, deleteSite }) {
   );
 }
 
-function ApplicationCard({ site, stats, onEdit, onDelete, onToggle, onConfigureFlood, onConfigureBot, onConfigureGeo }) {
+function ApplicationCard({ site, stats, onEdit, onDelete, onToggle, onToggleUnderAttack, onConfigureFlood, onConfigureBot, onConfigureGeo }) {
   const features = normalizedSiteFeatures(site);
   const counters = stats || { requests: 0, protected: 0 };
   const domain = site.hostnames?.[0] || site.name;
@@ -1352,6 +1391,14 @@ function ApplicationCard({ site, stats, onEdit, onDelete, onToggle, onConfigureF
         <span className="app-globe"><Globe2 size={22} /></span>
         <button className={`defense-button ${site.enabled ? 'active' : ''}`} type="button" onClick={() => onToggle(!site.enabled)}>
           DEFENSE
+        </button>
+        <button
+          className={`under-attack-button ${site.underAttack?.enabled ? 'active' : ''}`}
+          type="button"
+          onClick={() => onToggleUnderAttack(!site.underAttack?.enabled)}
+          title="Challenge new visitors while the application is under attack"
+        >
+          <ShieldAlert size={14} /> UNDER ATTACK
         </button>
         <div className="app-metric-pair">
           <div>
@@ -1758,9 +1805,10 @@ function LogsView({
   );
 }
 
-function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaults, deleteUser, previewNginx, applyNginx, auth, logout }) {
+function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaults, saveChallengePage, deleteUser, previewNginx, applyNginx, auth, logout }) {
   const panel = data.settings?.panel || {};
   const applicationDefaults = data.settings?.applicationDefaults || {};
+  const challengePage = data.settings?.challengePage || {};
   const [panelForm, setPanelForm] = useState(() => ({
     httpsEnabled: String(panel.httpsEnabled ?? false),
     certificateId: panel.certificateId || '',
@@ -1768,6 +1816,7 @@ function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaul
     sessionHours: panel.sessionHours || 12
   }));
   const [applicationForm, setApplicationForm] = useState(() => applicationDefaultsFormFromSettings(applicationDefaults));
+  const [challengeForm, setChallengeForm] = useState(() => challengePageFormFromSettings(challengePage));
 
   useEffect(() => {
     setPanelForm({
@@ -1781,6 +1830,10 @@ function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaul
   useEffect(() => {
     setApplicationForm(applicationDefaultsFormFromSettings(applicationDefaults));
   }, [applicationDefaults]);
+
+  useEffect(() => {
+    setChallengeForm(challengePageFormFromSettings(challengePage));
+  }, [challengePage]);
 
   function updatePanel(name, value) {
     setPanelForm((current) => ({ ...current, [name]: value }));
@@ -1803,6 +1856,15 @@ function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaul
   function submitApplicationDefaults(event) {
     event.preventDefault();
     saveApplicationDefaults(applicationDefaultsPayload(applicationForm));
+  }
+
+  function updateChallenge(name, value) {
+    setChallengeForm((current) => ({ ...current, [name]: value }));
+  }
+
+  function submitChallengePage(event) {
+    event.preventDefault();
+    saveChallengePage(challengePagePayload(challengeForm));
   }
 
   return (
@@ -1892,6 +1954,30 @@ function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaul
         </form>
       </section>
 
+      <section className="panel">
+        <div className="panel-heading">
+          <h2>Challenge Page</h2>
+          <span className="pill">signed browser token</span>
+        </div>
+        <form className="challenge-settings-layout" onSubmit={submitChallengePage}>
+          <div className="settings-form challenge-settings-form">
+            <TextField label="Brand Name" value={challengeForm.brandName} onChange={(value) => updateChallenge('brandName', value)} />
+            <TextField label="Title" value={challengeForm.title} onChange={(value) => updateChallenge('title', value)} />
+            <TextAreaField label="Message" value={challengeForm.message} onChange={(value) => updateChallenge('message', value)} full />
+            <TextField label="Logo URL" value={challengeForm.logoUrl} onChange={(value) => updateChallenge('logoUrl', value)} placeholder="https://example.com/logo.png" full />
+            <TextField label="Support URL" value={challengeForm.supportUrl} onChange={(value) => updateChallenge('supportUrl', value)} placeholder="https://example.com/support" full />
+            <TextField label="Primary Color" value={challengeForm.primaryColor} onChange={(value) => updateChallenge('primaryColor', value)} type="color" />
+            <TextField label="Background Color" value={challengeForm.backgroundColor} onChange={(value) => updateChallenge('backgroundColor', value)} type="color" />
+            <TextField label="Text Color" value={challengeForm.textColor} onChange={(value) => updateChallenge('textColor', value)} type="color" />
+            <TextField label="Token TTL (minutes)" value={challengeForm.tokenTtlMinutes} onChange={(value) => updateChallenge('tokenTtlMinutes', value)} type="number" />
+            <div className="settings-actions full">
+              <button className="tool-button primary"><Save size={18} /> Save Challenge Page</button>
+            </div>
+          </div>
+          <ChallengePagePreview form={challengeForm} />
+        </form>
+      </section>
+
       <section className="table-panel">
         <div className="panel-heading">
           <h2>Users</h2>
@@ -1958,6 +2044,31 @@ function Metric({ label, value, note }) {
       <div className="metric-value">{value}</div>
       <div className="metric-note">{note}</div>
     </article>
+  );
+}
+
+function ChallengePagePreview({ form }) {
+  const previewStyle = {
+    '--challenge-primary': form.primaryColor,
+    '--challenge-background': form.backgroundColor,
+    '--challenge-text': form.textColor
+  };
+  return (
+    <div className="challenge-preview-wrap">
+      <span className="muted">Live preview</span>
+      <div className="challenge-preview" style={previewStyle}>
+        {form.logoUrl ? (
+          <img src={form.logoUrl} alt="" />
+        ) : (
+          <div className="challenge-preview-mark">{String(form.brandName || 'F').slice(0, 1)}</div>
+        )}
+        <h3>{form.title || 'Security check'}</h3>
+        <p>{form.message || 'We are verifying your browser before continuing.'}</p>
+        <strong>Example Application</strong>
+        <span className="challenge-preview-loader" />
+        <small>Checking browser integrity...</small>
+      </div>
+    </div>
   );
 }
 
@@ -3810,6 +3921,28 @@ function applicationDefaultsPayload(form) {
       ruleset: form.modSecurityRuleset === 'owasp' ? 'owasp' : 'comodo',
       requestBodyLimit: positiveInt(form.modSecurityRequestBodyLimit, 13107200)
     }
+  };
+}
+
+function challengePageFormFromSettings(challengePage) {
+  return {
+    ...defaultChallengePage,
+    ...(challengePage || {}),
+    tokenTtlMinutes: String(challengePage?.tokenTtlMinutes ?? defaultChallengePage.tokenTtlMinutes)
+  };
+}
+
+function challengePagePayload(form) {
+  return {
+    brandName: form.brandName,
+    title: form.title,
+    message: form.message,
+    logoUrl: form.logoUrl,
+    supportUrl: form.supportUrl,
+    primaryColor: form.primaryColor,
+    backgroundColor: form.backgroundColor,
+    textColor: form.textColor,
+    tokenTtlMinutes: positiveInt(form.tokenTtlMinutes, 30)
   };
 }
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+import os
 
 
 DEFAULT_SETTINGS = {
@@ -41,6 +42,17 @@ DEFAULT_SETTINGS = {
             "requestBodyLimit": 13107200,
         },
     },
+    "challengePage": {
+        "brandName": "FreeWAF",
+        "title": "Security check",
+        "message": "We are verifying your browser before continuing.",
+        "logoUrl": "",
+        "supportUrl": "",
+        "primaryColor": "#18a69a",
+        "backgroundColor": "#f5f7f8",
+        "textColor": "#17202a",
+        "tokenTtlMinutes": 30,
+    },
     "blockPageTitle": "Request blocked",
     "blockSupportIdPrefix": "SFL",
 }
@@ -62,6 +74,10 @@ DEFAULT_BOT_RATE_CHALLENGE = {
     "challengeCount": 100,
     "blockCount": 200,
 }
+
+
+def challenge_secret() -> str:
+    return os.environ.get("FREEWAF_CHALLENGE_SECRET", "").strip() or "freewaf-development-challenge-secret"
 
 
 BUILTIN_RULES = [

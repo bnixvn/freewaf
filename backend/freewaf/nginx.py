@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .defaults import DEFAULT_BOT_LOGIN_PATH_PATTERNS, DEFAULT_BOT_RATE_CHALLENGE
+from .defaults import DEFAULT_BOT_LOGIN_PATH_PATTERNS, DEFAULT_BOT_RATE_CHALLENGE, challenge_secret
 
 
 NATIVE_TARGETS = {"all", "url", "headers", "method", "ip"}
@@ -312,9 +312,10 @@ def render_bot_detection_maps() -> list[str]:
 
 def render_challenge_maps() -> list[str]:
     return [
-        "map $cookie_freewaf_challenge $sfl_challenge_passed {",
+        "map \"$request_method:$uri\" $sfl_under_attack_bypass {",
         "    default 0;",
-        "    passed 1;",
+        "    ~*^(?:GET|HEAD):/(?:robots\\.txt|sitemap(?:_index)?\\.xml)$ 1;",
+        "    ~*^(?:GET|HEAD):/.*\\.(?:css|js|mjs|map|png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|eot|mp4|webm|mp3|wav|pdf|txt|xml)$ 1;",
         "}",
         "",
     ]
@@ -503,6 +504,8 @@ def render_redirect_server(site: dict, state: dict, server_name: str, port: int,
         "    set $sfl_verdict allow;",
         "    set $sfl_reason \"Allowed\";",
         "",
+        *render_challenge_validation(site),
+        "",
         *render_log_directives(site, proxy),
         "    error_page 460 = @freewaf_block;",
         "    error_page 461 = @freewaf_challenge;",
@@ -512,7 +515,7 @@ def render_redirect_server(site: dict, state: dict, server_name: str, port: int,
         "",
         *render_safeline_locations(site),
         "",
-        *render_internal_waf_locations(site),
+        *render_internal_waf_locations(site, state),
         "",
         "    location / {",
         "        if ($sfl_block = 1) {",
@@ -564,6 +567,8 @@ def render_proxy_server(
         "    set $sfl_verdict allow;",
         "    set $sfl_reason \"Allowed\";",
         "",
+        *render_challenge_validation(site),
+        "",
         *render_log_directives(site, proxy),
         "    error_page 460 = @freewaf_block;",
         "    error_page 461 = @freewaf_challenge;",
@@ -600,7 +605,7 @@ def render_proxy_server(
             "",
             *render_safeline_locations(site),
             "",
-            *render_internal_waf_locations(site),
+            *render_internal_waf_locations(site, state),
             "",
             "    location / {",
             "        if ($sfl_block = 1) {",
@@ -664,12 +669,13 @@ def render_site_waf_directives(site: dict, state: dict) -> list[str]:
 
     lines.extend(render_geo_block(site))
     lines.extend(render_bot_protection(site))
+    lines.extend(render_under_attack_protection(site))
     lines.extend(render_acl_notes(site))
     return lines
 
 
-def render_internal_waf_locations(site: dict) -> list[str]:
-    return [
+def render_internal_waf_locations(site: dict, state: dict) -> list[str]:
+    lines = [
         "    location @freewaf_block {",
         "        internal;",
         "        add_header X-FreeWAF-Verdict block always;",
@@ -685,15 +691,73 @@ def render_internal_waf_locations(site: dict) -> list[str]:
         "        default_type text/html;",
         f"        return 429 '{rate_limit_page(site)}';",
         "    }",
-        "",
-        "    location @freewaf_challenge {",
-        "        internal;",
-        "        set $sfl_verdict challenge;",
-        "        set $sfl_reason \"Browser challenge required\";",
-        "        add_header X-FreeWAF-Verdict challenge always;",
-        "        add_header Cache-Control \"no-store\" always;",
-        "        default_type text/html;",
-        f"        return 200 '{challenge_page(site)}';",
+    ]
+    if not site_uses_challenge(site):
+        return lines
+
+    upstream = challenge_backend_url(state)
+    secret = nginx_string(challenge_secret())
+    common_proxy_headers = [
+        f"        proxy_set_header X-FreeWAF-Challenge-Secret \"{secret}\";",
+        f"        proxy_set_header X-FreeWAF-Challenge-Site \"{nginx_string(site.get('id') or '')}\";",
+        "        proxy_set_header X-FreeWAF-Challenge-Host $host;",
+        "        proxy_set_header X-Real-IP $remote_addr;",
+        "        proxy_set_header X-Forwarded-Proto $scheme;",
+        "        proxy_set_header User-Agent $http_user_agent;",
+        "        proxy_pass_request_body on;",
+    ]
+    tls_proxy = ["        proxy_ssl_verify off;"] if upstream.startswith("https://") else []
+    lines.extend(
+        [
+            "",
+            "    location @freewaf_challenge {",
+            "        internal;",
+            "        set $sfl_verdict challenge;",
+            "        set $sfl_reason \"Browser challenge required\";",
+            "        add_header X-FreeWAF-Verdict challenge always;",
+            "        add_header Cache-Control \"no-store\" always;",
+            *render_challenge_location_modsecurity_bypass(),
+            "        proxy_set_header X-FreeWAF-Challenge-Render 1;",
+            *common_proxy_headers,
+            *tls_proxy,
+            f"        proxy_pass {upstream};",
+            "    }",
+            "",
+            "    location = /.freewaf/challenge/verify {",
+            *render_challenge_location_modsecurity_bypass(),
+            "        proxy_set_header X-FreeWAF-Challenge-Render 0;",
+            *common_proxy_headers,
+            *tls_proxy,
+            f"        proxy_pass {upstream};",
+            "    }",
+        ]
+    )
+    return lines
+
+
+def render_challenge_location_modsecurity_bypass() -> list[str]:
+    if os.environ.get("NGINX_HAS_MODSECURITY", "false").lower() == "true":
+        return ["        modsecurity off;"]
+    return []
+
+
+def challenge_backend_url(state: dict) -> str:
+    panel = state.get("settings", {}).get("panel", {})
+    scheme = "https" if panel.get("httpsEnabled") else "http"
+    port = max(1, min(parse_int(os.environ.get("ADMIN_PORT")) or 7001, 65535))
+    return f"{scheme}://127.0.0.1:{port}"
+
+
+def render_challenge_validation(site: dict) -> list[str]:
+    if not site_uses_challenge(site):
+        return []
+    secret = nginx_string(challenge_secret())
+    return [
+        "    secure_link \"$cookie_freewaf_challenge,$cookie_freewaf_challenge_expires\";",
+        f"    secure_link_md5 \"$secure_link_expires|$host|$remote_addr|$http_user_agent|{secret}\";",
+        "    set $sfl_challenge_passed 0;",
+        "    if ($secure_link = \"1\") {",
+        "        set $sfl_challenge_passed 1;",
         "    }",
     ]
 
@@ -938,7 +1002,7 @@ def render_bot_rate_modsecurity_rules(site: dict, indent: str = "        ") -> l
             f'"id:{base + 82},phase:1,deny,status:460,log,msg:FreeWAFBotRateBlock"'
         ),
         (
-            f'SecRule REQUEST_COOKIES:freewaf_challenge "@streq passed" '
+            f'SecRule REQUEST_COOKIES:freewaf_challenge "@rx .+" '
             f'"id:{base + 83},phase:1,nolog,pass,skipAfter:{marker}"'
         ),
         (
@@ -1247,7 +1311,15 @@ def acl_limit_action(limit: dict | None) -> str:
 
 
 def any_uses_challenge(sites: list[dict]) -> bool:
-    return any(site_bot_protection(site).get("antiBotChallenge") or acl_limit_action(active_acl_access_limit(site)) == "challenge_v1" for site in sites)
+    return any(site_uses_challenge(site) for site in sites)
+
+
+def site_uses_challenge(site: dict) -> bool:
+    return bool(
+        site_bot_protection(site).get("antiBotChallenge")
+        or acl_limit_action(active_acl_access_limit(site)) == "challenge_v1"
+        or site_under_attack(site).get("enabled")
+    )
 
 
 def nginx_acl_rate(limit: dict) -> str:
@@ -1323,6 +1395,11 @@ def site_bot_protection(site: dict) -> dict:
         },
         "antiReplay": enabled and bool(anti_replay.get("enabled")),
     }
+
+
+def site_under_attack(site: dict) -> dict:
+    source = site.get("underAttack") if isinstance(site.get("underAttack"), dict) else {}
+    return {"enabled": bool(source.get("enabled"))}
 
 
 def bot_replay_zone_name(site: dict) -> str:
@@ -1431,6 +1508,32 @@ def render_bot_protection(site: dict) -> list[str]:
         ]
     )
     return lines
+
+
+def render_under_attack_protection(site: dict) -> list[str]:
+    if not site_under_attack(site).get("enabled"):
+        return []
+    return [
+        "    set $sfl_under_attack_challenge 1;",
+        "    if ($sfl_under_attack_bypass = 1) {",
+        "        set $sfl_under_attack_challenge 0;",
+        "    }",
+        "    if ($sfl_challenge_passed = 1) {",
+        "        set $sfl_under_attack_challenge 0;",
+        "    }",
+        "    if ($sfl_allow = 1) {",
+        "        set $sfl_under_attack_challenge 0;",
+        "    }",
+        "    if ($sfl_block = 1) {",
+        "        set $sfl_under_attack_challenge 0;",
+        "    }",
+        "    if ($sfl_under_attack_challenge = 1) {",
+        "        set $sfl_challenge 1;",
+        "        set $sfl_verdict challenge;",
+        "        set $sfl_reason \"Under Attack Mode browser challenge\";",
+        "    }",
+        "",
+    ]
 
 
 def render_geo_block(site: dict) -> list[str]:

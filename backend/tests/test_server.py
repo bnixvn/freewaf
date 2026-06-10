@@ -8,13 +8,16 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from freewaf.server import (
+    challenge_nonce,
     combined_logs_page,
     combined_stats_logs,
     enrich_log_countries,
     prepare_certificate_payload,
     prepare_certbot_certificate_payload,
     remove_certificate_files,
+    secure_link_token,
     sync_ip_group_reference,
+    verify_challenge_nonce,
 )
 from freewaf.store import Store
 
@@ -80,6 +83,21 @@ class CertificateServerTests(unittest.TestCase):
         self.assertEqual(prepared["certFile"], str(expected_live / "fullchain.pem").replace("\\", "/"))
         self.assertEqual(prepared["keyFile"], str(expected_live / "privkey.pem").replace("\\", "/"))
         self.assertEqual(prepared["status"], "ready")
+
+    def test_signed_challenge_nonce_and_edge_token_are_bound_to_context(self):
+        context = {
+            "siteId": "site-demo",
+            "host": "demo.example.test",
+            "ip": "203.0.113.10",
+            "userAgent": "Mozilla/5.0",
+            "proto": "https",
+        }
+        with mock.patch.dict(os.environ, {"FREEWAF_CHALLENGE_SECRET": "unit-test-secret"}, clear=False):
+            nonce = challenge_nonce(context)
+            token = secure_link_token(context, 1800000000)
+            self.assertTrue(verify_challenge_nonce(nonce, context))
+            self.assertFalse(verify_challenge_nonce(nonce, {**context, "ip": "203.0.113.11"}))
+        self.assertRegex(token, r"^[A-Za-z0-9_-]+$")
 
     def test_delete_uploaded_cert_removes_managed_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:

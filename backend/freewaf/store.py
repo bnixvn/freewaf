@@ -347,7 +347,7 @@ class Store:
                         else:
                             merged_defaults[group_key] = group_value
                     current[key] = merged_defaults
-                elif key in {"panel", "rateLimit"} and isinstance(value, dict):
+                elif key in {"panel", "rateLimit", "challengePage"} and isinstance(value, dict):
                     current[key] = {**(current.get(key) or {}), **value}
                 else:
                     current[key] = value
@@ -536,6 +536,7 @@ def normalize_settings(settings: dict) -> dict:
             **(source.get("rateLimit") or {}),
         },
         "applicationDefaults": normalize_application_defaults(source.get("applicationDefaults") or source.get("application_defaults") or {}),
+        "challengePage": normalize_challenge_page_settings(source.get("challengePage") or source.get("challenge_page") or {}),
     }
 
 
@@ -598,6 +599,25 @@ def normalize_application_defaults(value) -> dict:
     }
 
 
+def normalize_challenge_page_settings(value) -> dict:
+    source = value if isinstance(value, dict) else {}
+    defaults = DEFAULT_SETTINGS["challengePage"]
+    return {
+        "brandName": normalize_display_text(source.get("brandName") or source.get("brand_name"), defaults["brandName"], 80),
+        "title": normalize_display_text(source.get("title"), defaults["title"], 120),
+        "message": normalize_display_text(source.get("message"), defaults["message"], 500),
+        "logoUrl": normalize_optional_http_url(source.get("logoUrl") or source.get("logo_url")),
+        "supportUrl": normalize_optional_http_url(source.get("supportUrl") or source.get("support_url")),
+        "primaryColor": normalize_hex_color(source.get("primaryColor") or source.get("primary_color"), defaults["primaryColor"]),
+        "backgroundColor": normalize_hex_color(source.get("backgroundColor") or source.get("background_color"), defaults["backgroundColor"]),
+        "textColor": normalize_hex_color(source.get("textColor") or source.get("text_color"), defaults["textColor"]),
+        "tokenTtlMinutes": min(
+            max(normalize_positive_int(source.get("tokenTtlMinutes") or source.get("token_ttl_minutes"), defaults["tokenTtlMinutes"]), 1),
+            1440,
+        ),
+    }
+
+
 def normalize_stored_site(site: dict) -> dict:
     now = utc_now()
     tls = normalize_tls(site.get("tls"))
@@ -614,6 +634,7 @@ def normalize_stored_site(site: dict) -> dict:
     features = normalize_site_features(site.get("features"))
     bot_protection = normalize_bot_protection_config(site.get("botProtection") or site.get("bot_protection"), features.get("botProtection"))
     geo_block = normalize_geo_block_config(site.get("geoBlock") or site.get("geo_block"), features.get("geoBlock"))
+    under_attack = normalize_under_attack_config(site.get("underAttack") or site.get("under_attack"))
     mode = site.get("mode") if site.get("mode") in MODES else "block"
     modsecurity = normalize_modsecurity_config(site.get("modSecurity") or site.get("modsecurity"), features.get("attacks"), mode)
     features["botProtection"] = bot_protection["enabled"]
@@ -636,6 +657,7 @@ def normalize_stored_site(site: dict) -> dict:
         "features": features,
         "botProtection": bot_protection,
         "geoBlock": geo_block,
+        "underAttack": under_attack,
         "modSecurity": modsecurity,
         "mode": mode,
         "enabled": normalize_bool(enabled_value, False),
@@ -788,6 +810,7 @@ def normalize_site_input(payload: dict, site_id: str | None, now: str) -> dict:
     features = normalize_site_features(payload.get("features"))
     bot_protection = normalize_bot_protection_config(payload.get("botProtection") or payload.get("bot_protection"), features.get("botProtection"))
     geo_block = normalize_geo_block_config(payload.get("geoBlock") or payload.get("geo_block"), features.get("geoBlock"))
+    under_attack = normalize_under_attack_config(payload.get("underAttack") or payload.get("under_attack"))
     mode = payload.get("mode") if payload.get("mode") in MODES else "block"
     modsecurity = normalize_modsecurity_config(payload.get("modSecurity") or payload.get("modsecurity"), features.get("attacks"), mode)
     features["botProtection"] = bot_protection["enabled"]
@@ -810,6 +833,7 @@ def normalize_site_input(payload: dict, site_id: str | None, now: str) -> dict:
         "features": features,
         "botProtection": bot_protection,
         "geoBlock": geo_block,
+        "underAttack": under_attack,
         "modSecurity": modsecurity,
         "mode": mode,
         "enabled": payload.get("enabled") is not False,
@@ -1381,6 +1405,13 @@ def normalize_geo_block_config(value, enabled_value=None) -> dict:
     }
 
 
+def normalize_under_attack_config(value) -> dict:
+    source = value if isinstance(value, dict) else {}
+    return {
+        "enabled": normalize_bool(source.get("enabled"), False),
+    }
+
+
 def normalize_file_reference(value) -> str:
     item = str(value or "").strip().replace("\\", "/")
     item = item.replace("\x00", "").replace(";", "").replace("{", "").replace("}", "")
@@ -1531,6 +1562,26 @@ def normalize_panel_url(value) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise StoreError(400, "Panel URL must be a valid http or https URL")
     return item.rstrip("/")
+
+
+def normalize_optional_http_url(value) -> str:
+    item = str(value or "").strip().replace("\x00", "")
+    if not item:
+        return ""
+    parsed = urlparse(item)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise StoreError(400, "URL must be a valid http or https URL")
+    return item[:1000]
+
+
+def normalize_display_text(value, fallback: str, maximum: int) -> str:
+    item = str(value if value is not None else fallback).replace("\x00", "").strip()
+    return (item or fallback)[:maximum]
+
+
+def normalize_hex_color(value, fallback: str) -> str:
+    item = str(value or "").strip()
+    return item.lower() if re.match(r"^#[0-9a-fA-F]{6}$", item) else fallback
 
 
 def normalize_string_list(values, uppercase: bool = False) -> list[str]:
