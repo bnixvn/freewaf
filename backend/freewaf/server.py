@@ -28,7 +28,7 @@ from .nginx import (
     write_nginx_config,
 )
 from .defaults import utc_now
-from .store import Store, StoreError, build_stats, normalize_ip_items, resolve_data_file
+from .store import Store, StoreError, build_stats, country_for_ip, normalize_ip_items, resolve_data_file
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -317,7 +317,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     store.delete_user(item_id)
                     self.send_empty(204)
                     return
-                if self.path == "/api/logs":
+                if self.path in {"/api/logs", "/api/stats"}:
                     store.clear_logs()
                     clear_nginx_logs(ROOT_DIR)
                     self.send_empty(204)
@@ -690,8 +690,9 @@ def combined_logs_page(store: Store, limit: int, offset: int = 0, domain: str = 
     else:
         offset = max(0, offset)
     page = (offset // limit) + 1 if limit else 1
+    page_logs = enrich_log_countries(filtered[offset : offset + limit])
     return {
-        "logs": filtered[offset : offset + limit],
+        "logs": page_logs,
         "total": total,
         "limit": limit,
         "pageSize": limit,
@@ -703,6 +704,17 @@ def combined_logs_page(store: Store, limit: int, offset: int = 0, domain: str = 
         "domains": domains,
         "scanLimit": scan_limit,
     }
+
+
+def enrich_log_countries(logs: list[dict]) -> list[dict]:
+    countries = {}
+    enriched = []
+    for entry in logs:
+        ip = str(entry.get("ip") or entry.get("remote_addr") or "").strip()
+        if ip not in countries:
+            countries[ip] = country_for_ip(ip)
+        enriched.append({**entry, "country": countries[ip]})
+    return enriched
 
 
 def log_scan_limit(requested: int) -> int:

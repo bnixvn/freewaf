@@ -675,6 +675,15 @@ export default function App() {
     showToast('Logs cleared');
   }
 
+  async function resetStatistics() {
+    if (!window.confirm('Reset all statistics and delete all access logs? This cannot be undone.')) return;
+    await api('/api/stats', { method: 'DELETE' });
+    setLogPage(1);
+    setLogResult({ logs: [], total: 0, page: 1, pages: 1, domains: [] });
+    await loadState();
+    showToast('Statistics reset');
+  }
+
   async function refreshCurrentView() {
     if (activeView === 'logs') {
       await loadLogs({}, true, true);
@@ -759,6 +768,7 @@ export default function App() {
       deleteAccessRule,
       syncIpGroup,
       clearLogs,
+      resetStatistics,
       copyText,
       previewNginx,
       applyNginx,
@@ -986,7 +996,7 @@ function AuthScreen({ mode, loading, onSubmit }) {
   );
 }
 
-function DashboardView({ data }) {
+function DashboardView({ data, resetStatistics }) {
   const { stats, logs } = data;
   const recentProtections = logs.filter((entry) => ['block', 'challenge', 'monitor'].includes(entry.verdict)).slice(0, 6);
   const topRule = stats.topRules[0]?.name || 'None';
@@ -1005,6 +1015,11 @@ function DashboardView({ data }) {
 
   return (
     <>
+      <div className="dashboard-actions">
+        <button className="tool-button danger" onClick={resetStatistics}>
+          <Trash2 size={18} /> Reset Statistics
+        </button>
+      </div>
       <div className="metric-grid">
         <Metric label="Requests" value={formatCompact(stats.total)} note="Analyzed request events" />
         <Metric label="Protected" value={formatCompact(protectedTotal)} note={`${stats.protectedRate ?? stats.blockRate}% challenge or block rate`} />
@@ -1505,7 +1520,10 @@ function LogsView({
                 <td>{entry.siteName}<br /><span className="muted">{entry.host}</span></td>
                 <td>{entry.method}</td>
                 <td className="path-cell">{entry.path}</td>
-                <td>{entry.ip}</td>
+                <td>
+                  {entry.ip}
+                  {entry.country && <><br /><span className="muted">{countryLogLabel(entry.country)}</span></>}
+                </td>
                 <td>{entry.reason}</td>
                 <td>{entry.upstreamStatus || entry.statusCode || ''}</td>
               </tr>
@@ -3328,4 +3346,10 @@ function countryDisplayName(country) {
     }
   }
   return country?.name || code || 'Unknown';
+}
+
+function countryLogLabel(country) {
+  const name = countryDisplayName(country);
+  const code = String(country?.code || '').toUpperCase();
+  return code && !['ZZ', 'LO'].includes(code) ? `${name} (${code})` : name;
 }

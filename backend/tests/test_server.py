@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from freewaf.server import (
     combined_logs_page,
     combined_stats_logs,
+    enrich_log_countries,
     prepare_certificate_payload,
     prepare_certbot_certificate_payload,
     remove_certificate_files,
@@ -162,6 +163,15 @@ class CertificateServerTests(unittest.TestCase):
 
 
 class LogPaginationTests(unittest.TestCase):
+    def test_enrich_log_countries_adds_country_below_ip_data(self):
+        logs = [{"id": "1", "ip": "8.8.8.8"}]
+
+        with mock.patch("freewaf.server.country_for_ip", return_value={"code": "US", "name": "United States"}):
+            enriched = enrich_log_countries(logs)
+
+        self.assertEqual(enriched[0]["country"], {"code": "US", "name": "United States"})
+        self.assertNotIn("country", logs[0])
+
     def test_combined_stats_logs_uses_dedicated_scan_limit(self):
         store = mock.Mock()
         store.get_logs.return_value = []
