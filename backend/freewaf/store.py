@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import uuid
@@ -92,6 +93,12 @@ class Store:
                 }
             )
             changed = True
+
+        for index, group in enumerate(self.state["ipGroups"]):
+            prepared = self.prepare_ip_group_storage(group)
+            if prepared != group:
+                self.state["ipGroups"][index] = prepared
+                changed = True
 
         if changed:
             self.persist()
@@ -214,7 +221,16 @@ class Store:
     def upsert_ip_group(self, payload: dict, group_id: str | None = None) -> dict:
         with self.lock:
             now = utc_now()
-            group = normalize_ip_group_input(payload, group_id or payload.get("id"), now)
+            target_id = group_id or payload.get("id")
+            groups = self._state()["ipGroups"]
+            index = find_index(groups, target_id) if target_id else -1
+            existing = groups[index] if index >= 0 else None
+            has_items = "items" in payload or "content" in payload
+            group = normalize_ip_group_input(payload, target_id, now)
+            if existing and not has_items:
+                group = {**group, **preserve_ip_group_storage(existing)}
+            else:
+                group = self.prepare_ip_group_storage(group)
             groups = self._state()["ipGroups"]
             index = find_index(groups, group["id"])
 
@@ -233,10 +249,13 @@ class Store:
 
     def delete_ip_group(self, group_id: str) -> None:
         with self.lock:
+            existing = next((group for group in self._state()["ipGroups"] if group["id"] == group_id), None)
             before = len(self._state()["ipGroups"])
             self._state()["ipGroups"] = [group for group in self._state()["ipGroups"] if group["id"] != group_id]
             if len(self._state()["ipGroups"]) == before:
                 raise StoreError(404, "IP group not found")
+            if existing:
+                self.remove_ip_group_file(existing)
 
             for rule in self._state()["accessRules"]:
                 rule["ipGroupIds"] = [item for item in rule.get("ipGroupIds", []) if item != group_id]
@@ -396,9 +415,57 @@ class Store:
             raise RuntimeError("Store.init() must be called before use")
         return self.state
 
+    def prepare_ip_group_storage(self, group: dict) -> dict:
+        items = normalize_ip_items(group.get("items"))
+        if not items and group.get("itemsFile"):
+            return {
+                **group,
+                "items": [],
+                "itemsExternal": True,
+                "itemCount": normalize_non_negative_int(group.get("itemCount"), len(group.get("itemsPreview") or [])),
+                "itemsPreview": normalize_ip_items(group.get("itemsPreview"))[:8],
+            }
+
+        if should_externalize_ip_group(items, group):
+            path = self.ip_group_items_file(group["id"])
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("\n".join(items) + ("\n" if items else ""), encoding="utf-8")
+            return {
+                **group,
+                "items": [],
+                "itemsFile": str(path).replace("\\", "/"),
+                "itemsExternal": True,
+                "itemCount": len(items),
+                "itemsPreview": items[:8],
+            }
+
+        self.remove_ip_group_file(group)
+        return {
+            **group,
+            "items": items,
+            "itemsFile": "",
+            "itemsExternal": False,
+            "itemCount": len(items),
+            "itemsPreview": items[:8],
+        }
+
+    def ip_group_items_file(self, group_id: str) -> Path:
+        safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(group_id or "ipgroup")).strip("._") or "ipgroup"
+        return self.file_path.parent / "ip-groups" / f"{safe_id}.txt"
+
+    def remove_ip_group_file(self, group: dict) -> None:
+        path = ip_group_file_path(group)
+        if not path:
+            return
+        try:
+            if path.exists() and is_relative_to(path.resolve(), (self.file_path.parent / "ip-groups").resolve()):
+                path.unlink()
+        except OSError:
+            return
+
 
 def resolve_data_file(root_dir: Path) -> Path:
-    configured = Path(__import__("os").environ.get("DATA_FILE", "./data/state.json"))
+    configured = Path(os.environ.get("DATA_FILE", "./data/state.json"))
     return configured if configured.is_absolute() else root_dir / configured
 
 
@@ -535,12 +602,21 @@ def parse_certbot_paths(message: str) -> tuple[str, str]:
 
 def normalize_stored_ip_group(group: dict) -> dict:
     now = utc_now()
+    items = normalize_ip_items(group.get("items"))
+    items_preview = normalize_ip_items(group.get("itemsPreview") or group.get("items_preview") or items[:8])[:8]
+    item_count = normalize_non_negative_int(group.get("itemCount") or group.get("item_count"), len(items))
+    items_file = normalize_file_reference(group.get("itemsFile") or group.get("items_file") or "")
+    items_external = bool(items_file) or group.get("itemsExternal") is True
     return {
         "id": str(group.get("id") or create_id("ipgroup")),
         "name": str(group.get("name") or "Untitled IP group"),
         "description": str(group.get("description") or ""),
         "referenceUrl": normalize_reference_url(group.get("referenceUrl") or group.get("reference") or "", strict=False),
-        "items": normalize_ip_items(group.get("items")),
+        "items": [] if items_external else items,
+        "itemsFile": items_file,
+        "itemsExternal": items_external,
+        "itemCount": item_count if items_external else len(items),
+        "itemsPreview": items_preview,
         "lastSyncedAt": str(group.get("lastSyncedAt") or ""),
         "lastSyncStatus": str(group.get("lastSyncStatus") or ""),
         "lastSyncMessage": str(group.get("lastSyncMessage") or ""),
@@ -1106,6 +1182,14 @@ def normalize_positive_int(value, fallback: int) -> int:
     return max(1, number)
 
 
+def normalize_non_negative_int(value, fallback: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = fallback
+    return max(0, number)
+
+
 def normalize_ip_items(items) -> list[str]:
     values = ip_item_candidates(items)
     normalized = []
@@ -1159,6 +1243,42 @@ def normalize_ip_token(token: str) -> str:
     if "." not in item and ":" not in item and "/" not in item:
         return ""
     return item
+
+
+def preserve_ip_group_storage(group: dict) -> dict:
+    return {
+        "items": list(group.get("items") or []),
+        "itemsFile": str(group.get("itemsFile") or ""),
+        "itemsExternal": bool(group.get("itemsExternal")),
+        "itemCount": normalize_non_negative_int(group.get("itemCount"), len(group.get("items") or [])),
+        "itemsPreview": list(group.get("itemsPreview") or (group.get("items") or [])[:8]),
+    }
+
+
+def should_externalize_ip_group(items: list[str], group: dict) -> bool:
+    if not items:
+        return False
+    if group.get("itemsExternal"):
+        return True
+    count_threshold = normalize_non_negative_int(os.environ.get("IP_GROUP_EXTERNALIZE_COUNT"), 5000)
+    bytes_threshold = normalize_non_negative_int(os.environ.get("IP_GROUP_EXTERNALIZE_BYTES"), 256 * 1024)
+    payload_size = sum(len(item) + 1 for item in items)
+    return len(items) > count_threshold or payload_size > bytes_threshold
+
+
+def ip_group_file_path(group: dict) -> Path | None:
+    item_file = str(group.get("itemsFile") or "").strip()
+    if not item_file:
+        return None
+    return Path(item_file)
+
+
+def is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def normalize_reference_url(value, strict: bool = True) -> str:

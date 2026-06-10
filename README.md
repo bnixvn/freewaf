@@ -275,6 +275,11 @@ CERTBOT_WEBROOT=/var/www/html
 CERTBOT_LIVE_DIR=/etc/letsencrypt/live
 IP_GROUP_AUTO_SYNC=true
 IP_GROUP_SYNC_INTERVAL_SECONDS=86400
+IP_GROUP_SYNC_CHECK_SECONDS=3600
+IP_GROUP_REFERENCE_TIMEOUT=20
+IP_GROUP_REFERENCE_MAX_BYTES=20971520
+IP_GROUP_EXTERNALIZE_COUNT=5000
+IP_GROUP_EXTERNALIZE_BYTES=262144
 ```
 
 After changing environment variables:
@@ -289,6 +294,7 @@ Back up these paths:
 
 ```text
 /opt/freewaf/data/state.json
+/opt/freewaf/data/ip-groups/
 /opt/freewaf/nginx/certs/
 /etc/freewaf/freewaf.env
 ```

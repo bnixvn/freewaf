@@ -332,6 +332,38 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("198.51.100.10 1;", config)
         self.assertIn("Deny test range", config)
 
+    def test_access_rule_reads_external_ip_group_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ip_file = Path(directory) / "feed.txt"
+            ip_file.write_text("203.0.113.10\n198.51.100.0/24\n", encoding="utf-8")
+            state = make_state(
+                ipGroups=[
+                    {
+                        "id": "ipgroup-feed",
+                        "name": "Feed",
+                        "items": [],
+                        "itemsFile": str(ip_file),
+                        "itemsExternal": True,
+                        "enabled": True,
+                    }
+                ],
+                accessRules=[
+                    {
+                        "id": "access-feed",
+                        "name": "Feed deny",
+                        "enabled": True,
+                        "siteId": "*",
+                        "action": "deny",
+                        "ipGroupIds": ["ipgroup-feed"],
+                    }
+                ],
+            )
+
+            config = generate_nginx_config(state)
+
+        self.assertIn("203.0.113.10 1;", config)
+        self.assertIn("198.51.100.0/24 1;", config)
+
     def test_generates_access_rule_condition_group(self):
         state = make_state(
             ipGroups=[

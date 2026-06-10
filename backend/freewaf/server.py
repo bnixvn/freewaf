@@ -369,12 +369,16 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     return
 
                 if resource == "ip-groups":
+                    payload_has_items = "items" in payload or "content" in payload
                     if not replace:
                         current = next((item for item in state["ipGroups"] if item["id"] == item_id), None)
                         if not current:
                             self.send_json(404, {"error": "IP group not found"})
                             return
                         payload = {**current, **payload}
+                    if not payload_has_items:
+                        payload.pop("items", None)
+                        payload.pop("content", None)
                     saved = store.upsert_ip_group(payload, item_id)
                     saved = maybe_sync_new_reference_ip_group(store, saved)
                     maybe_auto_write(store)
@@ -796,7 +800,7 @@ def mark_ip_group_sync_failed(store: Store, group: dict, message: str) -> dict:
 
 def fetch_reference_text(url: str) -> str:
     timeout = parse_int(os.environ.get("IP_GROUP_REFERENCE_TIMEOUT"), 20)
-    max_bytes = parse_int(os.environ.get("IP_GROUP_REFERENCE_MAX_BYTES"), 1024 * 1024)
+    max_bytes = parse_int(os.environ.get("IP_GROUP_REFERENCE_MAX_BYTES"), 20 * 1024 * 1024)
     request = urllib.request.Request(url, headers={"User-Agent": "FreeWAF/1.0"})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:

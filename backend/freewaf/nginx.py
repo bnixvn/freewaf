@@ -993,14 +993,27 @@ def collect_condition_ip_items(condition: dict, groups: dict[str, dict]) -> list
     if operator in {"cidr", "not_cidr"}:
         return [content] if content else []
     if operator in {"in_ip_group", "not_in_ip_group"}:
-        return list(groups.get(content, {}).get("items") or [])
+        return ip_group_items(groups.get(content, {}))
     return []
 
 
 def collect_access_ips(rule: dict, groups: dict[str, dict]) -> list[str]:
     items = list(rule.get("ips") or [])
     for group_id in rule.get("ipGroupIds") or []:
-        items.extend(groups.get(group_id, {}).get("items") or [])
+        items.extend(ip_group_items(groups.get(group_id, {})))
+    return list(dict.fromkeys(items))
+
+
+def ip_group_items(group: dict | None) -> list[str]:
+    if not group:
+        return []
+    items = list(group.get("items") or [])
+    item_file = str(group.get("itemsFile") or "").strip()
+    if item_file:
+        path = Path(item_file)
+        if path.exists() and path.is_file():
+            file_items = [line.strip() for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+            items.extend(file_items)
     return list(dict.fromkeys(items))
 
 

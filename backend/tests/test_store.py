@@ -1,7 +1,9 @@
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -91,6 +93,37 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(group["referenceUrl"], "https://example.test/feed.txt")
         self.assertEqual(group["items"], ["192.0.2.10", "198.51.100.0/24", "203.0.113.10", "2001:db8::/32"])
         self.assertEqual(group["lastSyncStatus"], "ok")
+
+    def test_large_ip_group_is_stored_in_external_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.dict(os.environ, {"IP_GROUP_EXTERNALIZE_COUNT": "2", "IP_GROUP_EXTERNALIZE_BYTES": "1024"}):
+                store = Store(Path(directory) / "state.json")
+                store.init()
+                group = store.upsert_ip_group(
+                    {
+                        "name": "Large feed",
+                        "items": "192.0.2.1\n192.0.2.2\n192.0.2.3\n",
+                    }
+                )
+
+                self.assertTrue(group["itemsExternal"])
+                self.assertEqual(group["itemCount"], 3)
+                self.assertEqual(group["items"], [])
+                self.assertEqual(group["itemsPreview"], ["192.0.2.1", "192.0.2.2", "192.0.2.3"])
+                self.assertTrue(Path(group["itemsFile"]).exists())
+                self.assertIn("192.0.2.3", Path(group["itemsFile"]).read_text(encoding="utf-8"))
+
+                updated = store.upsert_ip_group(
+                    {
+                        "name": "Large feed renamed",
+                        "description": "Metadata update only",
+                    },
+                    group["id"],
+                )
+
+                self.assertTrue(Path(updated["itemsFile"]).exists())
+                self.assertEqual(updated["itemCount"], 3)
+                self.assertEqual(updated["itemsPreview"][0], "192.0.2.1")
 
     def test_site_features_are_normalized(self):
         state = normalize_state(

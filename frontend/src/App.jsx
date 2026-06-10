@@ -502,9 +502,11 @@ export default function App() {
   async function saveIpGroup(group) {
     const payload = {
       ...group,
-      enabled: group.enabled === 'true' || group.enabled === true,
-      items: group.items
+      enabled: group.enabled === 'true' || group.enabled === true
     };
+    if (!group.itemsExternal || String(group.items || '').trim()) {
+      payload.items = group.items;
+    }
     const id = payload.id;
     delete payload.id;
     await api(id ? `/api/ip-groups/${id}` : '/api/ip-groups', {
@@ -1178,10 +1180,11 @@ function IpGroupsView({ data, setModal, toggleIpGroup, deleteIpGroup, syncIpGrou
                   {group.referenceUrl ? <span className="code">{group.referenceUrl}</span> : <span className="muted">Manual</span>}
                 </td>
                 <td className="path-cell">
-                  <span className="pill">{group.items.length} entries</span>
+                  <span className="pill">{ipGroupItemCount(group)} entries</span>
+                  {group.itemsExternal && <span className="pill inline">file</span>}
                   <br />
-                  {group.items.slice(0, 8).map((item) => <span className="code chip" key={item}>{item}</span>)}
-                  {group.items.length > 8 && <span className="muted">+{group.items.length - 8} more</span>}
+                  {ipGroupPreviewItems(group).map((item) => <span className="code chip" key={item}>{item}</span>)}
+                  {ipGroupItemCount(group) > ipGroupPreviewItems(group).length && <span className="muted">+{ipGroupItemCount(group) - ipGroupPreviewItems(group).length} more</span>}
                 </td>
                 <td>
                   {group.referenceUrl ? (
@@ -1927,6 +1930,9 @@ function IpGroupModal({ group, onClose, onSave }) {
           <TextAreaField label="Content" value={form.items} onChange={(value) => update('items', value)} placeholder="192.0.2.10/32" />
           <SelectField label="Enabled" value={form.enabled} onChange={(value) => update('enabled', value)} options={['true', 'false']} />
           <TextAreaField label="Description" value={form.description} onChange={(value) => update('description', value)} />
+          {form.itemsExternal && !String(form.items || '').trim() && (
+            <p className="form-note full">This large IP group is stored on disk. Leave Content empty to keep the current file, or import/paste new content to replace it.</p>
+          )}
           <p className="form-note full">Reference URL is fetched when Content is empty, then refreshed once per day by the backend.</p>
         </div>
         <ModalFooter onClose={onClose} />
@@ -2464,6 +2470,15 @@ function textFromList(value) {
 
 function inlineList(items) {
   return items?.length ? items.map((item) => <span className="code chip" key={item}>{item}</span>) : <span className="muted">Any</span>;
+}
+
+function ipGroupItemCount(group) {
+  return Number(group?.itemCount ?? group?.items?.length ?? 0);
+}
+
+function ipGroupPreviewItems(group) {
+  const preview = Array.isArray(group?.itemsPreview) && group.itemsPreview.length ? group.itemsPreview : group?.items || [];
+  return preview.slice(0, 8);
 }
 
 function createAccessCondition(target = 'source_ip', operator = defaultAccessOperator(target), content = '', ipGroups = []) {
