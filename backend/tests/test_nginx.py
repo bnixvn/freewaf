@@ -494,6 +494,71 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("limit_req zone=sfl_acl_site_demo_fp burst=200 nodelay;", config)
         self.assertIn("error_page 429 = @freewaf_challenge;", config)
 
+    def test_http_flood_global_mode_uses_global_rate_limit(self):
+        state = make_state(
+            sites=[
+                {
+                    "id": "site-demo",
+                    "name": "Demo",
+                    "hostnames": ["localhost"],
+                    "origin": "http://127.0.0.1:9090",
+                    "listen": 8080,
+                    "mode": "block",
+                    "enabled": True,
+                    "features": {"httpFlood": True, "botProtection": False, "attacks": True},
+                    "acl": {
+                        "enabled": True,
+                        "rateLimitMode": "global",
+                        "accessLimit": {
+                            "enabled": True,
+                            "period": 10,
+                            "count": 200,
+                            "action": "challenge_v1",
+                            "blockMin": 60,
+                        },
+                    },
+                }
+            ]
+        )
+        config = generate_nginx_config(state)
+
+        self.assertIn("limit_req_zone $binary_remote_addr zone=freewaf_rate:10m", config)
+        self.assertIn("limit_req zone=freewaf_rate burst=120 nodelay;", config)
+        self.assertNotIn("zone=sfl_acl_site_demo", config)
+
+    def test_waiting_room_queues_without_nodelay(self):
+        state = make_state(
+            sites=[
+                {
+                    "id": "site-demo",
+                    "name": "Demo",
+                    "hostnames": ["localhost"],
+                    "origin": "http://127.0.0.1:9090",
+                    "listen": 8080,
+                    "mode": "block",
+                    "enabled": True,
+                    "features": {"httpFlood": True, "botProtection": False, "attacks": True},
+                    "acl": {
+                        "enabled": True,
+                        "rateLimitMode": "custom",
+                        "waitingRoom": True,
+                        "accessLimit": {
+                            "enabled": True,
+                            "period": 10,
+                            "count": 200,
+                            "action": "challenge_v1",
+                            "blockMin": 60,
+                        },
+                    },
+                }
+            ]
+        )
+        config = generate_nginx_config(state)
+
+        self.assertIn("limit_req zone=sfl_acl_site_demo burst=200;", config)
+        self.assertIn("limit_req zone=sfl_acl_site_demo_fp burst=200;", config)
+        self.assertNotIn("limit_req zone=sfl_acl_site_demo burst=200 nodelay;", config)
+
     def test_site_features_gate_native_modules(self):
         state = make_state(
             sites=[

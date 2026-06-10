@@ -913,9 +913,20 @@ def render_acl_limit_zones(sites: list[dict]) -> list[str]:
 def active_acl_access_limit(site: dict) -> dict | None:
     acl = site.get("acl") if isinstance(site.get("acl"), dict) else {}
     limit = acl.get("accessLimit") if isinstance(acl.get("accessLimit"), dict) else {}
-    if not acl.get("enabled") or not limit.get("enabled"):
+    if not acl.get("enabled") or not limit.get("enabled") or acl_rate_limit_mode(site) == "global":
         return None
     return limit
+
+
+def acl_rate_limit_mode(site: dict) -> str:
+    acl = site.get("acl") if isinstance(site.get("acl"), dict) else {}
+    mode = str(acl.get("rateLimitMode") or "custom").lower()
+    return mode if mode in {"global", "custom"} else "custom"
+
+
+def acl_waiting_room(site: dict) -> bool:
+    acl = site.get("acl") if isinstance(site.get("acl"), dict) else {}
+    return bool(acl.get("waitingRoom"))
 
 
 def acl_zone_name(site: dict) -> str:
@@ -1341,12 +1352,13 @@ def target_variables(target: str) -> list[str]:
 
 
 def render_rate_limit(state: dict, site: dict) -> list[str]:
+    waiting_room = acl_waiting_room(site)
     acl_limit = active_acl_access_limit(site)
     if acl_limit:
         burst = max(1, int(acl_limit.get("count") or 200))
-        lines = [f"        limit_req zone={acl_zone_name(site)} burst={burst} nodelay;"]
+        lines = [render_limit_req_directive(acl_zone_name(site), burst, waiting_room)]
         if site_features(site).get("httpFlood"):
-            lines.append(f"        limit_req zone={acl_fingerprint_zone_name(site)} burst={burst} nodelay;")
+            lines.append(render_limit_req_directive(acl_fingerprint_zone_name(site), burst, waiting_room))
         if acl_limit_action(acl_limit) == "monitor":
             lines.append("        limit_req_dry_run on;")
         return lines
@@ -1356,9 +1368,14 @@ def render_rate_limit(state: dict, site: dict) -> list[str]:
         return []
     burst = max(1, int(rate_limit.get("max") or 120))
     return [
-        f"        limit_req zone=freewaf_rate burst={burst} nodelay;",
-        f"        limit_req zone=freewaf_rate_fingerprint burst={burst} nodelay;",
+        render_limit_req_directive("freewaf_rate", burst, waiting_room),
+        render_limit_req_directive("freewaf_rate_fingerprint", burst, waiting_room),
     ]
+
+
+def render_limit_req_directive(zone: str, burst: int, waiting_room: bool) -> str:
+    suffix = "" if waiting_room else " nodelay"
+    return f"        limit_req zone={zone} burst={burst}{suffix};"
 
 
 def render_rate_limit_error_page(site: dict) -> list[str]:

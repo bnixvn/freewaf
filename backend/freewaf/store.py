@@ -28,6 +28,7 @@ TARGETS = {"all", "url", "headers", "body", "method", "ip"}
 SEVERITIES = {"low", "medium", "high", "critical"}
 ACCESS_ACTIONS = {"allow", "deny", "monitor"}
 ACL_ACTIONS = {"allow", "block", "challenge_v1", "monitor"}
+ACL_RATE_LIMIT_MODES = {"global", "custom"}
 APPLICATION_TYPES = {"reverse_proxy", "static_files", "redirect"}
 ACCESS_CONDITION_TARGETS = {"source_ip", "uri", "host", "user_agent", "method"}
 ACCESS_CONDITION_OPERATORS = {
@@ -1079,6 +1080,8 @@ def normalize_acl_config(value, enabled_value=None) -> dict:
     enabled = normalize_bool(source.get("enabled"), normalize_bool(enabled_value, True))
     return {
         "enabled": enabled,
+        "rateLimitMode": normalize_acl_rate_limit_mode(source.get("rateLimitMode") or source.get("rate_limit_mode") or source.get("rateMode")),
+        "waitingRoom": normalize_bool(source.get("waitingRoom") if "waitingRoom" in source else source.get("waiting_room"), False),
         "accessLimit": normalize_acl_limit(
             source.get("accessLimit") or source.get("access_limit"),
             {"enabled": True, "period": 10, "count": 200, "action": "challenge_v1", "blockMin": 60},
@@ -1112,6 +1115,11 @@ def normalize_acl_limit(value, defaults: dict, include_status_codes: bool = Fals
 def normalize_acl_action(value) -> str:
     action = str(value or "block").lower()
     return action if action in ACL_ACTIONS else "block"
+
+
+def normalize_acl_rate_limit_mode(value) -> str:
+    mode = str(value or "custom").lower()
+    return mode if mode in ACL_RATE_LIMIT_MODES else "custom"
 
 
 def normalize_status_codes(values) -> list[str]:

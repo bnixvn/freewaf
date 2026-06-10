@@ -172,6 +172,8 @@ def create_default_state(now: str | None = None) -> dict:
                 },
                 "acl": {
                     "enabled": True,
+                    "rateLimitMode": "custom",
+                    "waitingRoom": False,
                     "accessLimit": {
                         "enabled": True,
                         "period": 10,

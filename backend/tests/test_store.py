@@ -152,6 +152,31 @@ class StoreTests(unittest.TestCase):
         self.assertTrue(features["auth"])
         self.assertTrue(features["attacks"])
 
+    def test_http_flood_acl_options_are_normalized(self):
+        state = normalize_state(
+            {
+                "sites": [
+                    {
+                        "id": "site-demo",
+                        "name": "Demo",
+                        "hostnames": ["example.test"],
+                        "origin": "http://127.0.0.1:9090",
+                        "acl": {
+                            "enabled": True,
+                            "rateLimitMode": "global",
+                            "waitingRoom": True,
+                        },
+                    }
+                ],
+                "rules": [],
+            }
+        )
+
+        acl = state["sites"][0]["acl"]
+        self.assertEqual(acl["rateLimitMode"], "global")
+        self.assertTrue(acl["waitingRoom"])
+        self.assertEqual(acl["accessLimit"]["action"], "challenge_v1")
+
     def test_safeline_application_fields_are_normalized(self):
         state = normalize_state(
             {

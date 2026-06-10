@@ -4,6 +4,7 @@ import {
   Copy,
   Edit3,
   Globe2,
+  Info,
   KeyRound,
   LockKeyhole,
   ListFilter,
@@ -17,6 +18,7 @@ import {
   Settings,
   Shield,
   ShieldCheck,
+  SlidersHorizontal,
   Trash2,
   Upload,
   UserPlus,
@@ -63,6 +65,8 @@ const defaultSite = {
   proxyXForwardedHost: '$http_host',
   proxySslServerName: 'true',
   aclEnabled: 'true',
+  aclRateLimitMode: 'custom',
+  aclWaitingRoom: 'false',
   aclAccessEnabled: 'true',
   aclAccessPeriod: '10',
   aclAccessCount: '200',
@@ -106,6 +110,12 @@ const defaultRule = {
   description: '',
   enabled: 'true'
 };
+
+const floodActionOptions = [
+  { value: 'challenge_v1', label: 'Anti-Bot challenge' },
+  { value: 'block', label: 'Block' },
+  { value: 'monitor', label: 'Monitor only' }
+];
 
 const defaultCertificate = {
   name: '',
@@ -417,6 +427,8 @@ export default function App() {
         },
         acl: {
           enabled: boolValue(site.aclEnabled),
+          rateLimitMode: site.aclRateLimitMode || 'custom',
+          waitingRoom: boolValue(site.aclWaitingRoom),
           accessLimit: {
             enabled: boolValue(site.aclAccessEnabled),
             period: Number(site.aclAccessPeriod || 10),
@@ -456,6 +468,36 @@ export default function App() {
       setModal(null);
       await loadState();
       showToast('Site saved and Nginx reloaded');
+    } catch (error) {
+      showToast(error.message, true);
+    }
+  }
+
+  async function saveHttpFlood(site, flood) {
+    try {
+      const currentAcl = site.acl || {};
+      const currentFeatures = site.features || {};
+      await api(`/api/sites/${site.id}`, {
+        method: 'PATCH',
+        body: {
+          acl: {
+            ...currentAcl,
+            enabled: true,
+            rateLimitMode: flood.rateLimitMode,
+            waitingRoom: flood.waitingRoom,
+            accessLimit: flood.accessLimit,
+            attackLimit: flood.attackLimit,
+            errorLimit: flood.errorLimit
+          },
+          features: {
+            ...currentFeatures,
+            httpFlood: true
+          }
+        }
+      });
+      setModal(null);
+      await loadState();
+      showToast('HTTP Flood settings saved and Nginx reloaded');
     } catch (error) {
       showToast(error.message, true);
     }
@@ -700,6 +742,7 @@ export default function App() {
       applyNginx,
       savePanelSettings,
       saveUser,
+      saveHttpFlood,
       deleteUser,
       logsLoading,
       logResult,
@@ -780,6 +823,14 @@ export default function App() {
           certificates={data?.certificates || []}
           onClose={() => setModal(null)}
           onSave={saveSite}
+        />
+      )}
+      {modal?.type === 'httpFlood' && (
+        <HttpFloodModal
+          site={modal.site}
+          settings={data?.settings || {}}
+          onClose={() => setModal(null)}
+          onSave={(flood) => saveHttpFlood(modal.site, flood)}
         />
       )}
       {modal?.type === 'rule' && (
@@ -967,6 +1018,7 @@ function SitesView({ data, setModal, toggleSite, deleteSite }) {
             onEdit={() => setModal({ type: 'site', site })}
             onDelete={() => deleteSite(site)}
             onToggle={(checked) => toggleSite(site, checked)}
+            onConfigureFlood={() => setModal({ type: 'httpFlood', site })}
           />
         ))}
       </div>
@@ -974,7 +1026,7 @@ function SitesView({ data, setModal, toggleSite, deleteSite }) {
   );
 }
 
-function ApplicationCard({ site, logs, onEdit, onDelete, onToggle }) {
+function ApplicationCard({ site, logs, onEdit, onDelete, onToggle, onConfigureFlood }) {
   const features = normalizedSiteFeatures(site);
   const counters = siteCounters(site, logs);
   const domain = site.hostnames?.[0] || site.name;
@@ -1033,7 +1085,12 @@ function ApplicationCard({ site, logs, onEdit, onDelete, onToggle }) {
           </div>
         )}
         <div className="feature-chip-row">
-          {Object.entries(siteFeatureLabels).map(([key, label]) => (
+          {Object.entries(siteFeatureLabels).map(([key, label]) => key === 'httpFlood' ? (
+            <button className={`feature-chip feature-chip-button ${features[key] ? 'active' : ''}`} key={key} type="button" onClick={onConfigureFlood} title="Configure HTTP Flood">
+              <SlidersHorizontal size={13} />
+              {label}
+            </button>
+          ) : (
             <span className={`feature-chip ${features[key] ? 'active' : ''}`} key={key}>{label}</span>
           ))}
         </div>
@@ -1589,6 +1646,146 @@ function CommandResult({ label, result }) {
   );
 }
 
+function HttpFloodModal({ site, settings, onClose, onSave }) {
+  const [form, setForm] = useState(() => httpFloodFormFromSite(site, settings));
+  const [editing, setEditing] = useState('');
+
+  function update(name, value) {
+    setForm((current) => ({ ...current, [name]: value }));
+  }
+
+  function updateLimit(prefix, name, value) {
+    setForm((current) => ({ ...current, [`${prefix}${name}`]: value }));
+  }
+
+  function submit(event) {
+    event.preventDefault();
+    onSave(httpFloodPayload(form));
+  }
+
+  function editAccess() {
+    setForm((current) => ({ ...current, rateLimitMode: 'custom' }));
+    setEditing(editing === 'access' ? '' : 'access');
+  }
+
+  const accessDisabled = form.rateLimitMode === 'global';
+
+  return (
+    <Modal title="HTTP Flood" onClose={onClose} className="http-flood-modal">
+      <form onSubmit={submit} className="http-flood-form">
+        <div className="flood-control-row">
+          <span className="flood-accent" />
+          <strong>Waiting Room</strong>
+          <Switch checked={boolValue(form.waitingRoom)} onChange={(checked) => update('waitingRoom', String(checked))} />
+          <Info size={16} />
+          <span className="muted">Queues excess visitors inside Nginx burst handling instead of sending them immediately.</span>
+        </div>
+
+        <div className="flood-control-row">
+          <span className="flood-accent" />
+          <strong>Rate Limiting</strong>
+          <div className="flood-segmented">
+            <button type="button" className={form.rateLimitMode === 'global' ? 'active' : ''} onClick={() => update('rateLimitMode', 'global')}>Use Global</button>
+            <button type="button" className={form.rateLimitMode === 'custom' ? 'active' : ''} onClick={() => update('rateLimitMode', 'custom')}>Customize</button>
+          </div>
+          <Info size={16} />
+          <span className="muted">Limits traffic by source IP and by IP plus request header fingerprint.</span>
+        </div>
+
+        <FloodSection
+          title="Access Limiting"
+          action={<button type="button" className="tool-button" onClick={editAccess}><Plus size={16} /> Add Rules</button>}
+        >
+          <FloodLimitCard
+            title="Basic Access Limit"
+            enabled={boolValue(form.accessEnabled)}
+            onToggle={(checked) => updateLimit('access', 'Enabled', String(checked))}
+            summary={accessLimitSummary(form, settings)}
+            editing={editing === 'access'}
+            onEdit={editAccess}
+            disabled={accessDisabled}
+          >
+            <LimitEditFields prefix="access" form={form} updateLimit={updateLimit} />
+          </FloodLimitCard>
+        </FloodSection>
+
+        <FloodSection title="Attack Limiting">
+          <FloodLimitCard
+            title="Basic Attack Limit"
+            enabled={boolValue(form.attackEnabled)}
+            onToggle={(checked) => updateLimit('attack', 'Enabled', String(checked))}
+            summary={attackLimitSummary(form)}
+            editing={editing === 'attack'}
+            onEdit={() => setEditing(editing === 'attack' ? '' : 'attack')}
+          >
+            <LimitEditFields prefix="attack" form={form} updateLimit={updateLimit} />
+          </FloodLimitCard>
+        </FloodSection>
+
+        <FloodSection title="Error Limiting">
+          <FloodLimitCard
+            title="Basic Error Limit"
+            enabled={boolValue(form.errorEnabled)}
+            onToggle={(checked) => updateLimit('error', 'Enabled', String(checked))}
+            summary={errorLimitSummary(form)}
+            editing={editing === 'error'}
+            onEdit={() => setEditing(editing === 'error' ? '' : 'error')}
+          >
+            <LimitEditFields prefix="error" form={form} updateLimit={updateLimit} includeStatusCodes />
+          </FloodLimitCard>
+        </FloodSection>
+
+        <div className="modal-footer">
+          <button type="button" className="tool-button" onClick={onClose}>Cancel</button>
+          <button className="tool-button primary">Save</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function FloodSection({ title, action, children }) {
+  return (
+    <section className="flood-section">
+      <div className="flood-section-heading">
+        <h3>{title}</h3>
+        {action}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function FloodLimitCard({ title, enabled, onToggle, summary, editing, onEdit, disabled = false, children }) {
+  return (
+    <article className={`flood-limit-card ${disabled ? 'disabled' : ''}`}>
+      <Switch checked={enabled} onChange={onToggle} />
+      <div className="flood-limit-content">
+        <div className="flood-limit-top">
+          <strong>{title}</strong>
+          <button type="button" className="link-button" onClick={onEdit}>{disabled ? 'Customize' : 'Edit'}</button>
+        </div>
+        <p>{summary}</p>
+        {editing && <div className="flood-edit-grid">{children}</div>}
+      </div>
+    </article>
+  );
+}
+
+function LimitEditFields({ prefix, form, updateLimit, includeStatusCodes = false }) {
+  return (
+    <>
+      <TextField label="Requests" value={form[`${prefix}Count`]} onChange={(value) => updateLimit(prefix, 'Count', value)} type="number" />
+      <TextField label="Within seconds" value={form[`${prefix}Period`]} onChange={(value) => updateLimit(prefix, 'Period', value)} type="number" />
+      <SelectField label="Action" value={form[`${prefix}Action`]} onChange={(value) => updateLimit(prefix, 'Action', value)} options={floodActionOptions} />
+      <TextField label="Block minutes" value={form[`${prefix}BlockMin`]} onChange={(value) => updateLimit(prefix, 'BlockMin', value)} type="number" />
+      {includeStatusCodes && (
+        <TextField label="Status codes" value={form.errorStatusCodes} onChange={(value) => updateLimit('error', 'StatusCodes', value)} placeholder="403, 404" full />
+      )}
+    </>
+  );
+}
+
 function SiteModal({ site, certificates, onClose, onSave }) {
   const [form, setForm] = useState(() => ({
     ...defaultSite,
@@ -1604,6 +1801,25 @@ function SiteModal({ site, certificates, onClose, onSave }) {
     certificateId: site?.tls?.certificateId || '',
     http2: String(site?.tls?.http2 ?? true),
     proxyForceHttps: String(site?.proxy?.forceHttps ?? site?.tls?.redirectHttp ?? false),
+    aclEnabled: String(site?.acl?.enabled ?? true),
+    aclRateLimitMode: site?.acl?.rateLimitMode || defaultSite.aclRateLimitMode,
+    aclWaitingRoom: String(site?.acl?.waitingRoom ?? false),
+    aclAccessEnabled: String(site?.acl?.accessLimit?.enabled ?? true),
+    aclAccessPeriod: String(site?.acl?.accessLimit?.period ?? defaultSite.aclAccessPeriod),
+    aclAccessCount: String(site?.acl?.accessLimit?.count ?? defaultSite.aclAccessCount),
+    aclAccessAction: site?.acl?.accessLimit?.action || defaultSite.aclAccessAction,
+    aclAccessBlockMin: String(site?.acl?.accessLimit?.blockMin ?? defaultSite.aclAccessBlockMin),
+    aclAttackEnabled: String(site?.acl?.attackLimit?.enabled ?? true),
+    aclAttackPeriod: String(site?.acl?.attackLimit?.period ?? defaultSite.aclAttackPeriod),
+    aclAttackCount: String(site?.acl?.attackLimit?.count ?? defaultSite.aclAttackCount),
+    aclAttackAction: site?.acl?.attackLimit?.action || defaultSite.aclAttackAction,
+    aclAttackBlockMin: String(site?.acl?.attackLimit?.blockMin ?? defaultSite.aclAttackBlockMin),
+    aclErrorEnabled: String(site?.acl?.errorLimit?.enabled ?? true),
+    aclErrorPeriod: String(site?.acl?.errorLimit?.period ?? defaultSite.aclErrorPeriod),
+    aclErrorCount: String(site?.acl?.errorLimit?.count ?? defaultSite.aclErrorCount),
+    aclErrorAction: site?.acl?.errorLimit?.action || defaultSite.aclErrorAction,
+    aclErrorBlockMin: String(site?.acl?.errorLimit?.blockMin ?? defaultSite.aclErrorBlockMin),
+    aclErrorStatusCodes: textFromList(site?.acl?.errorLimit?.statusCodes || defaultSite.aclErrorStatusCodes).replace(/\n/g, ', '),
     featureHttpFlood: String(site?.features?.httpFlood ?? true),
     featureBotProtection: String(site?.features?.botProtection ?? true),
     featureAuth: String(site?.features?.auth ?? false),
@@ -2705,6 +2921,98 @@ function accessConditionSummary(condition, ipGroups) {
 
 function escapeRegex(value) {
   return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function httpFloodFormFromSite(site, settings) {
+  const acl = site?.acl || {};
+  const access = acl.accessLimit || {};
+  const attack = acl.attackLimit || {};
+  const error = acl.errorLimit || {};
+  const global = globalRateLimit(settings);
+  return {
+    rateLimitMode: acl.rateLimitMode || 'custom',
+    waitingRoom: String(acl.waitingRoom ?? false),
+    accessEnabled: String(access.enabled ?? true),
+    accessPeriod: String(access.period ?? global.period),
+    accessCount: String(access.count ?? global.count),
+    accessAction: access.action || 'challenge_v1',
+    accessBlockMin: String(access.blockMin ?? 60),
+    attackEnabled: String(attack.enabled ?? true),
+    attackPeriod: String(attack.period ?? 60),
+    attackCount: String(attack.count ?? 10),
+    attackAction: attack.action || 'block',
+    attackBlockMin: String(attack.blockMin ?? 30),
+    errorEnabled: String(error.enabled ?? true),
+    errorPeriod: String(error.period ?? 10),
+    errorCount: String(error.count ?? 10),
+    errorAction: error.action || 'block',
+    errorBlockMin: String(error.blockMin ?? 30),
+    errorStatusCodes: textFromList(error.statusCodes || ['403', '404']).replace(/\n/g, ', ')
+  };
+}
+
+function httpFloodPayload(form) {
+  return {
+    rateLimitMode: form.rateLimitMode === 'global' ? 'global' : 'custom',
+    waitingRoom: boolValue(form.waitingRoom),
+    accessLimit: floodLimitPayload(form, 'access'),
+    attackLimit: floodLimitPayload(form, 'attack'),
+    errorLimit: {
+      ...floodLimitPayload(form, 'error'),
+      statusCodes: listFromText(form.errorStatusCodes, /[\s,]+/)
+    }
+  };
+}
+
+function floodLimitPayload(form, prefix) {
+  return {
+    enabled: boolValue(form[`${prefix}Enabled`]),
+    period: positiveInt(form[`${prefix}Period`], prefix === 'attack' ? 60 : 10),
+    count: positiveInt(form[`${prefix}Count`], prefix === 'access' ? 200 : 10),
+    action: form[`${prefix}Action`] || (prefix === 'access' ? 'challenge_v1' : 'block'),
+    blockMin: positiveInt(form[`${prefix}BlockMin`], prefix === 'access' ? 60 : 30)
+  };
+}
+
+function globalRateLimit(settings) {
+  const rate = settings?.rateLimit || {};
+  return {
+    enabled: rate.enabled !== false,
+    count: positiveInt(rate.max, 120),
+    period: Math.max(1, Math.round(positiveInt(rate.windowMs, 60000) / 1000))
+  };
+}
+
+function positiveInt(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.round(number) : fallback;
+}
+
+function accessLimitSummary(form, settings) {
+  if (!boolValue(form.accessEnabled)) return 'Disabled.';
+  if (form.rateLimitMode === 'global') {
+    const global = globalRateLimit(settings);
+    return `An IP follows the global policy: ${global.count} requests within ${global.period} seconds.`;
+  }
+  return `An IP that makes ${positiveInt(form.accessCount, 200)} requests within ${positiveInt(form.accessPeriod, 10)} seconds will ${floodActionPhrase(form.accessAction, form.accessBlockMin)}.`;
+}
+
+function attackLimitSummary(form) {
+  if (!boolValue(form.attackEnabled)) return 'Disabled.';
+  return `An IP that triggers attack blocking ${positiveInt(form.attackCount, 10)} times within ${positiveInt(form.attackPeriod, 60)} seconds will ${floodActionPhrase(form.attackAction, form.attackBlockMin)}.`;
+}
+
+function errorLimitSummary(form) {
+  if (!boolValue(form.errorEnabled)) return 'Disabled.';
+  const codes = listFromText(form.errorStatusCodes, /[\s,]+/).join(', ') || '403, 404';
+  return `An IP that triggers ${codes} errors ${positiveInt(form.errorCount, 10)} times within ${positiveInt(form.errorPeriod, 10)} seconds will ${floodActionPhrase(form.errorAction, form.errorBlockMin)}.`;
+}
+
+function floodActionPhrase(action, blockMin) {
+  const minutes = positiveInt(blockMin, 30);
+  if (action === 'challenge_v1') return `require Anti-Bot challenge when accessing again within the next ${minutes} minutes`;
+  if (action === 'monitor') return 'be monitored without blocking';
+  return `be automatically blocked ${minutes} minutes`;
 }
 
 function normalizedSiteFeatures(site) {
