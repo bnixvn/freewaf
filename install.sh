@@ -184,7 +184,8 @@ install_geoip_database() {
 
 install_modsecurity() {
   local modsec_dir="/etc/freewaf/modsecurity"
-  local owasp_rules="/usr/share/modsecurity-crs/owasp-crs.load"
+  local owasp_setup="/etc/modsecurity/crs/crs-setup.conf"
+  local owasp_rules_dir="/usr/share/modsecurity-crs/rules"
   local module_file="/usr/lib/nginx/modules/ngx_http_modsecurity_module.so"
 
   if [ "$ENABLE_MODSECURITY" != "true" ]; then
@@ -224,20 +225,28 @@ SecDataDir /var/cache/modsecurity
 EOF
 
   printf 'Include %s\n' "${modsec_dir}/base.conf" > "${modsec_dir}/owasp-crs.conf"
-  if [ -f "$owasp_rules" ]; then
-    printf 'Include %s\n' "$owasp_rules" >> "${modsec_dir}/owasp-crs.conf"
+  if [ -f "$owasp_setup" ] && [ -d "$owasp_rules_dir" ]; then
+    printf 'Include %s\n' "$owasp_setup" >> "${modsec_dir}/owasp-crs.conf"
+    if [ -f /etc/modsecurity/crs/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf ]; then
+      printf 'Include %s\n' /etc/modsecurity/crs/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf >> "${modsec_dir}/owasp-crs.conf"
+    fi
+    printf 'Include %s\n' "${owasp_rules_dir}/*.conf" >> "${modsec_dir}/owasp-crs.conf"
+    if [ -f /etc/modsecurity/crs/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf ]; then
+      printf 'Include %s\n' /etc/modsecurity/crs/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf >> "${modsec_dir}/owasp-crs.conf"
+    fi
   else
-    log "OWASP CRS package installed without ${owasp_rules}; check the distro package layout"
+    log "OWASP CRS package layout is incomplete; check ${owasp_setup} and ${owasp_rules_dir}"
   fi
 
-  printf 'Include %s\n' "${modsec_dir}/base.conf" > "${modsec_dir}/comodo.conf"
   if [ -n "$COMODO_RULES_FILE" ] && [ -f "$COMODO_RULES_FILE" ]; then
+    printf 'Include %s\n' "${modsec_dir}/base.conf" > "${modsec_dir}/comodo.conf"
     printf 'Include %s\n' "$COMODO_RULES_FILE" >> "${modsec_dir}/comodo.conf"
     log "Using Comodo rules from ${COMODO_RULES_FILE}"
-  elif [ -f "$owasp_rules" ]; then
-    printf 'Include %s\n' "$owasp_rules" >> "${modsec_dir}/comodo.conf"
+  elif [ -f "${modsec_dir}/owasp-crs.conf" ]; then
+    cp "${modsec_dir}/owasp-crs.conf" "${modsec_dir}/comodo.conf"
     log "No Comodo rules file supplied; Comodo selection will safely fall back to OWASP CRS"
   else
+    printf 'Include %s\n' "${modsec_dir}/base.conf" > "${modsec_dir}/comodo.conf"
     log "No Comodo or OWASP rules file found; ModSecurity will inspect bodies without a managed ruleset"
   fi
 
