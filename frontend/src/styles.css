@@ -2010,6 +2010,12 @@ td {
   background: #f5f7f8;
 }
 
+.bot-threshold-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(130px, 1fr));
+  gap: 12px;
+}
+
 .bot-option-checkbox {
   display: flex;
   align-items: center;
@@ -2205,6 +2211,7 @@ td {
   .access-choice-grid,
   .access-top-grid,
   .condition-row,
+  .bot-threshold-grid,
   .flood-edit-grid {
     grid-template-columns: 1fr;
   }

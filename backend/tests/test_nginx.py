@@ -11,7 +11,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from freewaf.defaults import BUILTIN_RULES, DEFAULT_SETTINGS
-from freewaf.nginx import BOT_CHALLENGE_UA_PATTERN, generate_nginx_config, parse_nginx_logs, write_nginx_config
+from freewaf.nginx import generate_nginx_config, parse_nginx_logs, write_nginx_config
 
 
 def make_state(**overrides):
@@ -574,33 +574,45 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("set $sfl_access_1_group_1 1;", config)
         self.assertIn("Deny admin path", config)
 
-    def test_bot_protection_emits_header_block_and_challenge(self):
-        config = generate_nginx_config(make_state())
+    def test_bot_protection_emits_header_block_login_challenge_and_rate_rules(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "NGINX_HAS_MODSECURITY": "true",
+                "NGINX_MODSECURITY_BASE_RULES_FILE": "/etc/freewaf/modsecurity/base.conf",
+            },
+            clear=False,
+        ):
+            config = generate_nginx_config(make_state())
 
         self.assertIn("map $http_user_agent $sfl_bad_bot_ua", config)
-        self.assertIn("map $http_user_agent $sfl_suspicious_ua", config)
+        self.assertNotIn("map $http_user_agent $sfl_suspicious_ua", config)
         self.assertIn("map $cookie_freewaf_challenge $sfl_challenge_passed", config)
         self.assertIn("set $sfl_bot_block 1;", config)
         self.assertIn("set $sfl_challenge 1;", config)
+        self.assertIn("$request_uri ~*", config)
+        self.assertIn("wp-login", config)
         self.assertIn("error_page 461 = @freewaf_challenge;", config)
         self.assertIn("document.cookie=\"freewaf_challenge=passed;", config)
         self.assertNotIn("add_header Set-Cookie \"freewaf_challenge=passed;", config)
         self.assertIn("Bot protection matched scanner headers", config)
-        self.assertIn("Bot protection matched suspicious headers", config)
+        self.assertIn("Bot protection protected login path", config)
+        self.assertIn("modsecurity_rules_file /etc/freewaf/modsecurity/base.conf;", config)
+        self.assertIn('SecRule IP:freewaf_site_demo_bot_count "@gt 200"', config)
+        self.assertIn('SecRule IP:freewaf_site_demo_bot_count "@gt 100"', config)
+        self.assertIn("status:461", config)
+        self.assertIn("REQUEST_COOKIES:freewaf_challenge", config)
+        self.assertGreater(config.find("freewaf_site_demo_bot_count"), config.find("    location / {"))
         self.assertIn('limit_req_zone "$remote_addr|$request_method|$http_user_agent" zone=freewaf_rate_fingerprint', config)
         self.assertNotIn("$request_method$request_uri$http_user_agent", config)
 
-    def test_social_crawler_user_agents_are_challenged(self):
+    def test_social_crawler_user_agents_are_not_challenged_by_default(self):
         user_agent = "meta-externalagent/1.1 (+https://developers.facebook.com/docs/sharing/webmasters/crawler)"
         config = generate_nginx_config(make_state())
-        suspicious_map = config[
-            config.find("map $http_user_agent $sfl_suspicious_ua") :
-            config.find("map $http_user_agent $sfl_missing_user_agent")
-        ]
 
-        self.assertRegex(user_agent, BOT_CHALLENGE_UA_PATTERN)
-        self.assertIn("externalagent|facebookexternalhit", suspicious_map)
-        self.assertNotRegex(suspicious_map, r"~\*.*externalagent.* 0;")
+        self.assertNotIn("sfl_suspicious_ua", config)
+        self.assertNotIn("externalagent|facebookexternalhit", config)
+        self.assertNotRegex(user_agent, r"sqlmap|nikto|acunetix|nessus|nuclei|wpscan")
 
     def test_bot_protection_options_gate_challenge_and_emit_replay(self):
         state = make_state(
@@ -626,7 +638,8 @@ class NginxGeneratorTests(unittest.TestCase):
         config = generate_nginx_config(state)
 
         self.assertNotIn("map $http_user_agent $sfl_bad_bot_ua", config)
-        self.assertNotIn("Bot protection matched suspicious headers", config)
+        self.assertNotIn("Bot protection protected login path", config)
+        self.assertNotIn("freewaf_site_demo_bot_count", config)
         self.assertIn('limit_req_zone "$binary_remote_addr|$request_method|$request_uri|$http_user_agent" zone=sfl_replay_site_demo:10m rate=1r/s;', config)
         self.assertIn("limit_req zone=sfl_replay_site_demo burst=1 nodelay;", config)
         self.assertIn('add_header X-FreeWAF-Dynamic-Protection "html,watermark" always;', config)

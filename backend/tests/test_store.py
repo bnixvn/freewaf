@@ -297,11 +297,38 @@ class StoreTests(unittest.TestCase):
         protection = state["sites"][0]["botProtection"]
         self.assertTrue(protection["enabled"])
         self.assertFalse(protection["antiBotChallenge"])
+        self.assertFalse(protection["loginChallenge"]["enabled"])
+        self.assertFalse(protection["rateChallenge"]["enabled"])
         self.assertTrue(protection["dynamicProtection"]["enabled"])
         self.assertTrue(protection["dynamicProtection"]["html"])
         self.assertTrue(protection["dynamicProtection"]["watermark"])
         self.assertTrue(protection["antiReplay"]["enabled"])
         self.assertTrue(state["sites"][0]["features"]["botProtection"])
+
+    def test_bot_protection_login_and_rate_defaults_are_normalized(self):
+        state = normalize_state(
+            {
+                "sites": [
+                    {
+                        "id": "site-demo",
+                        "name": "Demo",
+                        "hostnames": ["example.test"],
+                        "origin": "http://127.0.0.1:9090",
+                        "features": {"botProtection": True},
+                        "botProtection": {"antiBotChallenge": True},
+                    }
+                ],
+                "rules": [],
+            }
+        )
+
+        protection = state["sites"][0]["botProtection"]
+        self.assertTrue(protection["loginChallenge"]["enabled"])
+        self.assertTrue(any("wp-login" in pattern for pattern in protection["loginChallenge"]["pathPatterns"]))
+        self.assertTrue(protection["rateChallenge"]["enabled"])
+        self.assertEqual(protection["rateChallenge"]["windowSeconds"], 10)
+        self.assertEqual(protection["rateChallenge"]["challengeCount"], 100)
+        self.assertEqual(protection["rateChallenge"]["blockCount"], 200)
 
     def test_safeline_application_fields_are_normalized(self):
         state = normalize_state(

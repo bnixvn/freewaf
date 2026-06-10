@@ -142,6 +142,29 @@ const defaultSite = {
   enabled: 'true'
 };
 
+const defaultBotLoginPathPatterns = [
+  '^/wp-login\\.php(?:\\?|$)',
+  '^/wp-admin/?(?:\\?|$)',
+  '^/(?:admin|administrator)(?:/login)?/?(?:\\?|$)',
+  '^/(?:login|user/login|account/login)(?:/|\\?|$)',
+  '^/clientarea\\.php(?:\\?|$)',
+  '^/cart\\.php(?:\\?[^#]*\\ba=login\\b|$)',
+  '^/index\\.php/(?:login|admin)(?:/|\\?|$)',
+  '^/admin/index\\.php(?:\\?|$)'
+];
+
+const defaultBotRateChallenge = {
+  enabled: true,
+  windowSeconds: 10,
+  challengeCount: 100,
+  blockCount: 200
+};
+
+const botRateWindowOptions = [5, 10, 15, 20, 30, 60].map((seconds) => ({
+  value: String(seconds),
+  label: `${seconds} seconds`
+}));
+
 const siteFeatureLabels = {
   httpFlood: 'HTTP FLOOD',
   botProtection: 'BOT PROTECT',
@@ -2135,7 +2158,39 @@ function BotProtectModal({ site, onClose, onSave }) {
           <strong>Anti-Bot Challenge</strong>
           <Switch checked={boolValue(form.antiBotChallenge)} onChange={(checked) => update('antiBotChallenge', String(checked))} />
           <Info size={16} />
-          <span className="muted">Automated browsers and suspicious client headers will be challenged or blocked.</span>
+          <span className="muted">Login pages and request spikes are challenged without challenging crawlers by User-Agent.</span>
+        </div>
+
+        <div className="bot-option-panel">
+          <div className="bot-control-row">
+            <span className="flood-accent" />
+            <strong>Login pages</strong>
+            <Switch checked={boolValue(form.loginChallenge)} onChange={(checked) => update('loginChallenge', String(checked))} />
+            <Info size={16} />
+            <span className="muted">Paths below will require the browser challenge before the request reaches origin.</span>
+          </div>
+          <TextAreaField
+            label="Login path regex"
+            value={form.loginPathPatterns}
+            onChange={(value) => update('loginPathPatterns', value)}
+            placeholder="^/wp-login\\.php(?:\\?|$)"
+            full
+          />
+        </div>
+
+        <div className="bot-option-panel">
+          <div className="bot-control-row">
+            <span className="flood-accent" />
+            <strong>Traffic rate</strong>
+            <Switch checked={boolValue(form.rateChallenge)} onChange={(checked) => update('rateChallenge', String(checked))} />
+            <Info size={16} />
+            <span className="muted">Count source IP requests in short windows, then challenge first and block harder bursts.</span>
+          </div>
+          <div className="bot-threshold-grid">
+            <SelectField label="Window" value={form.rateWindowSeconds} onChange={(value) => update('rateWindowSeconds', value)} options={botRateWindowOptions} />
+            <TextField label="Challenge after" value={form.rateChallengeCount} onChange={(value) => update('rateChallengeCount', value)} type="number" />
+            <TextField label="Block after" value={form.rateBlockCount} onChange={(value) => update('rateBlockCount', value)} type="number" />
+          </div>
         </div>
 
         <div className="bot-control-row">
@@ -3651,6 +3706,12 @@ function botProtectFormFromSite(site) {
   const config = botProtectPayloadFromConfig(site?.botProtection, site?.features?.botProtection !== false);
   return {
     antiBotChallenge: String(config.antiBotChallenge),
+    loginChallenge: String(config.loginChallenge.enabled),
+    loginPathPatterns: textFromList(config.loginChallenge.pathPatterns),
+    rateChallenge: String(config.rateChallenge.enabled),
+    rateWindowSeconds: String(config.rateChallenge.windowSeconds),
+    rateChallengeCount: String(config.rateChallenge.challengeCount),
+    rateBlockCount: String(config.rateChallenge.blockCount),
     dynamicHtml: String(config.dynamicProtection.html),
     dynamicJs: String(config.dynamicProtection.js),
     dynamicWatermark: String(config.dynamicProtection.watermark),
@@ -3660,14 +3721,28 @@ function botProtectFormFromSite(site) {
 
 function botProtectPayload(form) {
   const antiBotChallenge = boolValue(form.antiBotChallenge);
+  const loginChallenge = antiBotChallenge && boolValue(form.loginChallenge);
+  const rateChallenge = antiBotChallenge && boolValue(form.rateChallenge);
   const dynamicHtml = boolValue(form.dynamicHtml);
   const dynamicJs = boolValue(form.dynamicJs);
   const dynamicWatermark = boolValue(form.dynamicWatermark);
   const antiReplay = boolValue(form.antiReplay);
   const dynamicEnabled = dynamicHtml || dynamicJs || dynamicWatermark;
+  const challengeCount = positiveInt(form.rateChallengeCount, defaultBotRateChallenge.challengeCount);
+  const blockCount = Math.max(challengeCount + 1, positiveInt(form.rateBlockCount, defaultBotRateChallenge.blockCount));
   return {
     enabled: antiBotChallenge || dynamicEnabled || antiReplay,
     antiBotChallenge,
+    loginChallenge: {
+      enabled: loginChallenge,
+      pathPatterns: listFromText(form.loginPathPatterns, /\n+/)
+    },
+    rateChallenge: {
+      enabled: rateChallenge,
+      windowSeconds: positiveInt(form.rateWindowSeconds, defaultBotRateChallenge.windowSeconds),
+      challengeCount,
+      blockCount
+    },
     dynamicProtection: {
       enabled: dynamicEnabled,
       html: dynamicHtml,
@@ -3684,7 +3759,19 @@ function botProtectPayloadFromConfig(config, enabledFallback = true) {
   const source = config || {};
   const dynamic = source.dynamicProtection || {};
   const replay = source.antiReplay || {};
+  const login = source.loginChallenge || {};
+  const rate = source.rateChallenge || {};
   const antiBotChallenge = source.antiBotChallenge ?? enabledFallback;
+  const loginPatterns = Array.isArray(login.pathPatterns) ? login.pathPatterns : defaultBotLoginPathPatterns;
+  const loginEnabled = Boolean(antiBotChallenge) && Boolean(login.enabled ?? true) && loginPatterns.length > 0;
+  const challengeCount = positiveInt(rate.challengeCount, defaultBotRateChallenge.challengeCount);
+  const blockCount = Math.max(challengeCount + 1, positiveInt(rate.blockCount, defaultBotRateChallenge.blockCount));
+  const rateChallenge = {
+    enabled: Boolean(antiBotChallenge) && Boolean(rate.enabled ?? true),
+    windowSeconds: positiveInt(rate.windowSeconds, defaultBotRateChallenge.windowSeconds),
+    challengeCount,
+    blockCount
+  };
   const html = Boolean(dynamic.html);
   const js = Boolean(dynamic.js);
   const watermark = Boolean(dynamic.watermark);
@@ -3694,6 +3781,11 @@ function botProtectPayloadFromConfig(config, enabledFallback = true) {
   return {
     enabled: Boolean(enabled),
     antiBotChallenge: Boolean(antiBotChallenge),
+    loginChallenge: {
+      enabled: loginEnabled,
+      pathPatterns: loginPatterns
+    },
+    rateChallenge,
     dynamicProtection: {
       enabled: dynamicEnabled,
       html,

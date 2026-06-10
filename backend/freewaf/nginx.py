@@ -11,18 +11,14 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .defaults import DEFAULT_BOT_LOGIN_PATH_PATTERNS, DEFAULT_BOT_RATE_CHALLENGE
+
 
 NATIVE_TARGETS = {"all", "url", "headers", "method", "ip"}
 BOT_RULE_IDS = {"builtin-scanner-agent"}
 BOT_BLOCK_UA_PATTERN = (
     r"(?:sqlmap|nikto|acunetix|nessus|nuclei|wpscan|masscan|nmap|zgrab|gobuster|"
     r"dirbuster|ffuf|jaeles|zmeu|commix|havij|netsparker|openvas|arachni)"
-)
-BOT_CHALLENGE_UA_PATTERN = (
-    r"(?:curl|wget|python-requests|python-urllib|aiohttp|httpx|scrapy|libwww-perl|"
-    r"go-http-client|java/|okhttp|apache-httpclient|node-fetch|axios|perl|ruby|"
-    r"bot|crawler|spider|externalagent|facebookexternalhit|headlesschrome|phantomjs|"
-    r"selenium|playwright|puppeteer)"
 )
 GEO_CIDR_CACHE = {}
 
@@ -230,11 +226,15 @@ def parse_nginx_logs(root_dir: Path, limit: int = 500) -> list[dict]:
             verdict = str(raw.get("verdict") or "allow")
             status = parse_int(raw.get("status"))
             upstream_status = parse_int(raw.get("upstream_status"))
-            if verdict == "allow" and status in {403, 429} and upstream_status is None:
+            if verdict == "allow" and status == 461 and upstream_status is None:
+                verdict = "challenge"
+            if verdict == "allow" and status in {403, 429, 460} and upstream_status is None:
                 verdict = "block"
             reason = str(raw.get("reason") or ("Blocked by Nginx WAF" if verdict == "block" else "Allowed"))
             if verdict == "block" and reason == "Allowed":
                 reason = "Blocked by ModSecurity or Nginx edge policy"
+            if verdict == "challenge" and reason == "Allowed":
+                reason = "Browser challenge required"
             entries.append(
                 {
                     "id": f"nginx-{safe_identifier(log_file.name)}-{len(lines) - index}",
@@ -295,21 +295,6 @@ def render_bot_detection_maps() -> list[str]:
         "map $http_user_agent $sfl_bad_bot_ua {",
         "    default 0;",
         f"    ~*{BOT_BLOCK_UA_PATTERN} 1;",
-        "}",
-        "",
-        "map $http_user_agent $sfl_suspicious_ua {",
-        "    default 0;",
-        f"    ~*{BOT_CHALLENGE_UA_PATTERN} 1;",
-        "}",
-        "",
-        "map $http_user_agent $sfl_missing_user_agent {",
-        "    default 0;",
-        "    '' 1;",
-        "}",
-        "",
-        "map $http_accept $sfl_missing_accept {",
-        "    default 0;",
-        "    '' 1;",
         "}",
         "",
         "map $http_referer $sfl_bad_referer {",
@@ -723,6 +708,7 @@ def render_application_location(site: dict, state: dict, upstream_name: str, ups
         address = nginx_path(redirect.get("address") or "http://127.0.0.1")
         status = int(redirect.get("statusCode") or proxy.get("redirectStatusCode") or 301)
         return [
+            *render_bot_rate_modsecurity_rules(site),
             *render_hsts_header(proxy, is_ssl),
             *render_dynamic_protection_headers(site),
             *render_bot_replay_limit(site),
@@ -732,6 +718,7 @@ def render_application_location(site: dict, state: dict, upstream_name: str, ups
     if app_type == "static_files":
         root = static_root(site)
         return [
+            *render_bot_rate_modsecurity_rules(site),
             *render_hsts_header(proxy, is_ssl),
             *render_dynamic_protection_headers(site),
             *render_bot_replay_limit(site),
@@ -740,6 +727,7 @@ def render_application_location(site: dict, state: dict, upstream_name: str, ups
         ]
 
     lines = [
+        *render_bot_rate_modsecurity_rules(site),
         "        proxy_http_version 1.1;",
         "        proxy_set_header Upgrade $http_upgrade;",
         "        proxy_set_header Connection $sfl_connection_upgrade;",
@@ -845,16 +833,22 @@ def site_proxy(site: dict) -> dict:
 
 def render_modsecurity_directives(site: dict) -> list[str]:
     config = site.get("modSecurity") if isinstance(site.get("modSecurity"), dict) else {}
-    if not config.get("enabled"):
+    bot_rate_required = bot_rate_challenge_required(site)
+    if not config.get("enabled") and not bot_rate_required:
         return []
     if os.environ.get("NGINX_HAS_MODSECURITY", "false").lower() != "true":
-        return [
-            "    # ModSecurity is enabled for this application, but NGINX_HAS_MODSECURITY is not true.",
-            "",
-        ]
+        lines = []
+        if config.get("enabled"):
+            lines.append("    # ModSecurity is enabled for this application, but NGINX_HAS_MODSECURITY is not true.")
+        if bot_rate_required:
+            lines.append("    # Bot Protect rate thresholds require ModSecurity, but NGINX_HAS_MODSECURITY is not true.")
+        lines.append("")
+        return lines
 
     ruleset = str(config.get("ruleset") or "comodo").lower()
-    if ruleset == "owasp":
+    if not config.get("enabled"):
+        rules_file = os.environ.get("NGINX_MODSECURITY_BASE_RULES_FILE", "/etc/freewaf/modsecurity/base.conf")
+    elif ruleset == "owasp":
         rules_file = os.environ.get("NGINX_MODSECURITY_OWASP_RULES_FILE", "/etc/freewaf/modsecurity/owasp-crs.conf")
     else:
         rules_file = os.environ.get("NGINX_MODSECURITY_COMODO_RULES_FILE", "/etc/freewaf/modsecurity/comodo.conf")
@@ -867,13 +861,101 @@ def render_modsecurity_directives(site: dict) -> list[str]:
 
     engine = "DetectionOnly" if config.get("mode") == "detection_only" or site.get("mode") == "monitor" else "On"
     body_limit = min(max(int(config.get("requestBodyLimit") or 13107200), 131072), 1073741824)
-    return [
+    lines = [
         "    modsecurity on;",
         f"    modsecurity_rules_file {nginx_path(rules_file)};",
         f"    modsecurity_rules 'SecRuleEngine {engine}';",
         f"    modsecurity_rules 'SecRequestBodyLimit {body_limit}';",
         "",
     ]
+    return lines
+
+
+def bot_rate_challenge_required(site: dict) -> bool:
+    protection = site_bot_protection(site)
+    rate = protection.get("rateChallenge") or {}
+    return bool(protection.get("antiBotChallenge") and rate.get("enabled"))
+
+
+def render_bot_rate_modsecurity_rules(site: dict, indent: str = "        ") -> list[str]:
+    protection = site_bot_protection(site)
+    rate = protection.get("rateChallenge") or {}
+    if (
+        not protection.get("antiBotChallenge")
+        or not rate.get("enabled")
+        or os.environ.get("NGINX_HAS_MODSECURITY", "false").lower() != "true"
+    ):
+        return []
+
+    window_seconds = bot_rate_window_seconds(rate)
+    challenge_count = max(1, int(rate.get("challengeCount") or DEFAULT_BOT_RATE_CHALLENGE["challengeCount"]))
+    block_count = max(challenge_count + 1, int(rate.get("blockCount") or DEFAULT_BOT_RATE_CHALLENGE["blockCount"]))
+    site_key = safe_identifier(site.get("id") or site.get("name") or "site").lower()
+    window_var = f"freewaf_{site_key}_bot_window"
+    count_var = f"freewaf_{site_key}_bot_count"
+    marker = f"FREEWAF_BOT_RATE_DONE_{safe_identifier(site.get('id') or site.get('name') or 'site').upper()}"
+    base = modsecurity_rule_id_base(site)
+    rules = [
+        (
+            f'SecAction "id:{base + 1},phase:1,nolog,pass,initcol:ip=%{{REMOTE_ADDR}},'
+            f'setvar:tx.{window_var}=%{{TIME_YEAR}}-%{{TIME_MON}}-%{{TIME_DAY}}-%{{TIME_HOUR}}-%{{TIME_MIN}}"'
+        ),
+        *render_bot_rate_second_bucket_rules(window_seconds, window_var, base),
+        (
+            f'SecRule IP:{window_var} "!@streq %{{tx.{window_var}}}" "id:{base + 80},phase:1,nolog,pass,'
+            f'setvar:ip.{count_var}=0,setvar:ip.{window_var}=%{{tx.{window_var}}}"'
+        ),
+        f'SecAction "id:{base + 81},phase:1,nolog,pass,setvar:ip.{count_var}=+1"',
+        (
+            f'SecRule IP:{count_var} "@gt {block_count}" '
+            f'"id:{base + 82},phase:1,deny,status:460,log,msg:FreeWAFBotRateBlock"'
+        ),
+        (
+            f'SecRule REQUEST_COOKIES:freewaf_challenge "@streq passed" '
+            f'"id:{base + 83},phase:1,nolog,pass,skipAfter:{marker}"'
+        ),
+        (
+            f'SecRule IP:{count_var} "@gt {challenge_count}" '
+            f'"id:{base + 84},phase:1,deny,status:461,nolog,msg:FreeWAFBotRateChallenge"'
+        ),
+        f"SecMarker {marker}",
+    ]
+    return [f"{indent}modsecurity_rules '{rule}';" for rule in rules]
+
+
+def render_bot_rate_second_bucket_rules(window_seconds: int, window_var: str, base: int) -> list[str]:
+    if window_seconds >= 60:
+        return []
+    rules = []
+    for bucket, start in enumerate(range(0, 60, window_seconds)):
+        end = min(start + window_seconds - 1, 59)
+        regex = modsecurity_second_range_regex(start, end)
+        rules.append(
+            f'SecRule TIME_SEC "{regex}" "id:{base + 2 + bucket},phase:1,nolog,pass,'
+            f'setvar:tx.{window_var}=%{{tx.{window_var}}}-{bucket}"'
+        )
+    return rules
+
+
+def modsecurity_second_range_regex(start: int, end: int) -> str:
+    values = []
+    for second in range(start, end + 1):
+        if second < 10:
+            values.append(f"0?{second}")
+        else:
+            values.append(str(second))
+    return "^(?:" + "|".join(values) + ")$"
+
+
+def bot_rate_window_seconds(rate: dict) -> int:
+    value = int(rate.get("windowSeconds") or DEFAULT_BOT_RATE_CHALLENGE["windowSeconds"])
+    return value if value in {5, 10, 15, 20, 30, 60} else DEFAULT_BOT_RATE_CHALLENGE["windowSeconds"]
+
+
+def modsecurity_rule_id_base(site: dict) -> int:
+    value = safe_identifier(site.get("id") or site.get("name") or "site")
+    digest = sum((index + 1) * ord(char) for index, char in enumerate(value)) % 100000
+    return 8_600_000 + (digest * 100)
 
 
 def render_ipv6_listen(port: int, is_ssl: bool, proxy: dict) -> list[str]:
@@ -1186,10 +1268,26 @@ def site_bot_protection(site: dict) -> dict:
     dynamic = source.get("dynamicProtection") if isinstance(source.get("dynamicProtection"), dict) else {}
     anti_replay = source.get("antiReplay") if isinstance(source.get("antiReplay"), dict) else {}
     enabled = features["botProtection"] and source.get("enabled") is not False
+    anti_bot = enabled and source.get("antiBotChallenge") is not False
+    login = source.get("loginChallenge") if isinstance(source.get("loginChallenge"), dict) else {}
+    rate = source.get("rateChallenge") if isinstance(source.get("rateChallenge"), dict) else {}
+    login_patterns = [str(item).strip() for item in (login.get("pathPatterns") or DEFAULT_BOT_LOGIN_PATH_PATTERNS) if str(item).strip()]
+    challenge_count = max(1, parse_int(rate.get("challengeCount")) or DEFAULT_BOT_RATE_CHALLENGE["challengeCount"])
+    block_count = max(challenge_count + 1, parse_int(rate.get("blockCount")) or DEFAULT_BOT_RATE_CHALLENGE["blockCount"])
     dynamic_enabled = enabled and bool(dynamic.get("enabled"))
     return {
         "enabled": enabled,
-        "antiBotChallenge": enabled and source.get("antiBotChallenge") is not False,
+        "antiBotChallenge": anti_bot,
+        "loginChallenge": {
+            "enabled": anti_bot and login.get("enabled") is not False and bool(login_patterns),
+            "pathPatterns": login_patterns[:64],
+        },
+        "rateChallenge": {
+            "enabled": anti_bot and rate.get("enabled") is not False,
+            "windowSeconds": bot_rate_window_seconds(rate),
+            "challengeCount": challenge_count,
+            "blockCount": block_count,
+        },
         "dynamicProtection": {
             "enabled": dynamic_enabled,
             "html": dynamic_enabled and bool(dynamic.get("html")),
@@ -1234,6 +1332,9 @@ def render_bot_protection(site: dict) -> list[str]:
         return []
 
     effect = "monitor" if site.get("mode") == "monitor" else "block"
+    login = protection.get("loginChallenge") or {}
+    login_patterns = login.get("pathPatterns") or []
+    login_regex = any_regex(login_patterns) if login.get("enabled") and login_patterns else ""
     lines = [
         "    set $sfl_bot_block 0;",
         "    set $sfl_bot_challenge 0;",
@@ -1246,27 +1347,30 @@ def render_bot_protection(site: dict) -> list[str]:
         "    if ($sfl_unsafe_method = 1) {",
         "        set $sfl_bot_block 1;",
         "    }",
-        "    if ($sfl_suspicious_ua = 1) {",
-        "        set $sfl_bot_challenge 1;",
-        "    }",
-        "    if ($sfl_missing_user_agent = 1) {",
-        "        set $sfl_bot_challenge 1;",
-        "    }",
-        "    if ($sfl_missing_accept = 1) {",
-        "        set $sfl_bot_challenge 1;",
-        "    }",
-        "    if ($sfl_challenge_passed = 1) {",
-        "        set $sfl_bot_challenge 0;",
-        "    }",
-        "    if ($sfl_allow = 1) {",
-        "        set $sfl_bot_block 0;",
-        "        set $sfl_bot_challenge 0;",
-        "    }",
-        "    if ($sfl_block = 1) {",
-        "        set $sfl_bot_block 0;",
-        "        set $sfl_bot_challenge 0;",
-        "    }",
     ]
+    if login_regex:
+        lines.extend(
+            [
+                f"    if ($request_uri ~* {nginx_regex(login_regex)}) {{",
+                "        set $sfl_bot_challenge 1;",
+                "    }",
+            ]
+        )
+    lines.extend(
+        [
+            "    if ($sfl_challenge_passed = 1) {",
+            "        set $sfl_bot_challenge 0;",
+            "    }",
+            "    if ($sfl_allow = 1) {",
+            "        set $sfl_bot_block 0;",
+            "        set $sfl_bot_challenge 0;",
+            "    }",
+            "    if ($sfl_block = 1) {",
+            "        set $sfl_bot_block 0;",
+            "        set $sfl_bot_challenge 0;",
+            "    }",
+        ]
+    )
 
     if effect == "monitor":
         lines.extend(
@@ -1277,7 +1381,7 @@ def render_bot_protection(site: dict) -> list[str]:
                 "    }",
                 "    if ($sfl_bot_challenge = 1) {",
                 "        set $sfl_verdict monitor;",
-                "        set $sfl_reason \"Bot protection matched suspicious headers\";",
+                "        set $sfl_reason \"Bot protection protected login path\";",
                 "    }",
                 "",
             ]
@@ -1294,7 +1398,7 @@ def render_bot_protection(site: dict) -> list[str]:
             "    if ($sfl_bot_challenge = 1) {",
             "        set $sfl_challenge 1;",
             "        set $sfl_verdict challenge;",
-            "        set $sfl_reason \"Bot protection matched suspicious headers\";",
+            "        set $sfl_reason \"Bot protection protected login path\";",
             "    }",
             "",
         ]

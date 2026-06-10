@@ -22,6 +22,24 @@ DEFAULT_SETTINGS = {
     "blockSupportIdPrefix": "SFL",
 }
 
+DEFAULT_BOT_LOGIN_PATH_PATTERNS = [
+    r"^/wp-login\.php(?:\?|$)",
+    r"^/wp-admin/?(?:\?|$)",
+    r"^/(?:admin|administrator)(?:/login)?/?(?:\?|$)",
+    r"^/(?:login|user/login|account/login)(?:/|\?|$)",
+    r"^/clientarea\.php(?:\?|$)",
+    r"^/cart\.php(?:\?[^#]*\ba=login\b|$)",
+    r"^/index\.php/(?:login|admin)(?:/|\?|$)",
+    r"^/admin/index\.php(?:\?|$)",
+]
+
+DEFAULT_BOT_RATE_CHALLENGE = {
+    "enabled": True,
+    "windowSeconds": 10,
+    "challengeCount": 100,
+    "blockCount": 200,
+}
+
 
 BUILTIN_RULES = [
     {
@@ -306,6 +324,11 @@ def create_default_state(now: str | None = None) -> dict:
                 "botProtection": {
                     "enabled": True,
                     "antiBotChallenge": True,
+                    "loginChallenge": {
+                        "enabled": True,
+                        "pathPatterns": deepcopy(DEFAULT_BOT_LOGIN_PATH_PATTERNS),
+                    },
+                    "rateChallenge": deepcopy(DEFAULT_BOT_RATE_CHALLENGE),
                     "dynamicProtection": {
                         "enabled": False,
                         "html": False,

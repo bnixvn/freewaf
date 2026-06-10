@@ -21,7 +21,14 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .defaults import BUILTIN_RULES, DEFAULT_SETTINGS, create_default_state, utc_now
+from .defaults import (
+    BUILTIN_RULES,
+    DEFAULT_BOT_LOGIN_PATH_PATTERNS,
+    DEFAULT_BOT_RATE_CHALLENGE,
+    DEFAULT_SETTINGS,
+    create_default_state,
+    utc_now,
+)
 
 
 ACTIONS = {"allow", "block", "monitor"}
@@ -69,6 +76,7 @@ GEOIP_READER_MTIME = None
 ACCESS_INSERT_POSITIONS = {"first", "last"}
 USER_ROLES = {"admin", "viewer"}
 PASSWORD_ITERATIONS = 200_000
+BOT_RATE_WINDOW_SECONDS = {5, 10, 15, 20, 30, 60}
 
 
 class StoreError(Exception):
@@ -1232,13 +1240,26 @@ def normalize_bot_protection_config(value, enabled_value=None) -> dict:
     dynamic_watermark = normalize_bool(dynamic.get("watermark") if "watermark" in dynamic else source.get("pictureDynamicWatermark"), False)
     dynamic_enabled = normalize_bool(dynamic.get("enabled") if "enabled" in dynamic else source.get("dynamicProtectionEnabled"), any([dynamic_html, dynamic_js, dynamic_watermark]))
     anti_bot = normalize_bool(source.get("antiBotChallenge") if "antiBotChallenge" in source else source.get("anti_bot_challenge"), normalize_bool(enabled_value, True))
+    login_challenge = normalize_bot_login_challenge_config(
+        source.get("loginChallenge") or source.get("login_challenge"),
+        anti_bot,
+    )
+    rate_challenge = normalize_bot_rate_challenge_config(
+        source.get("rateChallenge") or source.get("rate_challenge"),
+        anti_bot,
+    )
     replay_enabled = normalize_bool(anti_replay.get("enabled") if "enabled" in anti_replay else source.get("antiReplayEnabled"), False)
     enabled = normalize_bool(source.get("enabled"), normalize_bool(enabled_value, True))
     enabled = enabled and (anti_bot or dynamic_enabled or replay_enabled)
+    if not anti_bot:
+        login_challenge["enabled"] = False
+        rate_challenge["enabled"] = False
 
     return {
         "enabled": enabled,
         "antiBotChallenge": anti_bot,
+        "loginChallenge": login_challenge,
+        "rateChallenge": rate_challenge,
         "dynamicProtection": {
             "enabled": dynamic_enabled,
             "html": dynamic_html,
@@ -1248,6 +1269,39 @@ def normalize_bot_protection_config(value, enabled_value=None) -> dict:
         "antiReplay": {
             "enabled": replay_enabled,
         },
+    }
+
+
+def normalize_bot_login_challenge_config(value, anti_bot_enabled: bool) -> dict:
+    source = value if isinstance(value, dict) else {}
+    path_values = None
+    for key in ("pathPatterns", "path_patterns", "loginPathPatterns", "paths"):
+        if key in source:
+            path_values = source.get(key)
+            break
+    patterns = normalize_string_list(path_values if path_values is not None else DEFAULT_BOT_LOGIN_PATH_PATTERNS)
+    patterns = [pattern.replace("\x00", "").strip() for pattern in patterns if pattern.replace("\x00", "").strip()]
+    return {
+        "enabled": normalize_bool(source.get("enabled"), anti_bot_enabled) and bool(patterns),
+        "pathPatterns": patterns[:64],
+    }
+
+
+def normalize_bot_rate_challenge_config(value, anti_bot_enabled: bool) -> dict:
+    source = value if isinstance(value, dict) else {}
+    defaults = DEFAULT_BOT_RATE_CHALLENGE
+    window = normalize_positive_int(source.get("windowSeconds") or source.get("window_seconds"), defaults["windowSeconds"])
+    if window not in BOT_RATE_WINDOW_SECONDS:
+        window = defaults["windowSeconds"]
+    challenge_count = min(max(normalize_positive_int(source.get("challengeCount") or source.get("challenge_count"), defaults["challengeCount"]), 1), 1000000)
+    block_count = min(max(normalize_positive_int(source.get("blockCount") or source.get("block_count"), defaults["blockCount"]), 1), 1000000)
+    if block_count <= challenge_count:
+        block_count = challenge_count + 1
+    return {
+        "enabled": normalize_bool(source.get("enabled"), anti_bot_enabled),
+        "windowSeconds": window,
+        "challengeCount": challenge_count,
+        "blockCount": block_count,
     }
 
 
