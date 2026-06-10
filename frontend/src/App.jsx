@@ -331,6 +331,7 @@ export default function App() {
   const [modal, setModal] = useState(null);
   const [toast, setToast] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [pendingActions, setPendingActions] = useState({});
   const [logsLoading, setLogsLoading] = useState(false);
   const [logDomain, setLogDomain] = useState('');
   const [logPage, setLogPage] = useState(1);
@@ -503,64 +504,87 @@ export default function App() {
     setData((current) => (current ? { ...current, settings } : current));
   }
 
-  async function toggleSite(site, enabled) {
-    updateDataItem('sites', site.id, { enabled });
+  async function withActionPending(key, task) {
+    setPendingActions((current) => ({ ...current, [key]: true }));
     try {
-      const saved = await api(`/api/sites/${site.id}`, { method: 'PATCH', body: { enabled } });
-      updateDataItem('sites', site.id, saved);
-    } catch (error) {
-      showToast(error.message, true);
-      await loadState(false, false);
+      return await task();
+    } finally {
+      setPendingActions((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
     }
+  }
+
+  async function toggleSite(site, enabled) {
+    await withActionPending(`site:${site.id}:enabled`, async () => {
+      updateDataItem('sites', site.id, { enabled });
+      try {
+        const saved = await api(`/api/sites/${site.id}`, { method: 'PATCH', body: { enabled } });
+        updateDataItem('sites', site.id, saved);
+      } catch (error) {
+        showToast(error.message, true);
+        await loadState(false, false);
+      }
+    });
   }
 
   async function toggleUnderAttack(site, enabled) {
     const underAttack = { ...(site.underAttack || {}), enabled };
-    updateDataItem('sites', site.id, { underAttack });
-    try {
-      const saved = await api(`/api/sites/${site.id}`, {
-        method: 'PATCH',
-        body: { underAttack }
-      });
-      updateDataItem('sites', site.id, saved);
-      showToast(enabled ? 'Under Attack Mode enabled' : 'Under Attack Mode disabled');
-    } catch (error) {
-      showToast(error.message, true);
-      await loadState(false, false);
-    }
+    await withActionPending(`site:${site.id}:underAttack`, async () => {
+      updateDataItem('sites', site.id, { underAttack });
+      try {
+        const saved = await api(`/api/sites/${site.id}`, {
+          method: 'PATCH',
+          body: { underAttack }
+        });
+        updateDataItem('sites', site.id, saved);
+        showToast(enabled ? 'Under Attack Mode enabled' : 'Under Attack Mode disabled');
+      } catch (error) {
+        showToast(error.message, true);
+        await loadState(false, false);
+      }
+    });
   }
 
   async function toggleRule(rule, enabled) {
-    updateDataItem('rules', rule.id, { enabled });
-    try {
-      const saved = await api(`/api/rules/${rule.id}`, { method: 'PATCH', body: { enabled } });
-      updateDataItem('rules', rule.id, saved);
-    } catch (error) {
-      showToast(error.message, true);
-      await loadState(false, false);
-    }
+    await withActionPending(`rule:${rule.id}:enabled`, async () => {
+      updateDataItem('rules', rule.id, { enabled });
+      try {
+        const saved = await api(`/api/rules/${rule.id}`, { method: 'PATCH', body: { enabled } });
+        updateDataItem('rules', rule.id, saved);
+      } catch (error) {
+        showToast(error.message, true);
+        await loadState(false, false);
+      }
+    });
   }
 
   async function toggleIpGroup(group, enabled) {
-    updateDataItem('ipGroups', group.id, { enabled });
-    try {
-      const saved = await api(`/api/ip-groups/${group.id}`, { method: 'PATCH', body: { enabled } });
-      updateDataItem('ipGroups', group.id, saved);
-    } catch (error) {
-      showToast(error.message, true);
-      await loadState(false, false);
-    }
+    await withActionPending(`ip-group:${group.id}:enabled`, async () => {
+      updateDataItem('ipGroups', group.id, { enabled });
+      try {
+        const saved = await api(`/api/ip-groups/${group.id}`, { method: 'PATCH', body: { enabled } });
+        updateDataItem('ipGroups', group.id, saved);
+      } catch (error) {
+        showToast(error.message, true);
+        await loadState(false, false);
+      }
+    });
   }
 
   async function toggleAccessRule(rule, enabled) {
-    updateDataItem('accessRules', rule.id, { enabled });
-    try {
-      const saved = await api(`/api/access-rules/${rule.id}`, { method: 'PATCH', body: { enabled } });
-      updateDataItem('accessRules', rule.id, saved);
-    } catch (error) {
-      showToast(error.message, true);
-      await loadState(false, false);
-    }
+    await withActionPending(`access-rule:${rule.id}:enabled`, async () => {
+      updateDataItem('accessRules', rule.id, { enabled });
+      try {
+        const saved = await api(`/api/access-rules/${rule.id}`, { method: 'PATCH', body: { enabled } });
+        updateDataItem('accessRules', rule.id, saved);
+      } catch (error) {
+        showToast(error.message, true);
+        await loadState(false, false);
+      }
+    });
   }
 
   async function saveSite(site) {
@@ -747,19 +771,24 @@ export default function App() {
   }
 
   async function saveRule(rule) {
-    const payload = {
-      ...rule,
-      enabled: rule.enabled === 'true' || rule.enabled === true
-    };
-    const id = payload.id;
-    delete payload.id;
-    await api(id ? `/api/rules/${id}` : '/api/rules', {
-      method: id ? 'PUT' : 'POST',
-      body: payload
-    });
-    setModal(null);
-    await loadState();
-    showToast('Rule saved');
+    try {
+      const payload = {
+        ...rule,
+        enabled: rule.enabled === 'true' || rule.enabled === true
+      };
+      const id = payload.id;
+      delete payload.id;
+      await api(id ? `/api/rules/${id}` : '/api/rules', {
+        method: id ? 'PUT' : 'POST',
+        body: payload
+      });
+      setModal(null);
+      await loadState();
+      showToast('Rule saved');
+    } catch (error) {
+      showToast(error.message, true);
+      throw error;
+    }
   }
 
   async function saveCertificate(certificate) {
@@ -785,60 +814,72 @@ export default function App() {
   }
 
   async function saveIpGroup(group) {
-    const payload = {
-      ...group,
-      enabled: group.enabled === 'true' || group.enabled === true
-    };
-    if (!group.itemsExternal || String(group.items || '').trim()) {
-      payload.items = group.items;
+    try {
+      const payload = {
+        ...group,
+        enabled: group.enabled === 'true' || group.enabled === true
+      };
+      if (!group.itemsExternal || String(group.items || '').trim()) {
+        payload.items = group.items;
+      }
+      const id = payload.id;
+      delete payload.id;
+      await api(id ? `/api/ip-groups/${id}` : '/api/ip-groups', {
+        method: id ? 'PUT' : 'POST',
+        body: payload
+      });
+      setModal(null);
+      await loadState();
+      showToast('IP group saved');
+    } catch (error) {
+      showToast(error.message, true);
+      throw error;
     }
-    const id = payload.id;
-    delete payload.id;
-    await api(id ? `/api/ip-groups/${id}` : '/api/ip-groups', {
-      method: id ? 'PUT' : 'POST',
-      body: payload
-    });
-    setModal(null);
-    await loadState();
-    showToast('IP group saved');
   }
 
   async function syncIpGroup(group) {
-    const saved = await api(`/api/ip-groups/${group.id}/sync`, { method: 'POST' });
-    await loadState();
-    showToast(
-      saved.lastSyncStatus === 'failed'
-        ? saved.lastSyncMessage || 'IP group sync failed'
-        : `IP group synced: ${saved.items?.length || 0} entries`,
-      saved.lastSyncStatus === 'failed'
-    );
+    await withActionPending(`ip-group:${group.id}:sync`, async () => {
+      const saved = await api(`/api/ip-groups/${group.id}/sync`, { method: 'POST' });
+      await loadState(false, false);
+      showToast(
+        saved.lastSyncStatus === 'failed'
+          ? saved.lastSyncMessage || 'IP group sync failed'
+          : `IP group synced: ${saved.items?.length || 0} entries`,
+        saved.lastSyncStatus === 'failed'
+      );
+    });
   }
 
   async function saveAccessRule(rule) {
-    const conditionGroups = normalizeAccessConditionGroupsPayload(rule.conditionGroups, rule);
-    const flattened = flattenAccessConditions(conditionGroups);
-    const payload = {
-      ...rule,
-      enabled: rule.enabled === 'true' || rule.enabled === true,
-      continueDetect: rule.continueDetect === 'true' || rule.continueDetect === true,
-      insertPosition: rule.insertPosition || 'first',
-      ipGroupIds: flattened.ipGroupIds,
-      ips: flattened.ips,
-      methods: flattened.methods,
-      uriPatterns: flattened.uriPatterns,
-      hostPatterns: flattened.hostPatterns,
-      userAgentPatterns: flattened.userAgentPatterns,
-      conditionGroups
-    };
-    const id = payload.id;
-    delete payload.id;
-    await api(id ? `/api/access-rules/${id}` : '/api/access-rules', {
-      method: id ? 'PUT' : 'POST',
-      body: payload
-    });
-    setModal(null);
-    await loadState();
-    showToast('Access rule saved');
+    try {
+      const conditionGroups = normalizeAccessConditionGroupsPayload(rule.conditionGroups, rule);
+      const flattened = flattenAccessConditions(conditionGroups);
+      const payload = {
+        ...rule,
+        enabled: rule.enabled === 'true' || rule.enabled === true,
+        continueDetect: rule.continueDetect === 'true' || rule.continueDetect === true,
+        insertPosition: rule.insertPosition || 'first',
+        ipGroupIds: flattened.ipGroupIds,
+        ips: flattened.ips,
+        methods: flattened.methods,
+        uriPatterns: flattened.uriPatterns,
+        hostPatterns: flattened.hostPatterns,
+        userAgentPatterns: flattened.userAgentPatterns,
+        conditionGroups
+      };
+      const id = payload.id;
+      delete payload.id;
+      await api(id ? `/api/access-rules/${id}` : '/api/access-rules', {
+        method: id ? 'PUT' : 'POST',
+        body: payload
+      });
+      setModal(null);
+      await loadState();
+      showToast('Access rule saved');
+    } catch (error) {
+      showToast(error.message, true);
+      throw error;
+    }
   }
 
   async function deleteSite(site) {
@@ -919,72 +960,102 @@ export default function App() {
   }
 
   async function previewNginx() {
-    const result = await api('/api/nginx/render');
-    setModal({ type: 'nginx', result });
+    try {
+      const result = await api('/api/nginx/render');
+      setModal({ type: 'nginx', result });
+    } catch (error) {
+      showToast(error.message, true);
+      throw error;
+    }
   }
 
   async function applyNginx(options = {}) {
-    const result = await api('/api/nginx/apply', {
-      method: 'POST',
-      body: options
-    });
-    setModal({ type: 'nginx', result });
-    showToast(result.ok ? 'Nginx config written' : 'Nginx command failed', !result.ok);
+    try {
+      const result = await api('/api/nginx/apply', {
+        method: 'POST',
+        body: options
+      });
+      setModal({ type: 'nginx', result });
+      showToast(result.ok ? 'Nginx config written' : 'Nginx command failed', !result.ok);
+    } catch (error) {
+      showToast(error.message, true);
+      throw error;
+    }
   }
 
   async function savePanelSettings(panel) {
-    const saved = await api('/api/settings', {
-      method: 'PATCH',
-      body: { panel }
-    });
-    updateSettingsLocal(saved);
-    showToast('Panel settings saved');
+    try {
+      const saved = await api('/api/settings', {
+        method: 'PATCH',
+        body: { panel }
+      });
+      updateSettingsLocal(saved);
+      showToast('Panel settings saved');
+    } catch (error) {
+      showToast(error.message, true);
+      throw error;
+    }
   }
 
   async function saveApplicationDefaults(applicationDefaults) {
-    const saved = await api('/api/settings', {
-      method: 'PATCH',
-      body: { applicationDefaults }
-    });
-    updateSettingsLocal(saved);
-    const result = await api('/api/nginx/apply', {
-      method: 'POST',
-      body: { test: true, reload: true }
-    });
-    await loadState(false, false);
-    showToast(result.ok ? 'Global defaults saved and Nginx reloaded' : 'Global defaults saved, but Nginx reload failed', !result.ok);
+    try {
+      const saved = await api('/api/settings', {
+        method: 'PATCH',
+        body: { applicationDefaults }
+      });
+      updateSettingsLocal(saved);
+      const result = await api('/api/nginx/apply', {
+        method: 'POST',
+        body: { test: true, reload: true }
+      });
+      await loadState(false, false);
+      showToast(result.ok ? 'Global defaults saved and Nginx reloaded' : 'Global defaults saved, but Nginx reload failed', !result.ok);
+    } catch (error) {
+      showToast(error.message, true);
+      throw error;
+    }
   }
 
   async function saveChallengePage(challengePage) {
-    const saved = await api('/api/settings', {
-      method: 'PATCH',
-      body: { challengePage }
-    });
-    updateSettingsLocal(saved);
-    showToast('Challenge page saved');
+    try {
+      const saved = await api('/api/settings', {
+        method: 'PATCH',
+        body: { challengePage }
+      });
+      updateSettingsLocal(saved);
+      showToast('Challenge page saved');
+    } catch (error) {
+      showToast(error.message, true);
+      throw error;
+    }
   }
 
   async function saveUser(user) {
-    const payload = {
-      ...user,
-      enabled: user.enabled === 'true' || user.enabled === true,
-      totpEnabled: user.totpEnabled === 'true' || user.totpEnabled === true,
-      resetTotp: user.resetTotp === true
-    };
-    if (!payload.password) delete payload.password;
-    const id = payload.id;
-    delete payload.id;
-    const saved = await api(id ? `/api/users/${id}` : '/api/users', {
-      method: id ? 'PUT' : 'POST',
-      body: payload
-    });
-    await loadState();
-    if (saved.totpSetupSecret) {
-      setModal({ type: 'totpSetup', user: saved });
-    } else {
-      setModal(null);
+    try {
+      const payload = {
+        ...user,
+        enabled: user.enabled === 'true' || user.enabled === true,
+        totpEnabled: user.totpEnabled === 'true' || user.totpEnabled === true,
+        resetTotp: user.resetTotp === true
+      };
+      if (!payload.password) delete payload.password;
+      const id = payload.id;
+      delete payload.id;
+      const saved = await api(id ? `/api/users/${id}` : '/api/users', {
+        method: id ? 'PUT' : 'POST',
+        body: payload
+      });
+      await loadState();
+      if (saved.totpSetupSecret) {
+        setModal({ type: 'totpSetup', user: saved });
+      } else {
+        setModal(null);
+      }
+      showToast('User saved');
+    } catch (error) {
+      showToast(error.message, true);
+      throw error;
     }
-    showToast('User saved');
   }
 
   async function deleteUser(user) {
@@ -1025,6 +1096,7 @@ export default function App() {
       saveBotProtection,
       saveGeoBlock,
       deleteUser,
+      pendingActions,
       logsLoading,
       logResult,
       logDomain,
@@ -1044,7 +1116,7 @@ export default function App() {
     if (activeView === 'logs') return <LogsView {...props} />;
     if (activeView === 'settings') return <SettingsView {...props} />;
     return <DashboardView {...props} />;
-  }, [activeView, data, filter, auth, logsLoading, logResult, logDomain, logPage, logPageSize]);
+  }, [activeView, data, filter, auth, pendingActions, logsLoading, logResult, logDomain, logPage, logPageSize]);
 
   if (auth.loading) {
     return <LoadingPanel />;
@@ -1249,7 +1321,8 @@ function AuthScreen({ mode, loading, onSubmit }) {
           <TextField label="Google Authenticator Code" value={form.totpCode} onChange={(value) => update('totpCode', value)} placeholder="123456" full />
         )}
         <button className="tool-button primary auth-submit" disabled={loading}>
-          <LockKeyhole size={18} /> {isSetup ? 'Create Admin' : 'Sign In'}
+          {loading ? <Loader2 size={18} className="spin" /> : <LockKeyhole size={18} />}
+          {loading ? (isSetup ? 'Creating...' : 'Signing in...') : (isSetup ? 'Create Admin' : 'Sign In')}
         </button>
       </form>
     </main>
@@ -1392,7 +1465,7 @@ function CompactInsightColumn({ title, pill, rows, empty, maxValue, label, barVa
   );
 }
 
-function SitesView({ data, setModal, toggleSite, toggleUnderAttack, deleteSite }) {
+function SitesView({ data, setModal, toggleSite, toggleUnderAttack, deleteSite, pendingActions }) {
   return (
     <section className="panel">
       <div className="panel-heading">
@@ -1411,6 +1484,8 @@ function SitesView({ data, setModal, toggleSite, toggleUnderAttack, deleteSite }
             onDelete={() => deleteSite(site)}
             onToggle={(checked) => toggleSite(site, checked)}
             onToggleUnderAttack={(checked) => toggleUnderAttack(site, checked)}
+            defensePending={Boolean(pendingActions[`site:${site.id}:enabled`])}
+            underAttackPending={Boolean(pendingActions[`site:${site.id}:underAttack`])}
             onConfigureFlood={() => setModal({ type: 'httpFlood', site })}
             onConfigureBot={() => setModal({ type: 'botProtect', site })}
             onConfigureGeo={() => setModal({ type: 'geoBlock', site })}
@@ -1421,7 +1496,19 @@ function SitesView({ data, setModal, toggleSite, toggleUnderAttack, deleteSite }
   );
 }
 
-function ApplicationCard({ site, stats, onEdit, onDelete, onToggle, onToggleUnderAttack, onConfigureFlood, onConfigureBot, onConfigureGeo }) {
+function ApplicationCard({
+  site,
+  stats,
+  onEdit,
+  onDelete,
+  onToggle,
+  onToggleUnderAttack,
+  defensePending = false,
+  underAttackPending = false,
+  onConfigureFlood,
+  onConfigureBot,
+  onConfigureGeo
+}) {
   const features = normalizedSiteFeatures(site);
   const counters = stats || { requests: 0, protected: 0 };
   const domain = site.hostnames?.[0] || site.name;
@@ -1434,16 +1521,19 @@ function ApplicationCard({ site, stats, onEdit, onDelete, onToggle, onToggleUnde
     <article className="application-card">
       <div className="application-status">
         <span className="app-globe"><Globe2 size={22} /></span>
-        <button className={`defense-button ${site.enabled ? 'active' : ''}`} type="button" onClick={() => onToggle(!site.enabled)}>
-          DEFENSE
+        <button className={`defense-button ${site.enabled ? 'active' : ''}`} type="button" onClick={() => onToggle(!site.enabled)} disabled={defensePending}>
+          {defensePending && <Loader2 size={13} className="spin" />}
+          {defensePending ? 'UPDATING' : 'DEFENSE'}
         </button>
         <button
           className={`under-attack-button ${site.underAttack?.enabled ? 'active' : ''}`}
           type="button"
           onClick={() => onToggleUnderAttack(!site.underAttack?.enabled)}
           title="Challenge new visitors while the application is under attack"
+          disabled={underAttackPending}
         >
-          <ShieldAlert size={14} /> UNDER ATTACK
+          {underAttackPending ? <Loader2 size={14} className="spin" /> : <ShieldAlert size={14} />}
+          {underAttackPending ? 'UPDATING' : 'UNDER ATTACK'}
         </button>
         <div className="app-metric-pair">
           <div>
@@ -1512,7 +1602,7 @@ function ApplicationCard({ site, stats, onEdit, onDelete, onToggle, onToggleUnde
   );
 }
 
-function RulesView({ data, filter, setFilter, setModal, toggleRule, deleteRule }) {
+function RulesView({ data, filter, setFilter, setModal, toggleRule, deleteRule, pendingActions }) {
   const rules = data.rules.filter((rule) => {
     if (!filter.trim()) return true;
     return [rule.name, rule.description, rule.pattern, rule.target, rule.action, rule.severity]
@@ -1558,7 +1648,7 @@ function RulesView({ data, filter, setFilter, setModal, toggleRule, deleteRule }
                 <td>{rule.target} / {rule.matcher}</td>
                 <td className="path-cell"><span className="code">{rule.pattern}</span></td>
                 <td><span className={`status ${rule.action}`}>{rule.action}</span></td>
-                <td><Switch checked={rule.enabled} onChange={(checked) => toggleRule(rule, checked)} /></td>
+                <td><Switch checked={rule.enabled} pending={Boolean(pendingActions[`rule:${rule.id}:enabled`])} onChange={(checked) => toggleRule(rule, checked)} /></td>
                 <td>
                   <div className="row-actions">
                     <button className="table-action" onClick={() => setModal({ type: 'rule', rule })} title="Edit"><Edit3 size={17} /></button>
@@ -1574,7 +1664,7 @@ function RulesView({ data, filter, setFilter, setModal, toggleRule, deleteRule }
   );
 }
 
-function AccessView({ data, setModal, toggleAccessRule, deleteAccessRule }) {
+function AccessView({ data, setModal, toggleAccessRule, deleteAccessRule, pendingActions }) {
   const siteName = (id) => (id === '*' ? 'All sites' : data.sites.find((site) => site.id === id)?.name || id);
   return (
     <section className="table-panel">
@@ -1603,7 +1693,7 @@ function AccessView({ data, setModal, toggleAccessRule, deleteAccessRule }) {
                 <td><span className={`status ${rule.action === 'deny' ? 'block' : rule.action}`}>{rule.action}</span></td>
                 <td>{siteName(rule.siteId)}</td>
                 <td className="path-cell">{accessRuleMatch(rule, data.ipGroups)}</td>
-                <td><Switch checked={rule.enabled} onChange={(checked) => toggleAccessRule(rule, checked)} /></td>
+                <td><Switch checked={rule.enabled} pending={Boolean(pendingActions[`access-rule:${rule.id}:enabled`])} onChange={(checked) => toggleAccessRule(rule, checked)} /></td>
                 <td>
                   <div className="row-actions">
                     <button className="table-action" onClick={() => setModal({ type: 'accessRule', rule })} title="Edit"><Edit3 size={17} /></button>
@@ -1621,7 +1711,7 @@ function AccessView({ data, setModal, toggleAccessRule, deleteAccessRule }) {
   );
 }
 
-function IpGroupsView({ data, setModal, toggleIpGroup, deleteIpGroup, syncIpGroup }) {
+function IpGroupsView({ data, setModal, toggleIpGroup, deleteIpGroup, syncIpGroup, pendingActions }) {
   return (
     <section className="table-panel">
       <div className="panel-heading">
@@ -1667,10 +1757,14 @@ function IpGroupsView({ data, setModal, toggleIpGroup, deleteIpGroup, syncIpGrou
                     <span className="muted">Manual</span>
                   )}
                 </td>
-                <td><Switch checked={group.enabled} onChange={(checked) => toggleIpGroup(group, checked)} /></td>
+                <td><Switch checked={group.enabled} pending={Boolean(pendingActions[`ip-group:${group.id}:enabled`])} onChange={(checked) => toggleIpGroup(group, checked)} /></td>
                 <td>
                   <div className="row-actions">
-                    {group.referenceUrl && <button className="table-action" onClick={() => syncIpGroup(group)} title="Sync now"><RefreshCw size={17} /></button>}
+                    {group.referenceUrl && (
+                      <button className="table-action" onClick={() => syncIpGroup(group)} title="Sync now" disabled={Boolean(pendingActions[`ip-group:${group.id}:sync`])}>
+                        <RefreshCw size={17} className={pendingActions[`ip-group:${group.id}:sync`] ? 'spin' : ''} />
+                      </button>
+                    )}
                     <button className="table-action" onClick={() => setModal({ type: 'ipGroup', group })} title="Edit"><Edit3 size={17} /></button>
                     <button className="table-action" onClick={() => deleteIpGroup(group)} title="Delete"><Trash2 size={17} /></button>
                   </div>
@@ -1854,6 +1948,7 @@ function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaul
   const panel = data.settings?.panel || {};
   const applicationDefaults = data.settings?.applicationDefaults || {};
   const challengePage = data.settings?.challengePage || {};
+  const [pendingAction, setPendingAction] = useState('');
   const [panelForm, setPanelForm] = useState(() => ({
     httpsEnabled: String(panel.httpsEnabled ?? false),
     certificateId: panel.certificateId || '',
@@ -1884,14 +1979,26 @@ function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaul
     setPanelForm((current) => ({ ...current, [name]: value }));
   }
 
+  async function runLocalAction(key, task) {
+    if (pendingAction) return;
+    setPendingAction(key);
+    try {
+      await task();
+    } catch (error) {
+      // The parent action already shows the error toast.
+    } finally {
+      setPendingAction('');
+    }
+  }
+
   function submitPanel(event) {
     event.preventDefault();
-    savePanelSettings({
+    runLocalAction('panel', () => savePanelSettings({
       httpsEnabled: boolValue(panelForm.httpsEnabled),
       certificateId: panelForm.certificateId,
       publicUrl: panelForm.publicUrl,
       sessionHours: Number(panelForm.sessionHours || 12)
-    });
+    }));
   }
 
   function updateApplication(name, value) {
@@ -1900,7 +2007,7 @@ function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaul
 
   function submitApplicationDefaults(event) {
     event.preventDefault();
-    saveApplicationDefaults(applicationDefaultsPayload(applicationForm));
+    runLocalAction('applicationDefaults', () => saveApplicationDefaults(applicationDefaultsPayload(applicationForm)));
   }
 
   function updateChallenge(name, value) {
@@ -1909,7 +2016,7 @@ function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaul
 
   function submitChallengePage(event) {
     event.preventDefault();
-    saveChallengePage(challengePagePayload(challengeForm));
+    runLocalAction('challengePage', () => saveChallengePage(challengePagePayload(challengeForm)));
   }
 
   return (
@@ -1930,7 +2037,9 @@ function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaul
           <TextField label="Panel URL" value={panelForm.publicUrl} onChange={(value) => updatePanel('publicUrl', value)} placeholder="https://waf.example.com:7001" full />
           <TextField label="Session Hours" value={panelForm.sessionHours} onChange={(value) => updatePanel('sessionHours', value)} />
           <div className="settings-actions full">
-            <button className="tool-button primary"><Save size={18} /> Save Panel SSL</button>
+            <LoadingButton pending={pendingAction === 'panel'} pendingText="Saving..." className="tool-button primary">
+              <Save size={18} /> Save Panel SSL
+            </LoadingButton>
           </div>
           <p className="form-note full">Changing HTTPS certificate or protocol requires restarting the FreeWAF admin service.</p>
         </form>
@@ -1994,7 +2103,9 @@ function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaul
             </div>
           </section>
           <div className="settings-actions full">
-            <button className="tool-button primary"><Save size={18} /> Save Global Defaults</button>
+            <LoadingButton pending={pendingAction === 'applicationDefaults'} pendingText="Saving..." className="tool-button primary">
+              <Save size={18} /> Save Global Defaults
+            </LoadingButton>
           </div>
         </form>
       </section>
@@ -2026,7 +2137,9 @@ function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaul
               ]}
             />
             <div className="settings-actions full">
-              <button className="tool-button primary"><Save size={18} /> Save Challenge Page</button>
+              <LoadingButton pending={pendingAction === 'challengePage'} pendingText="Saving..." className="tool-button primary">
+                <Save size={18} /> Save Challenge Page
+              </LoadingButton>
             </div>
           </div>
           <ChallengePagePreview form={challengeForm} />
@@ -2081,10 +2194,18 @@ function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaul
           <span className="pill">native enforcement</span>
         </div>
         <div className="settings-actions">
-          <button className="tool-button" onClick={previewNginx}><ListFilter size={18} /> Preview</button>
-          <button className="tool-button primary" onClick={() => applyNginx({})}><Save size={18} /> Write Config</button>
-          <button className="tool-button" onClick={() => applyNginx({ test: true })}><ShieldCheck size={18} /> Write + Test</button>
-          <button className="tool-button" onClick={() => applyNginx({ test: true, reload: true })}><RefreshCw size={18} /> Test + Reload</button>
+          <LoadingButton type="button" pending={pendingAction === 'nginxPreview'} pendingText="Previewing..." className="tool-button" onClick={() => runLocalAction('nginxPreview', previewNginx)}>
+            <ListFilter size={18} /> Preview
+          </LoadingButton>
+          <LoadingButton type="button" pending={pendingAction === 'nginxWrite'} pendingText="Writing..." className="tool-button primary" onClick={() => runLocalAction('nginxWrite', () => applyNginx({}))}>
+            <Save size={18} /> Write Config
+          </LoadingButton>
+          <LoadingButton type="button" pending={pendingAction === 'nginxTest'} pendingText="Testing..." className="tool-button" onClick={() => runLocalAction('nginxTest', () => applyNginx({ test: true }))}>
+            <ShieldCheck size={18} /> Write + Test
+          </LoadingButton>
+          <LoadingButton type="button" pending={pendingAction === 'nginxReload'} pendingText="Reloading..." className="tool-button" onClick={() => runLocalAction('nginxReload', () => applyNginx({ test: true, reload: true }))}>
+            <RefreshCw size={18} /> Test + Reload
+          </LoadingButton>
           <button className="tool-button" onClick={logout}><LogOut size={18} /> Sign Out</button>
         </div>
       </section>
@@ -2287,11 +2408,24 @@ function SettingTile({ label, value, onCopy }) {
   );
 }
 
-function Switch({ checked, onChange }) {
+function LoadingButton({ pending, pendingText = 'Working...', children, disabled = false, className = 'tool-button', type = 'submit', ...props }) {
   return (
-    <label className="switch" title={checked ? 'Enabled' : 'Disabled'}>
-      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
-      <span />
+    <button type={type} className={className} disabled={disabled || pending} {...props}>
+      {pending ? (
+        <>
+          <Loader2 size={17} className="spin" />
+          {pendingText}
+        </>
+      ) : children}
+    </button>
+  );
+}
+
+function Switch({ checked, onChange, pending = false, disabled = false }) {
+  return (
+    <label className={`switch ${pending ? 'pending' : ''}`} title={pending ? 'Updating...' : checked ? 'Enabled' : 'Disabled'}>
+      <input type="checkbox" checked={checked} disabled={disabled || pending} onChange={(event) => onChange(event.target.checked)} />
+      <span>{pending && <Loader2 size={14} className="spin switch-spinner" />}</span>
     </label>
   );
 }
@@ -2329,6 +2463,7 @@ function CommandResult({ label, result }) {
 }
 
 function HttpFloodModal({ site, settings, onClose, onSave }) {
+  const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState(() => httpFloodFormFromSite(site, settings));
   const [editing, setEditing] = useState('');
 
@@ -2340,9 +2475,15 @@ function HttpFloodModal({ site, settings, onClose, onSave }) {
     setForm((current) => ({ ...current, [`${prefix}${name}`]: value }));
   }
 
-  function submit(event) {
+  async function submit(event) {
     event.preventDefault();
-    onSave(httpFloodPayload(form));
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      await onSave(httpFloodPayload(form));
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   function editAccess() {
@@ -2418,8 +2559,10 @@ function HttpFloodModal({ site, settings, onClose, onSave }) {
         </FloodSection>
 
         <div className="modal-footer">
-          <button type="button" className="tool-button" onClick={onClose}>Cancel</button>
-          <button className="tool-button primary">Save</button>
+          <button type="button" className="tool-button" onClick={onClose} disabled={submitting}>Cancel</button>
+          <LoadingButton pending={submitting} pendingText="Saving..." className="tool-button primary">
+            Save
+          </LoadingButton>
         </div>
       </form>
     </Modal>
@@ -2427,15 +2570,22 @@ function HttpFloodModal({ site, settings, onClose, onSave }) {
 }
 
 function BotProtectModal({ site, onClose, onSave }) {
+  const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState(() => botProtectFormFromSite(site));
 
   function update(name, value) {
     setForm((current) => ({ ...current, [name]: value }));
   }
 
-  function submit(event) {
+  async function submit(event) {
     event.preventDefault();
-    onSave(botProtectPayload(form));
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      await onSave(botProtectPayload(form));
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -2519,8 +2669,10 @@ function BotProtectModal({ site, onClose, onSave }) {
         </div>
 
         <div className="modal-footer">
-          <button type="button" className="tool-button" onClick={onClose}>Cancel</button>
-          <button className="tool-button primary">Save</button>
+          <button type="button" className="tool-button" onClick={onClose} disabled={submitting}>Cancel</button>
+          <LoadingButton pending={submitting} pendingText="Saving..." className="tool-button primary">
+            Save
+          </LoadingButton>
         </div>
       </form>
     </Modal>
@@ -2539,6 +2691,7 @@ function BotOptionCheckbox({ label, checked, onChange, badge = '', note = '' }) 
 }
 
 function GeoBlockModal({ site, onClose, onSave }) {
+  const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState(() => geoBlockFormFromSite(site));
   const selected = new Set(normalizeCountryCodes(form.countries));
 
@@ -2556,9 +2709,15 @@ function GeoBlockModal({ site, onClose, onSave }) {
     update('countries', Array.from(next).join(', '));
   }
 
-  function submit(event) {
+  async function submit(event) {
     event.preventDefault();
-    onSave(geoBlockPayload(form));
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      await onSave(geoBlockPayload(form));
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -2592,8 +2751,10 @@ function GeoBlockModal({ site, onClose, onSave }) {
         </div>
 
         <div className="modal-footer">
-          <button type="button" className="tool-button" onClick={onClose}>Cancel</button>
-          <button className="tool-button primary">Save</button>
+          <button type="button" className="tool-button" onClick={onClose} disabled={submitting}>Cancel</button>
+          <LoadingButton pending={submitting} pendingText="Saving..." className="tool-button primary">
+            Save
+          </LoadingButton>
         </div>
       </form>
     </Modal>
@@ -3010,6 +3171,7 @@ function CertificateModal({ certificate, onClose, onSave }) {
 
 function IpGroupModal({ group, onClose, onSave }) {
   const fileInputRef = useRef(null);
+  const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState(() => ({
     ...defaultIpGroup,
     ...(group || {}),
@@ -3033,9 +3195,20 @@ function IpGroupModal({ group, onClose, onSave }) {
     event.target.value = '';
   }
 
+  async function submit(event) {
+    event.preventDefault();
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      await onSave(form);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   return (
     <Modal title={group ? 'Edit IP Group' : 'Add IP Group'} onClose={onClose}>
-      <form onSubmit={(event) => { event.preventDefault(); onSave(form); }}>
+      <form onSubmit={submit}>
         <div className="form-grid">
           <TextField label="Name" value={form.name} onChange={(value) => update('name', value)} full required />
           <TextField label="Reference" value={form.referenceUrl} onChange={(value) => update('referenceUrl', value)} placeholder="http://example.com/ip-list.txt" full />
@@ -3054,13 +3227,14 @@ function IpGroupModal({ group, onClose, onSave }) {
           )}
           <p className="form-note full">Reference URL is fetched when Content is empty, then refreshed once per day by the backend.</p>
         </div>
-        <ModalFooter onClose={onClose} />
+        <ModalFooter onClose={onClose} submitting={submitting} />
       </form>
     </Modal>
   );
 }
 
 function AccessRuleModal({ rule, sites, ipGroups, onClose, onSave }) {
+  const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState(() => ({
     ...defaultAccessRule,
     ...(rule || {}),
@@ -3142,14 +3316,20 @@ function AccessRuleModal({ rule, sites, ipGroups, onClose, onSave }) {
     });
   }
 
-  function submit(event) {
+  async function submit(event) {
     event.preventDefault();
+    if (submitting) return;
     const hasCondition = form.conditionGroups.some((group) => group.conditions.some((condition) => String(condition.content || '').trim()));
     if (!hasCondition) {
       window.alert('Add at least one condition.');
       return;
     }
-    onSave(form);
+    setSubmitting(true);
+    try {
+      await onSave(form);
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -3250,13 +3430,14 @@ function AccessRuleModal({ rule, sites, ipGroups, onClose, onSave }) {
           )}
           <CheckboxField label="Enabled" checked={boolValue(form.enabled)} onChange={(checked) => update('enabled', checked)} />
         </div>
-        <ModalFooter onClose={onClose} />
+        <ModalFooter onClose={onClose} submitting={submitting} />
       </form>
     </Modal>
   );
 }
 
 function RuleModal({ rule, sites, onClose, onSave }) {
+  const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState(() => ({
     ...defaultRule,
     ...(rule || {}),
@@ -3268,9 +3449,20 @@ function RuleModal({ rule, sites, onClose, onSave }) {
     setForm((current) => ({ ...current, [name]: value }));
   }
 
+  async function submit(event) {
+    event.preventDefault();
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      await onSave(form);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   return (
     <Modal title={rule ? 'Edit Rule' : 'Add Rule'} onClose={onClose}>
-      <form onSubmit={(event) => { event.preventDefault(); onSave(form); }}>
+      <form onSubmit={submit}>
         <div className="form-grid">
           <TextField label="Name" value={form.name} onChange={(value) => update('name', value)} required />
           <SelectField label="Site" value={form.siteId} onChange={(value) => update('siteId', value)} options={siteOptions} />
@@ -3282,13 +3474,14 @@ function RuleModal({ rule, sites, onClose, onSave }) {
           <TextAreaField label="Description" value={form.description} onChange={(value) => update('description', value)} />
           <SelectField label="Enabled" value={form.enabled} onChange={(value) => update('enabled', value)} options={['true', 'false']} />
         </div>
-        <ModalFooter onClose={onClose} />
+        <ModalFooter onClose={onClose} submitting={submitting} />
       </form>
     </Modal>
   );
 }
 
 function UserModal({ user, onClose, onSave }) {
+  const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState(() => ({
     ...defaultUser,
     ...(user || {}),
@@ -3302,13 +3495,19 @@ function UserModal({ user, onClose, onSave }) {
     setForm((current) => ({ ...current, [name]: value }));
   }
 
-  function submit(event) {
+  async function submit(event) {
     event.preventDefault();
+    if (submitting) return;
     if (!user && form.password.length < 10) {
       window.alert('Password must be at least 10 characters.');
       return;
     }
-    onSave(form);
+    setSubmitting(true);
+    try {
+      await onSave(form);
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -3325,7 +3524,7 @@ function UserModal({ user, onClose, onSave }) {
             <CheckboxField label="Generate new Google Authenticator secret" checked={form.resetTotp} onChange={(checked) => update('resetTotp', checked)} />
           )}
         </div>
-        <ModalFooter onClose={onClose} />
+        <ModalFooter onClose={onClose} submitting={submitting} />
       </form>
     </Modal>
   );
@@ -3474,11 +3673,13 @@ function DomainChipField({ label, value, onChange, placeholder = 'Support multip
   );
 }
 
-function ModalFooter({ onClose }) {
+function ModalFooter({ onClose, submitting = false, submitText = 'Save', pendingText = 'Saving...' }) {
   return (
     <div className="modal-footer">
-      <button type="button" className="tool-button" onClick={onClose}>Cancel</button>
-      <button className="tool-button primary"><Save size={18} /> Save</button>
+      <button type="button" className="tool-button" onClick={onClose} disabled={submitting}>Cancel</button>
+      <LoadingButton pending={submitting} pendingText={pendingText} className="tool-button primary">
+        <Save size={18} /> {submitText}
+      </LoadingButton>
     </div>
   );
 }

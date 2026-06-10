@@ -250,11 +250,20 @@ h2 {
   justify-content: center;
   gap: 8px;
   min-height: 36px;
+  min-width: 36px;
   padding: 0 12px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #fff;
   color: var(--text);
+}
+
+.tool-button:disabled,
+.icon-button:disabled,
+.table-action:disabled,
+.defense-button:disabled,
+.under-attack-button:disabled {
+  pointer-events: none;
 }
 
 .tool-button.primary {
@@ -554,6 +563,10 @@ h2 {
 }
 
 .defense-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   width: 100%;
   min-height: 30px;
   border: 1px solid var(--line);
@@ -1087,6 +1100,8 @@ td {
 .switch span {
   position: absolute;
   inset: 0;
+  display: grid;
+  place-items: center;
   border-radius: 999px;
   background: #c3ccd7;
   transition: 0.16s;
@@ -1110,6 +1125,20 @@ td {
 
 .switch input:checked + span::after {
   transform: translateX(18px);
+}
+
+.switch.pending span {
+  background: #9aa8b7;
+}
+
+.switch.pending span::after {
+  opacity: 0.32;
+}
+
+.switch .switch-spinner {
+  position: relative;
+  z-index: 1;
+  color: #fff;
 }
 
 .filters {
