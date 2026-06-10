@@ -1113,6 +1113,7 @@ function DashboardView({ data }) {
   const qpsTimeline = stats.qpsTimeline || [];
   const qpsValue = Number(stats.qps ?? qpsTimeline[qpsTimeline.length - 1]?.qps ?? 0);
   const requestsMax = Math.max(0, ...timeline.map((point) => Number(point.total || 0)));
+  const blockedMax = Math.max(0, ...timeline.map((point) => Number(point.blocked || 0)));
   const trafficWindow = timeline.reduce((totals, point) => ({
     total: totals.total + Number(point.total || 0),
     protected: totals.protected + Number(point.protected ?? (Number(point.blocked || 0) + Number(point.challenged || 0))),
@@ -1199,6 +1200,13 @@ function DashboardView({ data }) {
             <span className="traffic-max">Max <strong>{formatCompact(requestsMax)}</strong></span>
           </div>
           <RequestsStatusChart points={timeline} />
+        </section>
+        <section className="panel traffic-widget dashboard-blocking-panel">
+          <div className="traffic-widget-heading">
+            <h2>Blocking Status</h2>
+            <span className="traffic-max">Max <strong>{formatCompact(blockedMax)}</strong></span>
+          </div>
+          <RequestsStatusChart points={timeline} valueKey="blocked" tone="blocking" />
         </section>
       </div>
     </>
@@ -1854,16 +1862,16 @@ function QpsBars({ points = [] }) {
   );
 }
 
-function RequestsStatusChart({ points = [] }) {
+function RequestsStatusChart({ points = [], valueKey = 'total', tone = 'requests' }) {
   const displayPoints = padSeries(points, 24, { total: 0 });
   const width = 360;
   const height = 166;
-  const values = displayPoints.map((point) => Number(point.total || 0));
+  const values = displayPoints.map((point) => Number(point[valueKey] || 0));
   const path = smoothLinePath(values, width, height);
   const areaPath = `${path} L ${width} ${height - 14} L 0 ${height - 14} Z`;
 
   return (
-    <svg className="request-status-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Requests status chart">
+    <svg className={`request-status-chart ${tone}`} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Traffic status chart">
       {[28, 60, 92, 124, 152].map((y) => <line key={y} x1="0" y1={y} x2={width} y2={y} />)}
       <path className="request-status-area" d={areaPath} />
       <path className="request-status-line" d={path} />
