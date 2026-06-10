@@ -1,0 +1,998 @@
+from __future__ import annotations
+
+import json
+import re
+import threading
+import uuid
+import ipaddress
+from collections import Counter
+from copy import deepcopy
+from datetime import datetime
+from pathlib import Path
+from urllib.parse import urlparse
+
+from .defaults import BUILTIN_RULES, DEFAULT_SETTINGS, create_default_state, utc_now
+
+
+ACTIONS = {"allow", "block", "monitor"}
+MATCHERS = {"regex", "contains", "equals"}
+MODES = {"block", "monitor"}
+TARGETS = {"all", "url", "headers", "body", "method", "ip"}
+SEVERITIES = {"low", "medium", "high", "critical"}
+ACCESS_ACTIONS = {"allow", "deny", "monitor"}
+ACL_ACTIONS = {"allow", "block", "challenge_v1", "monitor"}
+APPLICATION_TYPES = {"reverse_proxy", "static_files", "redirect"}
+
+
+class StoreError(Exception):
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
+class Store:
+    def __init__(self, file_path: str | Path):
+        self.file_path = Path(file_path)
+        self.state: dict | None = None
+        self.lock = threading.RLock()
+
+    def init(self) -> None:
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if not self.file_path.exists():
+            self.state = create_default_state()
+            self.persist()
+            return
+
+        with self.file_path.open("r", encoding="utf-8") as handle:
+            self.state = normalize_state(json.load(handle))
+
+        changed = False
+        now = utc_now()
+        existing = {rule["id"] for rule in self.state["rules"]}
+        for rule in BUILTIN_RULES:
+            if rule["id"] not in existing:
+                self.state["rules"].append({**deepcopy(rule), "createdAt": now, "updatedAt": now})
+                changed = True
+
+        if not self.state["ipGroups"]:
+            self.state["ipGroups"].append(
+                {
+                    "id": "ipgroup-local",
+                    "name": "Local addresses",
+                    "description": "Loopback addresses useful for local testing.",
+                    "items": ["127.0.0.1/32", "::1/128"],
+                    "enabled": True,
+                    "createdAt": now,
+                    "updatedAt": now,
+                }
+            )
+            changed = True
+
+        if changed:
+            self.persist()
+
+    def get_state(self) -> dict:
+        with self.lock:
+            return deepcopy(self._state())
+
+    def persist(self) -> None:
+        with self.lock:
+            payload = json.dumps(self._state(), indent=2, ensure_ascii=True)
+            tmp_path = self.file_path.with_suffix(f"{self.file_path.suffix}.tmp")
+            tmp_path.write_text(payload, encoding="utf-8")
+            tmp_path.replace(self.file_path)
+
+    def upsert_site(self, payload: dict, site_id: str | None = None) -> dict:
+        with self.lock:
+            now = utc_now()
+            site = normalize_site_input(payload, site_id or payload.get("id"), now)
+            sites = self._state()["sites"]
+            index = find_index(sites, site["id"])
+
+            if index >= 0:
+                site["createdAt"] = sites[index].get("createdAt", now)
+                sites[index] = {**sites[index], **site, "updatedAt": now}
+                saved = sites[index]
+            else:
+                site["createdAt"] = now
+                site["updatedAt"] = now
+                sites.append(site)
+                saved = site
+
+            self.persist()
+            return deepcopy(saved)
+
+    def delete_site(self, site_id: str) -> None:
+        with self.lock:
+            before = len(self._state()["sites"])
+            self._state()["sites"] = [site for site in self._state()["sites"] if site["id"] != site_id]
+            if len(self._state()["sites"]) == before:
+                raise StoreError(404, "Site not found")
+            self.persist()
+
+    def upsert_rule(self, payload: dict, rule_id: str | None = None) -> dict:
+        with self.lock:
+            now = utc_now()
+            rules = self._state()["rules"]
+            existing = next((rule for rule in rules if rule["id"] == (rule_id or payload.get("id"))), None)
+            rule = normalize_rule_input(payload, rule_id or payload.get("id"), now, existing)
+            index = find_index(rules, rule["id"])
+
+            if index >= 0:
+                rule["createdAt"] = rules[index].get("createdAt", now)
+                rules[index] = {**rules[index], **rule, "updatedAt": now}
+                saved = rules[index]
+            else:
+                rule["createdAt"] = now
+                rule["updatedAt"] = now
+                rules.append(rule)
+                saved = rule
+
+            self.persist()
+            return deepcopy(saved)
+
+    def delete_rule(self, rule_id: str) -> None:
+        with self.lock:
+            rule = next((item for item in self._state()["rules"] if item["id"] == rule_id), None)
+            if not rule:
+                raise StoreError(404, "Rule not found")
+            if rule.get("builtin"):
+                raise StoreError(400, "Built-in rules can be disabled but not deleted")
+
+            self._state()["rules"] = [item for item in self._state()["rules"] if item["id"] != rule_id]
+            self.persist()
+
+    def upsert_certificate(self, payload: dict, certificate_id: str | None = None) -> dict:
+        with self.lock:
+            now = utc_now()
+            certificate = normalize_certificate_input(payload, certificate_id or payload.get("id"), now)
+            certificates = self._state()["certificates"]
+            index = find_index(certificates, certificate["id"])
+
+            if index >= 0:
+                certificate["createdAt"] = certificates[index].get("createdAt", now)
+                certificates[index] = {**certificates[index], **certificate, "updatedAt": now}
+                saved = certificates[index]
+            else:
+                certificate["createdAt"] = now
+                certificate["updatedAt"] = now
+                certificates.append(certificate)
+                saved = certificate
+
+            self.persist()
+            return deepcopy(saved)
+
+    def delete_certificate(self, certificate_id: str) -> None:
+        with self.lock:
+            before = len(self._state()["certificates"])
+            self._state()["certificates"] = [
+                certificate for certificate in self._state()["certificates"] if certificate["id"] != certificate_id
+            ]
+            if len(self._state()["certificates"]) == before:
+                raise StoreError(404, "Certificate not found")
+
+            for site in self._state()["sites"]:
+                tls = site.get("tls") or {}
+                if tls.get("certificateId") == certificate_id:
+                    tls["certificateId"] = ""
+                    tls["enabled"] = False
+                    site["tls"] = tls
+
+            self.persist()
+
+    def upsert_ip_group(self, payload: dict, group_id: str | None = None) -> dict:
+        with self.lock:
+            now = utc_now()
+            group = normalize_ip_group_input(payload, group_id or payload.get("id"), now)
+            groups = self._state()["ipGroups"]
+            index = find_index(groups, group["id"])
+
+            if index >= 0:
+                group["createdAt"] = groups[index].get("createdAt", now)
+                groups[index] = {**groups[index], **group, "updatedAt": now}
+                saved = groups[index]
+            else:
+                group["createdAt"] = now
+                group["updatedAt"] = now
+                groups.append(group)
+                saved = group
+
+            self.persist()
+            return deepcopy(saved)
+
+    def delete_ip_group(self, group_id: str) -> None:
+        with self.lock:
+            before = len(self._state()["ipGroups"])
+            self._state()["ipGroups"] = [group for group in self._state()["ipGroups"] if group["id"] != group_id]
+            if len(self._state()["ipGroups"]) == before:
+                raise StoreError(404, "IP group not found")
+
+            for rule in self._state()["accessRules"]:
+                rule["ipGroupIds"] = [item for item in rule.get("ipGroupIds", []) if item != group_id]
+
+            self.persist()
+
+    def upsert_access_rule(self, payload: dict, access_rule_id: str | None = None) -> dict:
+        with self.lock:
+            now = utc_now()
+            rule = normalize_access_rule_input(payload, access_rule_id or payload.get("id"), now)
+            rules = self._state()["accessRules"]
+            index = find_index(rules, rule["id"])
+
+            if index >= 0:
+                rule["createdAt"] = rules[index].get("createdAt", now)
+                rules[index] = {**rules[index], **rule, "updatedAt": now}
+                saved = rules[index]
+            else:
+                rule["createdAt"] = now
+                rule["updatedAt"] = now
+                rules.append(rule)
+                saved = rule
+
+            self.persist()
+            return deepcopy(saved)
+
+    def delete_access_rule(self, access_rule_id: str) -> None:
+        with self.lock:
+            before = len(self._state()["accessRules"])
+            self._state()["accessRules"] = [rule for rule in self._state()["accessRules"] if rule["id"] != access_rule_id]
+            if len(self._state()["accessRules"]) == before:
+                raise StoreError(404, "Access rule not found")
+            self.persist()
+
+    def add_log(self, entry: dict) -> None:
+        with self.lock:
+            retention = int(self._state()["settings"].get("logRetention") or DEFAULT_SETTINGS["logRetention"])
+            self._state()["logs"].insert(0, entry)
+            del self._state()["logs"][retention:]
+            self.persist()
+
+    def get_logs(self, limit: int = 200) -> list[dict]:
+        with self.lock:
+            return deepcopy(self._state()["logs"][:limit])
+
+    def clear_logs(self) -> None:
+        with self.lock:
+            self._state()["logs"] = []
+            self.persist()
+
+    def get_stats(self) -> dict:
+        with self.lock:
+            return build_stats(self._state())
+
+    def _state(self) -> dict:
+        if self.state is None:
+            raise RuntimeError("Store.init() must be called before use")
+        return self.state
+
+
+def resolve_data_file(root_dir: Path) -> Path:
+    configured = Path(__import__("os").environ.get("DATA_FILE", "./data/state.json"))
+    return configured if configured.is_absolute() else root_dir / configured
+
+
+def normalize_state(state: dict) -> dict:
+    settings = {
+        **deepcopy(DEFAULT_SETTINGS),
+        **(state.get("settings") or {}),
+        "rateLimit": {
+            **DEFAULT_SETTINGS["rateLimit"],
+            **((state.get("settings") or {}).get("rateLimit") or {}),
+        },
+    }
+    return {
+        "version": 1,
+        "settings": settings,
+        "sites": [normalize_stored_site(site) for site in state.get("sites", [])],
+        "rules": [normalize_stored_rule(rule) for rule in state.get("rules", [])],
+        "certificates": [normalize_stored_certificate(certificate) for certificate in state.get("certificates", [])],
+        "ipGroups": [normalize_stored_ip_group(group) for group in state.get("ipGroups", [])],
+        "accessRules": [normalize_stored_access_rule(rule) for rule in state.get("accessRules", [])],
+        "logs": state.get("logs", []) if isinstance(state.get("logs"), list) else [],
+    }
+
+
+def normalize_stored_site(site: dict) -> dict:
+    now = utc_now()
+    tls = normalize_tls(site.get("tls"))
+    application_type = normalize_application_type(site.get("applicationType") or site.get("application_type"))
+    upstreams = normalize_upstreams(
+        site.get("upstreams") or site.get("origin") or ("http://127.0.0.1:9090" if application_type == "reverse_proxy" else ""),
+        required=application_type == "reverse_proxy",
+    )
+    listen = normalize_listen(site.get("listen") or infer_listen_from_ports(site.get("ports"), tls))
+    ports = normalize_ports(site.get("ports"), listen, tls)
+    proxy = normalize_proxy_config(site.get("proxy"), tls, site.get("redirectStatusCode") or site.get("redirect_status_code"))
+    enabled_value = site.get("enabled") if "enabled" in site else site.get("is_enabled")
+    redirect = normalize_redirect_config(site.get("redirect"), proxy)
+    return {
+        "id": str(site.get("id") or create_id("site")),
+        "name": str(site.get("name") or site.get("comment") or "Untitled site"),
+        "hostnames": normalize_hostnames(site.get("hostnames") or site.get("server_names") or ["*"]),
+        "applicationType": application_type,
+        "origin": upstreams[0] if upstreams else "",
+        "upstreams": upstreams,
+        "ports": ports,
+        "listen": listen,
+        "redirectStatusCode": proxy["redirectStatusCode"],
+        "tls": tls,
+        "proxy": proxy,
+        "redirect": redirect,
+        "static": normalize_static_config(site.get("static")),
+        "acl": normalize_acl_config(site.get("acl"), site.get("acl_enabled")),
+        "features": normalize_site_features(site.get("features")),
+        "mode": site.get("mode") if site.get("mode") in MODES else "block",
+        "enabled": normalize_bool(enabled_value, False),
+        "createdAt": site.get("createdAt") or now,
+        "updatedAt": site.get("updatedAt") or now,
+    }
+
+
+def normalize_stored_rule(rule: dict) -> dict:
+    now = utc_now()
+    return {
+        "id": str(rule.get("id") or create_id("rule")),
+        "name": str(rule.get("name") or "Untitled rule"),
+        "description": str(rule.get("description") or ""),
+        "builtin": bool(rule.get("builtin")),
+        "enabled": bool(rule.get("enabled")),
+        "siteId": str(rule.get("siteId") or "*"),
+        "matcher": rule.get("matcher") if rule.get("matcher") in MATCHERS else "regex",
+        "target": rule.get("target") if rule.get("target") in TARGETS else "all",
+        "pattern": str(rule.get("pattern") or ""),
+        "action": rule.get("action") if rule.get("action") in ACTIONS else "block",
+        "severity": rule.get("severity") if rule.get("severity") in SEVERITIES else "medium",
+        "createdAt": rule.get("createdAt") or now,
+        "updatedAt": rule.get("updatedAt") or now,
+    }
+
+
+def normalize_stored_certificate(certificate: dict) -> dict:
+    now = utc_now()
+    return {
+        "id": str(certificate.get("id") or create_id("cert")),
+        "name": str(certificate.get("name") or "Untitled certificate"),
+        "source": normalize_certificate_source(certificate.get("source")),
+        "domains": normalize_domain_list(certificate.get("domains")),
+        "email": str(certificate.get("email") or ""),
+        "autoRenew": certificate.get("autoRenew") is not False,
+        "renewBeforeDays": normalize_positive_int(certificate.get("renewBeforeDays"), 30),
+        "status": str(certificate.get("status") or "ready"),
+        "lastMessage": str(certificate.get("lastMessage") or ""),
+        "certFile": normalize_file_reference(certificate.get("certFile") or certificate.get("cert_file") or ""),
+        "keyFile": normalize_file_reference(certificate.get("keyFile") or certificate.get("key_file") or ""),
+        "createdAt": certificate.get("createdAt") or now,
+        "updatedAt": certificate.get("updatedAt") or now,
+    }
+
+
+def normalize_stored_ip_group(group: dict) -> dict:
+    now = utc_now()
+    return {
+        "id": str(group.get("id") or create_id("ipgroup")),
+        "name": str(group.get("name") or "Untitled IP group"),
+        "description": str(group.get("description") or ""),
+        "referenceUrl": normalize_reference_url(group.get("referenceUrl") or group.get("reference") or "", strict=False),
+        "items": normalize_ip_items(group.get("items")),
+        "lastSyncedAt": str(group.get("lastSyncedAt") or ""),
+        "lastSyncStatus": str(group.get("lastSyncStatus") or ""),
+        "lastSyncMessage": str(group.get("lastSyncMessage") or ""),
+        "enabled": group.get("enabled") is not False,
+        "createdAt": group.get("createdAt") or now,
+        "updatedAt": group.get("updatedAt") or now,
+    }
+
+
+def normalize_stored_access_rule(rule: dict) -> dict:
+    now = utc_now()
+    return {
+        "id": str(rule.get("id") or create_id("access")),
+        "name": str(rule.get("name") or "Untitled access rule"),
+        "description": str(rule.get("description") or ""),
+        "enabled": rule.get("enabled") is not False,
+        "siteId": str(rule.get("siteId") or "*"),
+        "action": normalize_access_action(rule.get("action")),
+        "ipGroupIds": normalize_id_list(rule.get("ipGroupIds")),
+        "ips": normalize_ip_items(rule.get("ips")),
+        "methods": normalize_string_list(rule.get("methods"), uppercase=True),
+        "uriPatterns": normalize_string_list(rule.get("uriPatterns")),
+        "hostPatterns": normalize_string_list(rule.get("hostPatterns")),
+        "userAgentPatterns": normalize_string_list(rule.get("userAgentPatterns")),
+        "createdAt": rule.get("createdAt") or now,
+        "updatedAt": rule.get("updatedAt") or now,
+    }
+
+
+def normalize_site_input(payload: dict, site_id: str | None, now: str) -> dict:
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise StoreError(400, "Site name is required")
+
+    tls = normalize_tls(payload.get("tls"))
+    application_type = normalize_application_type(payload.get("applicationType") or payload.get("application_type"))
+    upstreams = normalize_upstreams(
+        payload.get("upstreams") or payload.get("origin"),
+        required=application_type == "reverse_proxy",
+    )
+    listen = normalize_listen(payload.get("listen") or infer_listen_from_ports(payload.get("ports"), tls))
+    ports = normalize_ports(payload.get("ports"), listen, tls)
+    proxy = normalize_proxy_config(payload.get("proxy"), tls, payload.get("redirectStatusCode"))
+    redirect = normalize_redirect_config(payload.get("redirect"), proxy, required=application_type == "redirect")
+
+    return {
+        "id": site_id or create_id("site"),
+        "name": name,
+        "hostnames": normalize_hostnames(payload.get("hostnames")),
+        "applicationType": application_type,
+        "origin": upstreams[0] if upstreams else "",
+        "upstreams": upstreams,
+        "ports": ports,
+        "listen": listen,
+        "redirectStatusCode": proxy["redirectStatusCode"],
+        "tls": tls,
+        "proxy": proxy,
+        "redirect": redirect,
+        "static": normalize_static_config(payload.get("static")),
+        "acl": normalize_acl_config(payload.get("acl")),
+        "features": normalize_site_features(payload.get("features")),
+        "mode": payload.get("mode") if payload.get("mode") in MODES else "block",
+        "enabled": payload.get("enabled") is not False,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def normalize_certificate_input(payload: dict, certificate_id: str | None, now: str) -> dict:
+    name = str(payload.get("name") or "").strip()
+    source = normalize_certificate_source(payload.get("source"))
+    cert_file = normalize_file_reference(payload.get("certFile") or payload.get("cert_file") or "")
+    key_file = normalize_file_reference(payload.get("keyFile") or payload.get("key_file") or "")
+    domains = normalize_domain_list(payload.get("domains"))
+    email = str(payload.get("email") or "").strip()
+
+    if not name:
+        raise StoreError(400, "Certificate name is required")
+    if not cert_file or not key_file:
+        raise StoreError(400, "Certificate and key files are required")
+    if source == "certbot":
+        if not domains:
+            raise StoreError(400, "At least one domain is required for certbot certificates")
+        if "@" not in email:
+            raise StoreError(400, "A valid email address is required for certbot certificates")
+
+    return {
+        "id": certificate_id or create_id("cert"),
+        "name": name,
+        "source": source,
+        "domains": domains,
+        "email": email,
+        "autoRenew": payload.get("autoRenew") is not False,
+        "renewBeforeDays": normalize_positive_int(payload.get("renewBeforeDays"), 30),
+        "status": str(payload.get("status") or "ready"),
+        "lastMessage": str(payload.get("lastMessage") or ""),
+        "certFile": cert_file,
+        "keyFile": key_file,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def normalize_ip_group_input(payload: dict, group_id: str | None, now: str) -> dict:
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise StoreError(400, "IP group name is required")
+    items = payload.get("items")
+    if items is None and "content" in payload:
+        items = payload.get("content")
+
+    return {
+        "id": group_id or create_id("ipgroup"),
+        "name": name,
+        "description": str(payload.get("description") or ""),
+        "referenceUrl": normalize_reference_url(payload.get("referenceUrl") or payload.get("reference") or ""),
+        "items": normalize_ip_items(items),
+        "lastSyncedAt": str(payload.get("lastSyncedAt") or ""),
+        "lastSyncStatus": str(payload.get("lastSyncStatus") or ""),
+        "lastSyncMessage": str(payload.get("lastSyncMessage") or ""),
+        "enabled": payload.get("enabled") is not False,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def normalize_access_rule_input(payload: dict, rule_id: str | None, now: str) -> dict:
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise StoreError(400, "Access rule name is required")
+
+    rule = {
+        "id": rule_id or create_id("access"),
+        "name": name,
+        "description": str(payload.get("description") or ""),
+        "enabled": payload.get("enabled") is not False,
+        "siteId": str(payload.get("siteId") or "*"),
+        "action": normalize_access_action(payload.get("action")),
+        "ipGroupIds": normalize_id_list(payload.get("ipGroupIds")),
+        "ips": normalize_ip_items(payload.get("ips")),
+        "methods": normalize_string_list(payload.get("methods"), uppercase=True),
+        "uriPatterns": normalize_string_list(payload.get("uriPatterns")),
+        "hostPatterns": normalize_string_list(payload.get("hostPatterns")),
+        "userAgentPatterns": normalize_string_list(payload.get("userAgentPatterns")),
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+    if not any([rule["ipGroupIds"], rule["ips"], rule["methods"], rule["uriPatterns"], rule["hostPatterns"], rule["userAgentPatterns"]]):
+        raise StoreError(400, "Access rule needs at least one condition")
+
+    return rule
+
+
+def normalize_rule_input(payload: dict, rule_id: str | None, now: str, existing: dict | None) -> dict:
+    name = str(payload.get("name") or "").strip()
+    matcher = payload.get("matcher") if payload.get("matcher") in MATCHERS else "regex"
+    pattern = str(payload.get("pattern") or "").strip()
+
+    if not name:
+        raise StoreError(400, "Rule name is required")
+    if not pattern:
+        raise StoreError(400, "Rule pattern is required")
+    if matcher == "regex":
+        try:
+            re.compile(pattern, re.IGNORECASE)
+        except re.error:
+            raise StoreError(400, "Rule regex pattern is invalid") from None
+
+    return {
+        "id": rule_id or create_id("rule"),
+        "name": name,
+        "description": str(payload.get("description") or ""),
+        "builtin": bool((existing or {}).get("builtin") or payload.get("builtin")),
+        "enabled": payload.get("enabled") is not False,
+        "siteId": str(payload.get("siteId") or "*"),
+        "matcher": matcher,
+        "target": payload.get("target") if payload.get("target") in TARGETS else "all",
+        "pattern": pattern,
+        "action": payload.get("action") if payload.get("action") in ACTIONS else "block",
+        "severity": payload.get("severity") if payload.get("severity") in SEVERITIES else "medium",
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def normalize_hostnames(hostnames) -> list[str]:
+    if isinstance(hostnames, list):
+        values = hostnames
+    else:
+        values = re.split(r"[\s,]+", str(hostnames or ""))
+
+    normalized = []
+    for value in values:
+        item = str(value).strip().lower()
+        if not item:
+            continue
+        item = re.sub(r"^https?://", "", item).split("/")[0]
+        if item.startswith("[") and "]" in item:
+            item = item[1:].split("]")[0]
+        else:
+            item = item.split(":")[0]
+        if item:
+            normalized.append(item)
+
+    return list(dict.fromkeys(normalized or ["*"]))
+
+
+def normalize_origin(origin: str | None) -> str:
+    parsed = urlparse(str(origin or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise StoreError(400, "Origin must be a valid http or https URL")
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def normalize_upstreams(upstreams, required: bool = True) -> list[str]:
+    values = normalize_string_list(upstreams)
+    normalized = [normalize_origin(value) for value in values]
+    if required and not normalized:
+        raise StoreError(400, "At least one upstream origin is required")
+    return list(dict.fromkeys(normalized))
+
+
+def normalize_application_type(value) -> str:
+    item = str(value or "reverse_proxy").lower().replace("-", "_")
+    if item in {"reverse", "proxy", "reverseproxy"}:
+        item = "reverse_proxy"
+    if item in {"static", "static_file", "staticfiles"}:
+        item = "static_files"
+    return item if item in APPLICATION_TYPES else "reverse_proxy"
+
+
+def normalize_redirect_config(value, proxy: dict | None = None, required: bool = False) -> dict:
+    source = value if isinstance(value, dict) else {}
+    address = normalize_redirect_address(source.get("address") or source.get("url") or "", required=required)
+    status_code = normalize_redirect_status(source.get("statusCode") or source.get("status_code") or (proxy or {}).get("redirectStatusCode") or 301)
+    return {
+        "statusCode": status_code,
+        "address": address,
+    }
+
+
+def normalize_redirect_address(value, required: bool = False) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        if required:
+            raise StoreError(400, "Redirect address is required")
+        return ""
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise StoreError(400, "Redirect address must be a valid http or https URL")
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def normalize_static_config(value) -> dict:
+    source = value if isinstance(value, dict) else {}
+    return {
+        "root": normalize_file_reference(source.get("root") or source.get("path") or ""),
+    }
+
+
+def normalize_listen(value) -> int:
+    try:
+        listen = int(value or 8080)
+    except (TypeError, ValueError):
+        listen = 8080
+    if listen < 1 or listen > 65535:
+        raise StoreError(400, "Listen port must be between 1 and 65535")
+    return listen
+
+
+def normalize_tls(value) -> dict:
+    source = value if isinstance(value, dict) else {}
+    return {
+        "enabled": normalize_bool(source.get("enabled"), False),
+        "certificateId": str(source.get("certificateId") or ""),
+        "redirectHttp": normalize_bool(source.get("redirectHttp"), False),
+        "httpListen": normalize_listen(source.get("httpListen") or 80),
+        "http2": normalize_bool(source.get("http2"), True),
+    }
+
+
+def infer_listen_from_ports(ports, tls: dict) -> int:
+    preferred_ssl = normalize_bool(tls.get("enabled"), False)
+    fallback = 443 if preferred_ssl else 8080
+    values = normalize_string_list(ports)
+    parsed_tokens = []
+    for value in values:
+        parsed = parse_port_token(value, strict=False)
+        if parsed:
+            parsed_tokens.append(parsed)
+    for port, is_ssl in parsed_tokens:
+        if is_ssl == preferred_ssl:
+            return port
+    return parsed_tokens[0][0] if parsed_tokens else fallback
+
+
+def normalize_ports(ports, listen: int, tls: dict) -> list[str]:
+    values = normalize_string_list(ports)
+    if not values:
+        if normalize_bool(tls.get("enabled"), False):
+            if normalize_bool(tls.get("redirectHttp"), False):
+                return [str(normalize_listen(tls.get("httpListen") or 80)), f"{listen}_ssl"]
+            return [f"{listen}_ssl"]
+        return [str(listen)]
+    return list(dict.fromkeys(format_port_token(*parse_port_token(value)) for value in values))
+
+
+def parse_port_token(value, strict: bool = True) -> tuple[int, bool] | None:
+    item = str(value or "").strip().lower()
+    if not item:
+        return None
+    is_ssl = item.endswith("_ssl")
+    port_value = item[:-4] if is_ssl else item
+    if not re.match(r"^\d+$", port_value):
+        if strict:
+            raise StoreError(400, f"Invalid port token: {value}")
+        return None
+    port = int(port_value)
+    if port < 1 or port > 65535:
+        if strict:
+            raise StoreError(400, "Port must be between 1 and 65535")
+        return None
+    return port, is_ssl
+
+
+def format_port_token(port: int, is_ssl: bool) -> str:
+    return f"{port}_ssl" if is_ssl else str(port)
+
+
+def normalize_proxy_config(value, tls: dict, redirect_status_code=None) -> dict:
+    source = value if isinstance(value, dict) else {}
+    force_https = normalize_bool(proxy_value(source, "forceHttps", "force_https"), normalize_bool(tls.get("redirectHttp"), False))
+    return {
+        "forceHttps": force_https,
+        "redirectStatusCode": normalize_redirect_status(
+            redirect_status_code if redirect_status_code is not None else proxy_value(source, "redirectStatusCode", "redirect_status_code")
+        ),
+        "hsts": normalize_bool(proxy_value(source, "hsts"), normalize_bool(tls.get("enabled"), False)),
+        "hstsMaxAge": str(proxy_value(source, "hstsMaxAge", "hsts_max_age") or "15768000"),
+        "gzip": normalize_bool(proxy_value(source, "gzip"), True),
+        "brotli": normalize_bool(proxy_value(source, "brotli", "br"), False),
+        "http2": normalize_bool(proxy_value(source, "http2"), normalize_bool(tls.get("http2"), True)),
+        "ipv6": normalize_bool(proxy_value(source, "ipv6"), False),
+        "resetXff": normalize_bool(proxy_value(source, "resetXff", "reset_xff"), True),
+        "defaultServer": normalize_bool(proxy_value(source, "defaultServer", "default_server"), False),
+        "strictHost": normalize_bool(proxy_value(source, "strictHost", "strict_host"), False),
+        "accessLog": normalize_bool(proxy_value(source, "accessLog", "access_log"), True),
+        "hostHeader": normalize_proxy_header(proxy_value(source, "hostHeader", "host") or "$http_host"),
+        "xForwardedProto": normalize_proxy_header(proxy_value(source, "xForwardedProto", "xfp") or "$scheme"),
+        "xForwardedHost": normalize_proxy_header(proxy_value(source, "xForwardedHost", "xfh") or "$http_host"),
+        "proxySslServerName": normalize_bool(proxy_value(source, "proxySslServerName", "proxy_ssl_server_name"), True),
+    }
+
+
+def proxy_value(source: dict, *keys):
+    for key in keys:
+        if key not in source:
+            continue
+        value = source.get(key)
+        if isinstance(value, dict) and "value" in value:
+            return value.get("value")
+        return value
+    return None
+
+
+def normalize_proxy_header(value) -> str:
+    header = str(value or "").strip()
+    if not header:
+        return ""
+    return header.replace("\x00", "").replace(";", "").replace("{", "").replace("}", "").replace("\n", " ")
+
+
+def normalize_redirect_status(value) -> int:
+    try:
+        status = int(value or 301)
+    except (TypeError, ValueError):
+        status = 301
+    if status == 0:
+        return 0
+    return status if status in {301, 302, 307, 308} else 301
+
+
+def normalize_acl_config(value, enabled_value=None) -> dict:
+    source = value if isinstance(value, dict) else {}
+    enabled = normalize_bool(source.get("enabled"), normalize_bool(enabled_value, True))
+    return {
+        "enabled": enabled,
+        "accessLimit": normalize_acl_limit(
+            source.get("accessLimit") or source.get("access_limit"),
+            {"enabled": True, "period": 10, "count": 200, "action": "challenge_v1", "blockMin": 60},
+        ),
+        "attackLimit": normalize_acl_limit(
+            source.get("attackLimit") or source.get("attack_limit"),
+            {"enabled": True, "period": 60, "count": 10, "action": "block", "blockMin": 30},
+        ),
+        "errorLimit": normalize_acl_limit(
+            source.get("errorLimit") or source.get("error_limit"),
+            {"enabled": True, "period": 10, "count": 10, "action": "block", "blockMin": 30, "statusCodes": ["403", "404"]},
+            include_status_codes=True,
+        ),
+    }
+
+
+def normalize_acl_limit(value, defaults: dict, include_status_codes: bool = False) -> dict:
+    source = value if isinstance(value, dict) else {}
+    limit = {
+        "enabled": normalize_bool(source.get("enabled"), defaults["enabled"]),
+        "period": normalize_positive_int(source.get("period"), defaults["period"]),
+        "count": normalize_positive_int(source.get("count"), defaults["count"]),
+        "action": normalize_acl_action(source.get("action") or defaults["action"]),
+        "blockMin": normalize_positive_int(source.get("blockMin") or source.get("block_min"), defaults["blockMin"]),
+    }
+    if include_status_codes:
+        limit["statusCodes"] = normalize_status_codes(source.get("statusCodes") or source.get("status_codes") or defaults["statusCodes"])
+    return limit
+
+
+def normalize_acl_action(value) -> str:
+    action = str(value or "block").lower()
+    return action if action in ACL_ACTIONS else "block"
+
+
+def normalize_status_codes(values) -> list[str]:
+    codes = []
+    for value in normalize_string_list(values):
+        try:
+            code = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 100 <= code <= 599:
+            codes.append(str(code))
+    return list(dict.fromkeys(codes or ["403", "404"]))
+
+
+def normalize_bool(value, fallback: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return fallback
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "off"}:
+            return False
+        return fallback
+    return bool(value)
+
+
+def normalize_site_features(value) -> dict:
+    source = value if isinstance(value, dict) else {}
+    return {
+        "httpFlood": normalize_bool(source.get("httpFlood"), True),
+        "botProtection": normalize_bool(source.get("botProtection"), True),
+        "auth": normalize_bool(source.get("auth"), False),
+        "attacks": normalize_bool(source.get("attacks"), True),
+    }
+
+
+def normalize_file_reference(value) -> str:
+    item = str(value or "").strip().replace("\\", "/")
+    item = item.replace("\x00", "").replace(";", "").replace("{", "").replace("}", "")
+    return item
+
+
+def normalize_certificate_source(value) -> str:
+    source = str(value or "upload").lower()
+    return source if source in {"upload", "certbot"} else "upload"
+
+
+def normalize_domain_list(values) -> list[str]:
+    domains = []
+    for item in normalize_string_list(values):
+        domain = item.lower().strip().replace("https://", "").replace("http://", "").split("/")[0].split(":")[0]
+        if not domain:
+            continue
+        if not re.match(r"^(\*\.)?[a-z0-9][a-z0-9.-]*[a-z0-9]$", domain):
+            raise StoreError(400, f"Invalid domain: {item}") from None
+        domains.append(domain)
+    return list(dict.fromkeys(domains))
+
+
+def normalize_positive_int(value, fallback: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = fallback
+    return max(1, number)
+
+
+def normalize_ip_items(items) -> list[str]:
+    values = normalize_string_list(items)
+    normalized = []
+    for value in values:
+        value = str(value).split("#", 1)[0].strip()
+        if not value:
+            continue
+        try:
+            if "/" in value:
+                item = str(ipaddress.ip_network(value, strict=False))
+            else:
+                item = str(ipaddress.ip_address(value))
+        except ValueError:
+            raise StoreError(400, f"Invalid IP/CIDR entry: {value}") from None
+        normalized.append(item)
+    return list(dict.fromkeys(normalized))
+
+
+def normalize_reference_url(value, strict: bool = True) -> str:
+    item = str(value or "").strip().replace("\x00", "")
+    if not item:
+        return ""
+    parsed = urlparse(item)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        if strict:
+            raise StoreError(400, "Reference URL must be a valid http or https URL")
+        return ""
+    return item
+
+
+def normalize_string_list(values, uppercase: bool = False) -> list[str]:
+    if isinstance(values, list):
+        source = values
+    else:
+        source = re.split(r"[\n,]+", str(values or ""))
+    normalized = []
+    for value in source:
+        item = str(value).strip()
+        if not item:
+            continue
+        item = item.upper() if uppercase else item
+        normalized.append(item)
+    return list(dict.fromkeys(normalized))
+
+
+def normalize_id_list(values) -> list[str]:
+    return [item for item in normalize_string_list(values) if re.match(r"^[A-Za-z0-9_.:-]+$", item)]
+
+
+def normalize_access_action(value) -> str:
+    action = str(value or "deny").lower()
+    if action == "block":
+        action = "deny"
+    return action if action in ACCESS_ACTIONS else "deny"
+
+
+def build_stats(state: dict) -> dict:
+    logs = state.get("logs") or []
+    blocked = sum(1 for entry in logs if entry.get("verdict") == "block")
+    monitored = sum(1 for entry in logs if entry.get("verdict") == "monitor")
+    total = len(logs)
+
+    top_rules = Counter(
+        rule.get("name") or rule.get("id")
+        for entry in logs
+        for rule in entry.get("matchedRules", [])
+    )
+    top_sites = Counter(entry.get("siteName") or "Unmatched" for entry in logs)
+    status_groups = Counter(status_group(entry) for entry in logs)
+
+    return {
+        "total": total,
+        "blocked": blocked,
+        "monitored": monitored,
+        "allowed": max(total - blocked - monitored, 0),
+        "blockRate": round((blocked / total) * 100, 1) if total else 0,
+        "topRules": counter_items(top_rules),
+        "topSites": counter_items(top_sites),
+        "statusGroups": counter_items(status_groups),
+        "timeline": build_timeline(logs),
+    }
+
+
+def build_timeline(logs: list[dict]) -> list[dict]:
+    import time
+
+    bucket_ms = 5 * 60 * 1000
+    bucket_count = 24
+    now_ms = int(time.time() * 1000)
+    start_ms = now_ms - bucket_ms * (bucket_count - 1)
+    buckets = []
+    for index in range(bucket_count):
+        at = start_ms + bucket_ms * index
+        label = datetime.fromtimestamp(at / 1000).strftime("%H:%M")
+        buckets.append({"at": at, "label": label, "total": 0, "blocked": 0})
+
+    for entry in logs:
+        try:
+            at_ms = int(datetime.fromisoformat(str(entry.get("at")).replace("Z", "+00:00")).timestamp() * 1000)
+        except ValueError:
+            continue
+        if at_ms < start_ms:
+            continue
+        index = min(bucket_count - 1, max(0, (at_ms - start_ms) // bucket_ms))
+        buckets[index]["total"] += 1
+        if entry.get("verdict") == "block":
+            buckets[index]["blocked"] += 1
+
+    return buckets
+
+
+def status_group(entry: dict) -> str:
+    status = int(entry.get("upstreamStatus") or entry.get("statusCode") or 0)
+    return f"{status // 100}xx" if status else "n/a"
+
+
+def counter_items(counter: Counter) -> list[dict]:
+    return [{"name": name, "count": count} for name, count in counter.most_common(8)]
+
+
+def find_index(items: list[dict], item_id: str) -> int:
+    for index, item in enumerate(items):
+        if item.get("id") == item_id:
+            return index
+    return -1
+
+
+def create_id(prefix: str) -> str:
+    return f"{prefix}-{uuid.uuid4().hex[:8]}"
