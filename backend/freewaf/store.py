@@ -522,6 +522,9 @@ def normalize_stored_site(site: dict) -> dict:
     proxy = normalize_proxy_config(site.get("proxy"), tls, site.get("redirectStatusCode") or site.get("redirect_status_code"))
     enabled_value = site.get("enabled") if "enabled" in site else site.get("is_enabled")
     redirect = normalize_redirect_config(site.get("redirect"), proxy)
+    features = normalize_site_features(site.get("features"))
+    bot_protection = normalize_bot_protection_config(site.get("botProtection") or site.get("bot_protection"), features.get("botProtection"))
+    features["botProtection"] = bot_protection["enabled"]
     return {
         "id": str(site.get("id") or create_id("site")),
         "name": str(site.get("name") or site.get("comment") or "Untitled site"),
@@ -537,7 +540,8 @@ def normalize_stored_site(site: dict) -> dict:
         "redirect": redirect,
         "static": normalize_static_config(site.get("static")),
         "acl": normalize_acl_config(site.get("acl"), site.get("acl_enabled")),
-        "features": normalize_site_features(site.get("features")),
+        "features": features,
+        "botProtection": bot_protection,
         "mode": site.get("mode") if site.get("mode") in MODES else "block",
         "enabled": normalize_bool(enabled_value, False),
         "createdAt": site.get("createdAt") or now,
@@ -686,6 +690,9 @@ def normalize_site_input(payload: dict, site_id: str | None, now: str) -> dict:
     proxy = normalize_proxy_config(payload.get("proxy"), tls, payload.get("redirectStatusCode"))
     redirect = normalize_redirect_config(payload.get("redirect"), proxy, required=application_type == "redirect")
 
+    features = normalize_site_features(payload.get("features"))
+    bot_protection = normalize_bot_protection_config(payload.get("botProtection") or payload.get("bot_protection"), features.get("botProtection"))
+    features["botProtection"] = bot_protection["enabled"]
     return {
         "id": site_id or create_id("site"),
         "name": name,
@@ -701,7 +708,8 @@ def normalize_site_input(payload: dict, site_id: str | None, now: str) -> dict:
         "redirect": redirect,
         "static": normalize_static_config(payload.get("static")),
         "acl": normalize_acl_config(payload.get("acl")),
-        "features": normalize_site_features(payload.get("features")),
+        "features": features,
+        "botProtection": bot_protection,
         "mode": payload.get("mode") if payload.get("mode") in MODES else "block",
         "enabled": payload.get("enabled") is not False,
         "createdAt": now,
@@ -1156,6 +1164,37 @@ def normalize_site_features(value) -> dict:
         "botProtection": normalize_bool(source.get("botProtection"), True),
         "auth": normalize_bool(source.get("auth"), False),
         "attacks": normalize_bool(source.get("attacks"), True),
+    }
+
+
+def normalize_bot_protection_config(value, enabled_value=None) -> dict:
+    source = value if isinstance(value, dict) else {}
+    dynamic = source.get("dynamicProtection") or source.get("dynamic_protection")
+    dynamic = dynamic if isinstance(dynamic, dict) else {}
+    anti_replay = source.get("antiReplay") or source.get("anti_replay")
+    anti_replay = anti_replay if isinstance(anti_replay, dict) else {}
+
+    dynamic_html = normalize_bool(dynamic.get("html") if "html" in dynamic else source.get("htmlDynamicEncryption"), False)
+    dynamic_js = normalize_bool(dynamic.get("js") if "js" in dynamic else source.get("jsDynamicEncryption"), False)
+    dynamic_watermark = normalize_bool(dynamic.get("watermark") if "watermark" in dynamic else source.get("pictureDynamicWatermark"), False)
+    dynamic_enabled = normalize_bool(dynamic.get("enabled") if "enabled" in dynamic else source.get("dynamicProtectionEnabled"), any([dynamic_html, dynamic_js, dynamic_watermark]))
+    anti_bot = normalize_bool(source.get("antiBotChallenge") if "antiBotChallenge" in source else source.get("anti_bot_challenge"), normalize_bool(enabled_value, True))
+    replay_enabled = normalize_bool(anti_replay.get("enabled") if "enabled" in anti_replay else source.get("antiReplayEnabled"), False)
+    enabled = normalize_bool(source.get("enabled"), normalize_bool(enabled_value, True))
+    enabled = enabled and (anti_bot or dynamic_enabled or replay_enabled)
+
+    return {
+        "enabled": enabled,
+        "antiBotChallenge": anti_bot,
+        "dynamicProtection": {
+            "enabled": dynamic_enabled,
+            "html": dynamic_html,
+            "js": dynamic_js,
+            "watermark": dynamic_watermark,
+        },
+        "antiReplay": {
+            "enabled": replay_enabled,
+        },
     }
 
 

@@ -177,6 +177,36 @@ class StoreTests(unittest.TestCase):
         self.assertTrue(acl["waitingRoom"])
         self.assertEqual(acl["accessLimit"]["action"], "challenge_v1")
 
+    def test_bot_protection_options_are_normalized(self):
+        state = normalize_state(
+            {
+                "sites": [
+                    {
+                        "id": "site-demo",
+                        "name": "Demo",
+                        "hostnames": ["example.test"],
+                        "origin": "http://127.0.0.1:9090",
+                        "features": {"botProtection": True},
+                        "botProtection": {
+                            "antiBotChallenge": False,
+                            "dynamicProtection": {"enabled": True, "html": True, "js": False, "watermark": True},
+                            "antiReplay": {"enabled": True},
+                        },
+                    }
+                ],
+                "rules": [],
+            }
+        )
+
+        protection = state["sites"][0]["botProtection"]
+        self.assertTrue(protection["enabled"])
+        self.assertFalse(protection["antiBotChallenge"])
+        self.assertTrue(protection["dynamicProtection"]["enabled"])
+        self.assertTrue(protection["dynamicProtection"]["html"])
+        self.assertTrue(protection["dynamicProtection"]["watermark"])
+        self.assertTrue(protection["antiReplay"]["enabled"])
+        self.assertTrue(state["sites"][0]["features"]["botProtection"])
+
     def test_safeline_application_fields_are_normalized(self):
         state = normalize_state(
             {

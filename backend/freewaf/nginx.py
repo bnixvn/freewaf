@@ -100,11 +100,15 @@ def generate_nginx_common_blocks(state: dict) -> list[str]:
         "",
     ]
 
-    if any(site_features(site).get("botProtection") for site in enabled_sites):
+    if any(site_bot_protection(site).get("antiBotChallenge") for site in enabled_sites):
         blocks.extend(render_bot_detection_maps())
 
     if any_uses_challenge(enabled_sites):
         blocks.extend(render_challenge_maps())
+
+    bot_zones = render_bot_limit_zones(enabled_sites)
+    if bot_zones:
+        blocks.extend(bot_zones)
 
     rate_limit = state.get("settings", {}).get("rateLimit", {})
     uses_global_rate = any(
@@ -118,7 +122,7 @@ def generate_nginx_common_blocks(state: dict) -> list[str]:
     if acl_zones:
         blocks.extend(acl_zones)
 
-    if (rate_limit.get("enabled") and uses_global_rate) or acl_zones:
+    if (rate_limit.get("enabled") and uses_global_rate) or acl_zones or bot_zones:
         blocks.extend(["limit_req_status 429;", ""])
 
     access_maps = render_access_maps(state, enabled_access_rules)
@@ -330,6 +334,18 @@ def render_global_rate_limit_zones(rate_limit: dict) -> list[str]:
     ]
 
 
+def render_bot_limit_zones(sites: list[dict]) -> list[str]:
+    zones = []
+    for site in sites:
+        protection = site_bot_protection(site)
+        if not protection.get("antiReplay"):
+            continue
+        zones.append(
+            f"limit_req_zone \"$binary_remote_addr|$request_method|$request_uri|$http_user_agent\" zone={bot_replay_zone_name(site)}:10m rate=1r/s;"
+        )
+    return zones
+
+
 def render_geo_map(variable_name: str, items: list[str]) -> str:
     lines = [
         f"geo ${variable_name} {{",
@@ -441,6 +457,7 @@ def render_redirect_server(site: dict, state: dict, server_name: str, port: int,
         "            return 461;",
         "        }",
         *render_rate_limit(state, site),
+        *render_bot_replay_limit(site),
         f"        return {redirect_code} https://$host:{https_port}$request_uri;",
         "    }",
         "}",
@@ -627,6 +644,8 @@ def render_application_location(site: dict, state: dict, upstream_name: str, ups
         status = int(redirect.get("statusCode") or proxy.get("redirectStatusCode") or 301)
         return [
             *render_hsts_header(proxy, is_ssl),
+            *render_dynamic_protection_headers(site),
+            *render_bot_replay_limit(site),
             f"        return {status} {address}$request_uri;",
         ]
 
@@ -634,6 +653,8 @@ def render_application_location(site: dict, state: dict, upstream_name: str, ups
         root = static_root(site)
         return [
             *render_hsts_header(proxy, is_ssl),
+            *render_dynamic_protection_headers(site),
+            *render_bot_replay_limit(site),
             f"        root {nginx_path(root)};",
             "        try_files $uri $uri/ =404;",
         ]
@@ -649,8 +670,10 @@ def render_application_location(site: dict, state: dict, upstream_name: str, ups
         f"        proxy_set_header X-Forwarded-Host {proxy.get('xForwardedHost') or '$http_host'};",
         "        proxy_set_header X-FreeWAF $sfl_verdict;",
         *render_hsts_header(proxy, is_ssl),
+        *render_dynamic_protection_headers(site),
         *render_proxy_ssl(upstream_scheme, proxy),
         *render_rate_limit(state, site),
+        *render_bot_replay_limit(site),
         f"        proxy_pass {upstream_scheme}://{upstream_name};",
     ]
 
@@ -870,6 +893,32 @@ def render_hsts_header(proxy: dict, is_ssl: bool) -> list[str]:
     return [f"        add_header Strict-Transport-Security \"max-age={max_age};\" always;"]
 
 
+def render_dynamic_protection_headers(site: dict) -> list[str]:
+    dynamic = site_bot_protection(site).get("dynamicProtection") or {}
+    if not dynamic.get("enabled"):
+        return []
+    enabled_parts = [
+        name
+        for name, enabled in (
+            ("html", dynamic.get("html")),
+            ("js", dynamic.get("js")),
+            ("watermark", dynamic.get("watermark")),
+        )
+        if enabled
+    ]
+    value = ",".join(enabled_parts) or "on"
+    return [
+        f"        add_header X-FreeWAF-Dynamic-Protection \"{value}\" always;",
+        "        add_header Cache-Control \"no-transform\" always;",
+    ]
+
+
+def render_bot_replay_limit(site: dict) -> list[str]:
+    if not site_bot_protection(site).get("antiReplay"):
+        return []
+    return [f"        limit_req zone={bot_replay_zone_name(site)} burst=1 nodelay;"]
+
+
 def render_proxy_ssl(upstream_scheme: str, proxy: dict) -> list[str]:
     if upstream_scheme != "https" or not proxy.get("proxySslServerName"):
         return []
@@ -963,7 +1012,7 @@ def acl_limit_action(limit: dict | None) -> str:
 
 
 def any_uses_challenge(sites: list[dict]) -> bool:
-    return any(site_features(site).get("botProtection") or acl_limit_action(active_acl_access_limit(site)) == "challenge_v1" for site in sites)
+    return any(site_bot_protection(site).get("antiBotChallenge") or acl_limit_action(active_acl_access_limit(site)) == "challenge_v1" for site in sites)
 
 
 def nginx_acl_rate(limit: dict) -> str:
@@ -983,6 +1032,30 @@ def site_features(site: dict) -> dict:
         "auth": bool(features.get("auth")),
         "attacks": features.get("attacks") is not False,
     }
+
+
+def site_bot_protection(site: dict) -> dict:
+    features = site_features(site)
+    source = site.get("botProtection") if isinstance(site.get("botProtection"), dict) else {}
+    dynamic = source.get("dynamicProtection") if isinstance(source.get("dynamicProtection"), dict) else {}
+    anti_replay = source.get("antiReplay") if isinstance(source.get("antiReplay"), dict) else {}
+    enabled = features["botProtection"] and source.get("enabled") is not False
+    dynamic_enabled = enabled and bool(dynamic.get("enabled"))
+    return {
+        "enabled": enabled,
+        "antiBotChallenge": enabled and source.get("antiBotChallenge") is not False,
+        "dynamicProtection": {
+            "enabled": dynamic_enabled,
+            "html": dynamic_enabled and bool(dynamic.get("html")),
+            "js": dynamic_enabled and bool(dynamic.get("js")),
+            "watermark": dynamic_enabled and bool(dynamic.get("watermark")),
+        },
+        "antiReplay": enabled and bool(anti_replay.get("enabled")),
+    }
+
+
+def bot_replay_zone_name(site: dict) -> str:
+    return f"sfl_replay_{safe_identifier(site.get('id') or site.get('name') or 'site')}"
 
 
 def should_emit_rule_for_site(rule: dict, site: dict) -> bool:
@@ -1010,7 +1083,8 @@ def render_auth_feature(site: dict) -> list[str]:
 
 
 def render_bot_protection(site: dict) -> list[str]:
-    if not site_features(site).get("botProtection"):
+    protection = site_bot_protection(site)
+    if not protection.get("antiBotChallenge"):
         return []
 
     effect = "monitor" if site.get("mode") == "monitor" else "block"

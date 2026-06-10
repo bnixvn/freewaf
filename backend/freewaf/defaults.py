@@ -203,6 +203,19 @@ def create_default_state(now: str | None = None) -> dict:
                     "auth": False,
                     "attacks": True,
                 },
+                "botProtection": {
+                    "enabled": True,
+                    "antiBotChallenge": True,
+                    "dynamicProtection": {
+                        "enabled": False,
+                        "html": False,
+                        "js": False,
+                        "watermark": False,
+                    },
+                    "antiReplay": {
+                        "enabled": False,
+                    },
+                },
                 "mode": "block",
                 "enabled": True,
                 "createdAt": timestamp,

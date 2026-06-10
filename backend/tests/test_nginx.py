@@ -458,6 +458,35 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn('limit_req_zone "$remote_addr|$request_method|$http_user_agent" zone=freewaf_rate_fingerprint', config)
         self.assertNotIn("$request_method$request_uri$http_user_agent", config)
 
+    def test_bot_protection_options_gate_challenge_and_emit_replay(self):
+        state = make_state(
+            sites=[
+                {
+                    "id": "site-demo",
+                    "name": "Demo",
+                    "hostnames": ["localhost"],
+                    "origin": "http://127.0.0.1:9090",
+                    "listen": 8080,
+                    "mode": "block",
+                    "enabled": True,
+                    "features": {"httpFlood": False, "botProtection": True, "attacks": False},
+                    "botProtection": {
+                        "enabled": True,
+                        "antiBotChallenge": False,
+                        "dynamicProtection": {"enabled": True, "html": True, "js": False, "watermark": True},
+                        "antiReplay": {"enabled": True},
+                    },
+                }
+            ]
+        )
+        config = generate_nginx_config(state)
+
+        self.assertNotIn("map $http_user_agent $sfl_bad_bot_ua", config)
+        self.assertNotIn("Bot protection matched suspicious headers", config)
+        self.assertIn('limit_req_zone "$binary_remote_addr|$request_method|$request_uri|$http_user_agent" zone=sfl_replay_site_demo:10m rate=1r/s;', config)
+        self.assertIn("limit_req zone=sfl_replay_site_demo burst=1 nodelay;", config)
+        self.assertIn('add_header X-FreeWAF-Dynamic-Protection "html,watermark" always;', config)
+
     def test_acl_challenge_rate_limit_uses_cookie_aware_keys(self):
         state = make_state(
             sites=[

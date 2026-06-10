@@ -93,7 +93,7 @@ const defaultSite = {
 
 const siteFeatureLabels = {
   httpFlood: 'HTTP FLOOD',
-  botProtection: 'BOT PROTE...',
+  botProtection: 'BOT PROTECT',
   auth: 'AUTH',
   attacks: 'ATTACKS',
   acl: 'ACL'
@@ -457,7 +457,8 @@ export default function App() {
           botProtection: boolValue(site.featureBotProtection),
           auth: boolValue(site.featureAuth),
           attacks: boolValue(site.featureAttacks)
-        }
+        },
+        botProtection: botProtectPayloadFromConfig(site.botProtection, boolValue(site.featureBotProtection))
       };
       const id = payload.id;
       delete payload.id;
@@ -498,6 +499,27 @@ export default function App() {
       setModal(null);
       await loadState();
       showToast('HTTP Flood settings saved and Nginx reloaded');
+    } catch (error) {
+      showToast(error.message, true);
+    }
+  }
+
+  async function saveBotProtection(site, protection) {
+    try {
+      const currentFeatures = site.features || {};
+      await api(`/api/sites/${site.id}`, {
+        method: 'PATCH',
+        body: {
+          botProtection: protection,
+          features: {
+            ...currentFeatures,
+            botProtection: protection.enabled
+          }
+        }
+      });
+      setModal(null);
+      await loadState();
+      showToast('Bot Protect settings saved and Nginx reloaded');
     } catch (error) {
       showToast(error.message, true);
     }
@@ -743,6 +765,7 @@ export default function App() {
       savePanelSettings,
       saveUser,
       saveHttpFlood,
+      saveBotProtection,
       deleteUser,
       logsLoading,
       logResult,
@@ -831,6 +854,13 @@ export default function App() {
           settings={data?.settings || {}}
           onClose={() => setModal(null)}
           onSave={(flood) => saveHttpFlood(modal.site, flood)}
+        />
+      )}
+      {modal?.type === 'botProtect' && (
+        <BotProtectModal
+          site={modal.site}
+          onClose={() => setModal(null)}
+          onSave={(protection) => saveBotProtection(modal.site, protection)}
         />
       )}
       {modal?.type === 'rule' && (
@@ -1019,6 +1049,7 @@ function SitesView({ data, setModal, toggleSite, deleteSite }) {
             onDelete={() => deleteSite(site)}
             onToggle={(checked) => toggleSite(site, checked)}
             onConfigureFlood={() => setModal({ type: 'httpFlood', site })}
+            onConfigureBot={() => setModal({ type: 'botProtect', site })}
           />
         ))}
       </div>
@@ -1026,7 +1057,7 @@ function SitesView({ data, setModal, toggleSite, deleteSite }) {
   );
 }
 
-function ApplicationCard({ site, logs, onEdit, onDelete, onToggle, onConfigureFlood }) {
+function ApplicationCard({ site, logs, onEdit, onDelete, onToggle, onConfigureFlood, onConfigureBot }) {
   const features = normalizedSiteFeatures(site);
   const counters = siteCounters(site, logs);
   const domain = site.hostnames?.[0] || site.name;
@@ -1088,6 +1119,11 @@ function ApplicationCard({ site, logs, onEdit, onDelete, onToggle, onConfigureFl
           {Object.entries(siteFeatureLabels).map(([key, label]) => key === 'httpFlood' ? (
             <button className={`feature-chip feature-chip-button ${features[key] ? 'active' : ''}`} key={key} type="button" onClick={onConfigureFlood} title="Configure HTTP Flood">
               <SlidersHorizontal size={13} />
+              {label}
+            </button>
+          ) : key === 'botProtection' ? (
+            <button className={`feature-chip feature-chip-button ${features[key] ? 'active' : ''}`} key={key} type="button" onClick={onConfigureBot} title="Configure Bot Protect">
+              <ShieldCheck size={13} />
               {label}
             </button>
           ) : (
@@ -1741,6 +1777,86 @@ function HttpFloodModal({ site, settings, onClose, onSave }) {
         </div>
       </form>
     </Modal>
+  );
+}
+
+function BotProtectModal({ site, onClose, onSave }) {
+  const [form, setForm] = useState(() => botProtectFormFromSite(site));
+
+  function update(name, value) {
+    setForm((current) => ({ ...current, [name]: value }));
+  }
+
+  function submit(event) {
+    event.preventDefault();
+    onSave(botProtectPayload(form));
+  }
+
+  return (
+    <Modal title="BOT Protect" onClose={onClose} className="bot-protect-modal">
+      <form onSubmit={submit} className="bot-protect-form">
+        <div className="bot-control-row">
+          <span className="flood-accent" />
+          <strong>Anti-Bot Challenge</strong>
+          <Switch checked={boolValue(form.antiBotChallenge)} onChange={(checked) => update('antiBotChallenge', String(checked))} />
+          <Info size={16} />
+          <span className="muted">Automated browsers and suspicious client headers will be challenged or blocked.</span>
+        </div>
+
+        <div className="bot-control-row">
+          <span className="flood-accent" />
+          <strong>Dynamic Protection</strong>
+          <Info size={16} />
+          <span className="muted">Marks protected responses and prepares native-safe dynamic protection directives.</span>
+        </div>
+
+        <div className="bot-option-panel">
+          <BotOptionCheckbox
+            label="HTML dynamic encryption"
+            checked={boolValue(form.dynamicHtml)}
+            onChange={(checked) => update('dynamicHtml', String(checked))}
+            badge="Recommend"
+          />
+          <BotOptionCheckbox
+            label="JS dynamic encryption"
+            checked={boolValue(form.dynamicJs)}
+            onChange={(checked) => update('dynamicJs', String(checked))}
+            note="Consumes a lot. Please test it thoroughly"
+          />
+          <BotOptionCheckbox
+            label="Picture dynamic watermark"
+            checked={boolValue(form.dynamicWatermark)}
+            onChange={(checked) => update('dynamicWatermark', String(checked))}
+            note="Consumes a lot. Please test it thoroughly"
+          />
+        </div>
+
+        <div className="bot-control-row">
+          <span className="flood-accent" />
+          <strong>Anti-Replay</strong>
+          <ShieldCheck size={16} />
+          <Switch checked={boolValue(form.antiReplay)} onChange={(checked) => update('antiReplay', String(checked))} />
+          <Info size={16} />
+          <span className="muted">Repeated captured requests with the same IP, URI, method, and User-Agent are rate limited.</span>
+        </div>
+
+        <div className="modal-footer">
+          <button type="button" className="tool-button" onClick={onClose}>Cancel</button>
+          <button className="tool-button primary">Save</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function BotOptionCheckbox({ label, checked, onChange, badge = '', note = '' }) {
+  return (
+    <label className="bot-option-checkbox">
+      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      <span>{label}</span>
+      {badge && <b>{badge}</b>}
+      {note && <small>{note}</small>}
+    </label>
   );
 }
 
@@ -3013,6 +3129,65 @@ function floodActionPhrase(action, blockMin) {
   if (action === 'challenge_v1') return `require Anti-Bot challenge when accessing again within the next ${minutes} minutes`;
   if (action === 'monitor') return 'be monitored without blocking';
   return `be automatically blocked ${minutes} minutes`;
+}
+
+function botProtectFormFromSite(site) {
+  const config = botProtectPayloadFromConfig(site?.botProtection, site?.features?.botProtection !== false);
+  return {
+    antiBotChallenge: String(config.antiBotChallenge),
+    dynamicHtml: String(config.dynamicProtection.html),
+    dynamicJs: String(config.dynamicProtection.js),
+    dynamicWatermark: String(config.dynamicProtection.watermark),
+    antiReplay: String(config.antiReplay.enabled)
+  };
+}
+
+function botProtectPayload(form) {
+  const antiBotChallenge = boolValue(form.antiBotChallenge);
+  const dynamicHtml = boolValue(form.dynamicHtml);
+  const dynamicJs = boolValue(form.dynamicJs);
+  const dynamicWatermark = boolValue(form.dynamicWatermark);
+  const antiReplay = boolValue(form.antiReplay);
+  const dynamicEnabled = dynamicHtml || dynamicJs || dynamicWatermark;
+  return {
+    enabled: antiBotChallenge || dynamicEnabled || antiReplay,
+    antiBotChallenge,
+    dynamicProtection: {
+      enabled: dynamicEnabled,
+      html: dynamicHtml,
+      js: dynamicJs,
+      watermark: dynamicWatermark
+    },
+    antiReplay: {
+      enabled: antiReplay
+    }
+  };
+}
+
+function botProtectPayloadFromConfig(config, enabledFallback = true) {
+  const source = config || {};
+  const dynamic = source.dynamicProtection || {};
+  const replay = source.antiReplay || {};
+  const antiBotChallenge = source.antiBotChallenge ?? enabledFallback;
+  const html = Boolean(dynamic.html);
+  const js = Boolean(dynamic.js);
+  const watermark = Boolean(dynamic.watermark);
+  const antiReplay = Boolean(replay.enabled);
+  const dynamicEnabled = Boolean(dynamic.enabled) && (html || js || watermark);
+  const enabled = source.enabled ?? (enabledFallback && (antiBotChallenge || dynamicEnabled || antiReplay));
+  return {
+    enabled: Boolean(enabled),
+    antiBotChallenge: Boolean(antiBotChallenge),
+    dynamicProtection: {
+      enabled: dynamicEnabled,
+      html,
+      js,
+      watermark
+    },
+    antiReplay: {
+      enabled: antiReplay
+    }
+  };
 }
 
 function normalizedSiteFeatures(site) {

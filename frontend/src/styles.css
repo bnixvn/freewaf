@@ -809,6 +809,10 @@ td {
   width: min(940px, 100%);
 }
 
+.modal.bot-protect-modal {
+  width: min(920px, 100%);
+}
+
 .modal-header,
 .modal-footer {
   display: flex;
@@ -1527,6 +1531,69 @@ td {
   grid-column: 1 / -1;
 }
 
+.bot-protect-form {
+  display: grid;
+  gap: 24px;
+  padding: 18px 22px 22px;
+}
+
+.bot-control-row {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 12px;
+}
+
+.bot-control-row > strong {
+  min-width: 140px;
+}
+
+.bot-control-row svg {
+  flex: 0 0 auto;
+  color: #1e9dff;
+}
+
+.bot-control-row .switch {
+  flex: 0 0 auto;
+}
+
+.bot-option-panel {
+  display: grid;
+  gap: 14px;
+  padding: 20px 18px;
+  border-radius: 4px;
+  background: #f5f7f8;
+}
+
+.bot-option-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 26px;
+  color: var(--text);
+}
+
+.bot-option-checkbox input {
+  width: 16px;
+  height: 16px;
+}
+
+.bot-option-checkbox span {
+  min-width: 164px;
+}
+
+.bot-option-checkbox b {
+  padding: 3px 10px;
+  border: 1px solid var(--teal);
+  border-radius: 4px;
+  color: var(--teal);
+  font-size: 12px;
+}
+
+.bot-option-checkbox small {
+  color: #a0a7ae;
+}
+
 .nginx-modal-body {
   display: grid;
   gap: 12px;
@@ -1684,6 +1751,7 @@ td {
   }
 
   .flood-control-row,
+  .bot-control-row,
   .flood-section-heading,
   .flood-limit-top {
     align-items: flex-start;
@@ -1691,13 +1759,24 @@ td {
   }
 
   .flood-section,
-  .http-flood-form {
+  .http-flood-form,
+  .bot-protect-form {
     padding-left: 16px;
     padding-right: 16px;
   }
 
   .flood-limit-card {
     grid-template-columns: 1fr;
+  }
+
+  .bot-option-checkbox {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .bot-option-checkbox span {
+    min-width: 0;
   }
 
   .search {
