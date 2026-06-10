@@ -36,6 +36,45 @@ const viewTitles = {
   settings: 'Panel Security'
 };
 
+const emptyStats = {
+  total: 0,
+  blocked: 0,
+  challenged: 0,
+  protected: 0,
+  monitored: 0,
+  allowed: 0,
+  blockRate: 0,
+  protectedRate: 0,
+  botTypes: [],
+  botTypeCount: 0,
+  botRequestTotal: 0,
+  botChallengeTotal: 0,
+  topCountries: [],
+  blockedCountries: [],
+  countryCount: 0,
+  blockedCountryCount: 0,
+  protectedCountryCount: 0,
+  geoAttribution: null,
+  topRules: [],
+  topSites: [],
+  statusGroups: [],
+  timeline: []
+};
+
+function createEmptyData() {
+  return {
+    sites: [],
+    rules: [],
+    accessRules: [],
+    ipGroups: [],
+    certificates: [],
+    users: [],
+    logs: [],
+    settings: { panel: {} },
+    stats: { ...emptyStats, timeline: [] }
+  };
+}
+
 const defaultSite = {
   name: '',
   applicationType: 'reverse_proxy',
@@ -264,11 +303,13 @@ export default function App() {
     setLoading(true);
     try {
       const status = await api('/api/auth/status');
-      setAuth({ loading: false, ...status });
       if (status.authenticated) {
+        setData((current) => current || createEmptyData());
+        setAuth({ loading: false, ...status });
         await loadState(false, false);
       } else {
         setData(null);
+        setAuth({ loading: false, ...status });
       }
     } catch (error) {
       setAuth({ loading: false, authenticated: false, setupRequired: false, user: null });
@@ -335,6 +376,7 @@ export default function App() {
     setLoading(true);
     try {
       const status = await api('/api/auth/setup', { method: 'POST', body: payload });
+      setData(createEmptyData());
       setAuth({ loading: false, ...status });
       await loadState(false, false);
       if (status.user?.totpSetupSecret) {
@@ -352,6 +394,7 @@ export default function App() {
     setLoading(true);
     try {
       const status = await api('/api/auth/login', { method: 'POST', body: payload });
+      setData(createEmptyData());
       setAuth({ loading: false, ...status });
       await loadState(false, false);
       showToast('Signed in');
@@ -1050,8 +1093,7 @@ function AuthScreen({ mode, loading, onSubmit }) {
 }
 
 function DashboardView({ data, resetStatistics }) {
-  const { stats, logs } = data;
-  const recentProtections = logs.filter((entry) => ['block', 'challenge', 'monitor'].includes(entry.verdict)).slice(0, 6);
+  const stats = { ...emptyStats, ...(data?.stats || {}) };
   const topRule = stats.topRules[0]?.name || 'None';
   const timeline = stats.timeline || [];
   const protectedTotal = Number(stats.protected ?? (Number(stats.blocked || 0) + Number(stats.challenged || 0)));
@@ -1063,8 +1105,14 @@ function DashboardView({ data, resetStatistics }) {
   const trafficWindow = timeline.reduce((totals, point) => ({
     total: totals.total + Number(point.total || 0),
     protected: totals.protected + Number(point.protected ?? (Number(point.blocked || 0) + Number(point.challenged || 0))),
-    challenged: totals.challenged + Number(point.challenged || 0)
-  }), { total: 0, protected: 0, challenged: 0 });
+    challenged: totals.challenged + Number(point.challenged || 0),
+    blocked: totals.blocked + Number(point.blocked || 0)
+  }), { total: 0, protected: 0, challenged: 0, blocked: 0 });
+  const currentPoint = timeline[timeline.length - 1] || null;
+  const currentTotal = Number(currentPoint?.total || 0);
+  const currentProtected = Number(currentPoint?.protected ?? (Number(currentPoint?.blocked || 0) + Number(currentPoint?.challenged || 0)));
+  const currentChallenged = Number(currentPoint?.challenged || 0);
+  const currentBlocked = Number(currentPoint?.blocked || 0);
 
   return (
     <>
@@ -1078,12 +1126,12 @@ function DashboardView({ data, resetStatistics }) {
         <Metric label="Protected" value={formatCompact(protectedTotal)} note={`${stats.protectedRate ?? stats.blockRate}% challenge or block rate`} />
         <Metric label="Challenges" value={formatCompact(challengedTotal)} note={`${formatCompact(blockedTotal)} hard blocks`} />
         <Metric label="Bot Types" value={formatCompact(stats.botTypeCount)} note={`${formatCompact(stats.botRequestTotal)} bot-like requests`} />
-        <Metric label="Blocked Countries" value={formatCompact(stats.blockedCountryCount)} note={`${formatCompact(stats.protectedCountryCount)} protected countries`} />
+        <Metric label="Blocked Requests" value={formatCompact(blockedTotal)} note={`${stats.blockRate ?? 0}% hard block rate`} />
       </div>
       <div className="dashboard-insights">
         <section className="panel insight-panel">
           <div className="panel-heading">
-            <h2>Bot Types</h2>
+            <h2>Top 10 Bot Types</h2>
             <span className="pill">{formatCompact(stats.botChallengeTotal)} challenged</span>
           </div>
           <InsightRows
@@ -1097,7 +1145,7 @@ function DashboardView({ data, resetStatistics }) {
         </section>
         <section className="panel insight-panel">
           <div className="panel-heading">
-            <h2>Countries</h2>
+            <h2>Top 10 Country Requests</h2>
             <span className="pill">{formatCompact(stats.countryCount)} seen</span>
           </div>
           <InsightRows
@@ -1117,7 +1165,7 @@ function DashboardView({ data, resetStatistics }) {
         </section>
         <section className="panel insight-panel">
           <div className="panel-heading">
-            <h2>Blocked Countries</h2>
+            <h2>Top 10 Countries With Blocks</h2>
             <span className="pill">{formatCompact(stats.blockedCountryCount)}</span>
           </div>
           <InsightRows
@@ -1140,6 +1188,7 @@ function DashboardView({ data, resetStatistics }) {
               <span className="pill">{formatCompact(trafficWindow.total)} requests</span>
               <span className="pill">{formatCompact(trafficWindow.protected)} protected</span>
               <span className="pill">{formatCompact(trafficWindow.challenged)} challenged</span>
+              <span className="pill">{formatCompact(trafficWindow.blocked)} blocked</span>
               <span className="pill">5 minute buckets</span>
             </div>
           </div>
@@ -1147,11 +1196,30 @@ function DashboardView({ data, resetStatistics }) {
         </section>
         <section className="panel">
           <div className="panel-heading">
-            <h2>Recent Protections</h2>
-            <span className="pill">{recentProtections.length}</span>
+            <h2>Current Traffic</h2>
+            <span className="pill">live bucket</span>
           </div>
-          <div className="incident-list">
-            {recentProtections.length ? recentProtections.map((entry) => <Incident key={entry.id} entry={entry} />) : <p className="muted">No protected requests recorded.</p>}
+          <div className="current-traffic">
+            <div className="current-traffic-main">
+              <span>Current access</span>
+              <strong>{formatCompact(currentTotal)}</strong>
+              <small>{currentPoint ? formatBucketRange(currentPoint) : 'Waiting for request data'}</small>
+            </div>
+            <CurrentTrafficChart points={timeline.slice(-12)} />
+            <div className="current-traffic-grid">
+              <div>
+                <span>Protected</span>
+                <strong>{formatCompact(currentProtected)}</strong>
+              </div>
+              <div>
+                <span>Challenged</span>
+                <strong>{formatCompact(currentChallenged)}</strong>
+              </div>
+              <div>
+                <span>Blocked</span>
+                <strong>{formatCompact(currentBlocked)}</strong>
+              </div>
+            </div>
           </div>
         </section>
       </div>
@@ -1759,6 +1827,32 @@ function Timeline({ points = [] }) {
             </div>
             <span className="bar-time">{showTick ? point.label : ''}</span>
           </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function CurrentTrafficChart({ points = [] }) {
+  const displayPoints = points.length
+    ? points.slice(-12)
+    : Array.from({ length: 12 }, (_, index) => ({ at: index, label: '', total: 0, blocked: 0, challenged: 0, protected: 0 }));
+  const max = Math.max(1, ...displayPoints.map((point) => Number(point.total || 0)));
+
+  return (
+    <div className="current-traffic-chart" aria-label="Current traffic chart">
+      {displayPoints.map((point, index) => {
+        const total = Number(point.total || 0);
+        const blocked = Number(point.blocked || 0);
+        const height = total ? Math.max(8, Math.round((total / max) * 100)) : 5;
+        const blockedHeight = total ? Math.round((blocked / total) * 100) : 0;
+        const title = `${point.label || 'Pending'}: ${formatCompact(total)} requests, ${formatCompact(blocked)} blocked`;
+        return (
+          <span className="current-traffic-bar" key={`${point.at}-${index}`} title={title}>
+            <span className={`current-traffic-fill ${total ? 'has-data' : ''}`} style={{ height: `${height}%` }}>
+              <span style={{ height: `${blockedHeight}%` }} />
+            </span>
+          </span>
         );
       })}
     </div>

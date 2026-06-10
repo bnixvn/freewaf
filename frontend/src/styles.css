@@ -677,6 +677,89 @@ h2 {
   font-size: 11px;
 }
 
+.current-traffic {
+  display: grid;
+  gap: 14px;
+}
+
+.current-traffic-main {
+  display: grid;
+  gap: 5px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.current-traffic-main span,
+.current-traffic-main small,
+.current-traffic-grid span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.current-traffic-main strong {
+  font-size: 42px;
+  line-height: 1;
+}
+
+.current-traffic-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 5px;
+  height: 92px;
+  padding: 2px 0;
+}
+
+.current-traffic-bar {
+  display: flex;
+  flex: 1;
+  align-items: flex-end;
+  min-width: 0;
+  height: 100%;
+  border-radius: 4px 4px 0 0;
+  background: #edf3f5;
+}
+
+.current-traffic-fill {
+  position: relative;
+  display: block;
+  width: 100%;
+  min-height: 5px;
+  overflow: hidden;
+  border-radius: inherit;
+  background: #d7e6e6;
+}
+
+.current-traffic-fill.has-data {
+  background: #9bd2c8;
+}
+
+.current-traffic-fill span {
+  position: absolute;
+  inset: auto 0 0;
+  display: block;
+  min-height: 0;
+  background: #de4b40;
+}
+
+.current-traffic-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.current-traffic-grid div {
+  min-width: 0;
+}
+
+.current-traffic-grid strong {
+  display: block;
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+  font-size: 18px;
+}
+
 .incident-list {
   display: grid;
   gap: 8px;
@@ -1906,6 +1989,10 @@ td {
   }
 
   .feature-toggle-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .current-traffic-grid {
     grid-template-columns: 1fr;
   }
 
