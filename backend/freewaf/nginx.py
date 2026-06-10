@@ -18,6 +18,14 @@ def nginx_output_file(root_dir: Path) -> Path:
     return configured if configured.is_absolute() else root_dir / configured
 
 
+def nginx_site_config_dir(root_dir: Path) -> Path:
+    configured = os.environ.get("NGINX_SITE_CONF_DIR", "").strip()
+    if configured:
+        path = Path(configured)
+        return path if path.is_absolute() else root_dir / path
+    return nginx_output_file(root_dir).parent / "sites"
+
+
 def nginx_access_log_file(root_dir: Path) -> Path:
     configured = Path(os.environ.get("NGINX_ACCESS_LOG", "./logs/freewaf_access.log"))
     return configured if configured.is_absolute() else root_dir / configured
@@ -46,6 +54,16 @@ def nginx_site_error_log_directive(site: dict) -> str:
 
 
 def generate_nginx_config(state: dict) -> str:
+    blocks = generate_nginx_common_blocks(state)
+    site_configs = render_domain_config_files(state)
+    if not site_configs:
+        blocks.append("# No enabled sites.")
+    else:
+        blocks.extend(site_configs.values())
+    return "\n\n".join(blocks) + "\n"
+
+
+def generate_nginx_common_blocks(state: dict) -> list[str]:
     enabled_sites = [site for site in state.get("sites", []) if site.get("enabled")]
     enabled_access_rules = [rule for rule in state.get("accessRules", []) if rule.get("enabled")]
     blocks = [
@@ -93,22 +111,41 @@ def generate_nginx_config(state: dict) -> str:
         blocks.extend(access_maps)
         blocks.append("")
 
-    if not enabled_sites:
-        blocks.append("# No enabled sites.")
-        return "\n".join(blocks) + "\n"
+    return blocks
 
+
+def render_domain_config_files(state: dict) -> dict[str, str]:
+    enabled_sites = [site for site in state.get("sites", []) if site.get("enabled")]
     certificates = {certificate["id"]: certificate for certificate in state.get("certificates", [])}
+    configs = {}
     for site in enabled_sites:
-        blocks.append(render_site_server(site, state, certificates))
-
-    return "\n\n".join(blocks) + "\n"
+        for hostname in site_hostnames(site):
+            filename = domain_config_filename(site, hostname)
+            configs[filename] = render_site_server(site, state, certificates, hostname)
+    return configs
 
 
 def write_nginx_config(root_dir: Path, state: dict) -> Path:
     output_file = nginx_output_file(root_dir)
+    site_config_dir = nginx_site_config_dir(root_dir)
+    site_configs = render_domain_config_files(state)
     output_file.parent.mkdir(parents=True, exist_ok=True)
+    site_config_dir.mkdir(parents=True, exist_ok=True)
     nginx_site_log_dir(root_dir).mkdir(parents=True, exist_ok=True)
-    output_file.write_text(generate_nginx_config(state), encoding="utf-8")
+
+    for stale_file in site_config_dir.glob("*.conf"):
+        if stale_file.is_file():
+            stale_file.unlink()
+
+    for filename, content in site_configs.items():
+        (site_config_dir / filename).write_text(content, encoding="utf-8")
+
+    blocks = generate_nginx_common_blocks(state)
+    if site_configs:
+        blocks.append(f"include {nginx_path(str(site_config_dir / '*.conf'))};")
+    else:
+        blocks.append("# No enabled sites.")
+    output_file.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
     return output_file
 
 
@@ -135,6 +172,7 @@ def run_nginx_command(command: str | None) -> dict:
 def nginx_runtime(root_dir: Path) -> dict:
     return {
         "outputFile": str(nginx_output_file(root_dir)),
+        "siteConfigDir": str(nginx_site_config_dir(root_dir)),
         "accessLog": str(nginx_access_log_file(root_dir)),
         "siteLogDir": str(nginx_site_log_dir(root_dir)),
         "certDir": str(nginx_cert_dir(root_dir)),
@@ -233,12 +271,26 @@ def render_geo_map(variable_name: str, items: list[str]) -> str:
     return "\n".join(lines)
 
 
-def render_site_server(site: dict, state: dict, certificates: dict[str, dict]) -> str:
-    server_name = " ".join(escape_server_name(name) for name in site.get("hostnames", ["_"]))
+def site_hostnames(site: dict) -> list[str]:
+    hostnames = site.get("hostnames") if isinstance(site.get("hostnames"), list) else []
+    values = [str(hostname).strip() for hostname in hostnames if str(hostname or "").strip()]
+    return values or ["_"]
+
+
+def domain_config_filename(site: dict, hostname: str) -> str:
+    site_id = safe_identifier(site.get("id") or site.get("name") or "site")
+    domain_id = safe_identifier(str(hostname or "_").replace("*.", "wildcard_").replace("*", "catchall"))
+    return f"{site_id}__{domain_id}.conf"
+
+
+def render_site_server(site: dict, state: dict, certificates: dict[str, dict], hostname: str | None = None) -> str:
+    hostnames = [hostname] if hostname else site_hostnames(site)
+    render_site = {**site, "hostnames": hostnames}
+    server_name = " ".join(escape_server_name(name) for name in hostnames)
     app_type = application_type(site)
     upstreams = site_upstreams(site)
     upstream_scheme = urlparse(upstreams[0]).scheme if upstreams else "http"
-    upstream_name = backend_name(site)
+    upstream_name = backend_name(site, hostname)
     tls = site.get("tls") or {}
     certificate = certificates.get(tls.get("certificateId"))
     has_tls = bool(tls.get("enabled") and certificate)
@@ -252,15 +304,15 @@ def render_site_server(site: dict, state: dict, certificates: dict[str, dict]) -
     first_https_port = https_ports[0] if https_ports else int(site.get("listen") or 443)
     if has_tls and proxy.get("forceHttps") and redirect_code:
         for port in http_ports or [int(tls.get("httpListen") or 80)]:
-            blocks.append(render_redirect_server(site, server_name, port, first_https_port, proxy, redirect_code))
+            blocks.append(render_redirect_server(render_site, server_name, port, first_https_port, proxy, redirect_code))
     else:
         for port in http_ports:
-            blocks.append(render_proxy_server(site, state, certificates, upstream_name, upstream_scheme, port, False, server_name, proxy))
+            blocks.append(render_proxy_server(render_site, state, certificates, upstream_name, upstream_scheme, port, False, server_name, proxy))
 
     if https_ports:
         if has_tls:
             for port in https_ports:
-                blocks.append(render_proxy_server(site, state, certificates, upstream_name, upstream_scheme, port, True, server_name, proxy))
+                blocks.append(render_proxy_server(render_site, state, certificates, upstream_name, upstream_scheme, port, True, server_name, proxy))
         else:
             blocks.append(
                 "\n".join(
@@ -272,7 +324,7 @@ def render_site_server(site: dict, state: dict, certificates: dict[str, dict]) -
             )
 
     if not blocks:
-        blocks.append(render_proxy_server(site, state, certificates, upstream_name, upstream_scheme, int(site.get("listen") or 8080), False, server_name, proxy))
+        blocks.append(render_proxy_server(render_site, state, certificates, upstream_name, upstream_scheme, int(site.get("listen") or 8080), False, server_name, proxy))
 
     return "\n\n".join(blocks)
 
@@ -486,8 +538,9 @@ def site_upstreams(site: dict) -> list[str]:
     return values or [str(site.get("origin") or "http://127.0.0.1:9090")]
 
 
-def backend_name(site: dict) -> str:
-    return f"backend_{safe_identifier(site.get('id') or site.get('name') or 'site')}"
+def backend_name(site: dict, hostname: str | None = None) -> str:
+    suffix = f"_{safe_identifier(hostname)}" if hostname else ""
+    return f"backend_{safe_identifier(site.get('id') or site.get('name') or 'site')}{suffix}"
 
 
 def site_ports(site: dict) -> list[tuple[int, bool]]:
@@ -1038,6 +1091,8 @@ def nginx_rate(rate_limit: dict) -> str:
 
 def escape_server_name(value: str) -> str:
     safe = str(value or "_").replace(";", "").replace("{", "").replace("}", "").strip()
+    if safe == "*":
+        return "_"
     return safe or "_"
 
 

@@ -213,7 +213,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 payload = self.read_payload()
                 if self.path == "/api/sites":
                     saved = store.upsert_site(payload)
-                    maybe_auto_write(store)
+                    apply_nginx_or_raise(store)
                     self.send_json(201, saved)
                     return
                 if self.path == "/api/rules":
@@ -223,7 +223,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     return
                 if self.path == "/api/certificates":
                     saved = store.upsert_certificate(prepare_certificate_payload(payload))
-                    maybe_auto_write(store)
+                    apply_nginx_or_raise(store)
                     self.send_json(201, saved)
                     return
                 if self.path == "/api/ip-groups":
@@ -335,7 +335,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                             return
                         payload = {**current, **payload}
                     saved = store.upsert_site(payload, item_id)
-                    maybe_auto_write(store)
+                    apply_nginx_or_raise(store)
                     self.send_json(200, saved)
                     return
 
@@ -359,7 +359,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                             return
                         payload = {**current, **payload}
                     saved = store.upsert_certificate(prepare_certificate_payload(payload, item_id), item_id)
-                    maybe_auto_write(store)
+                    apply_nginx_or_raise(store)
                     self.send_json(200, saved)
                     return
 

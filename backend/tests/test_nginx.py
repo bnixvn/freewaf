@@ -1,11 +1,14 @@
 import unittest
+import tempfile
+import os
 from pathlib import Path
 import sys
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from freewaf.defaults import BUILTIN_RULES, DEFAULT_SETTINGS
-from freewaf.nginx import generate_nginx_config
+from freewaf.nginx import generate_nginx_config, write_nginx_config
 
 
 def make_state(**overrides):
@@ -40,7 +43,7 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("listen 0.0.0.0:8080;", config)
         self.assertIn("server_name localhost;", config)
         self.assertIn("server 127.0.0.1:9090;", config)
-        self.assertIn("proxy_pass http://backend_site_demo;", config)
+        self.assertIn("proxy_pass http://backend_site_demo_localhost;", config)
         self.assertIn("location = /.safeline/forbidden_page", config)
 
     def test_generates_safe_http_defaults_without_sites(self):
@@ -50,6 +53,49 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("map $request_uri $sfl_reason {", config)
         self.assertIn("# No enabled sites.", config)
         self.assertNotIn("unknown \"sfl_verdict\"", config)
+
+    def test_writes_one_nginx_file_per_domain(self):
+        state = make_state(
+            sites=[
+                {
+                    "id": "site-shop",
+                    "name": "Shop",
+                    "hostnames": ["shop.example.test", "www.shop.example.test"],
+                    "origin": "http://127.0.0.1:9090",
+                    "ports": ["80"],
+                    "mode": "block",
+                    "enabled": True,
+                }
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root_dir = Path(directory)
+            with mock.patch.dict(os.environ, {"NGINX_OUTPUT_FILE": "nginx/generated/freewaf.conf"}, clear=False):
+                output_file = write_nginx_config(root_dir, state)
+
+            main_config = output_file.read_text(encoding="utf-8")
+            site_files = sorted((output_file.parent / "sites").glob("*.conf"))
+
+            self.assertIn("include ", main_config)
+            self.assertIn("/nginx/generated/sites/*.conf;", main_config.replace("\\", "/"))
+            self.assertEqual(len(site_files), 2)
+            self.assertTrue(any("shop_example_test" in file.name for file in site_files))
+            self.assertTrue(any("www_shop_example_test" in file.name for file in site_files))
+            self.assertTrue(any("server_name shop.example.test;" in file.read_text(encoding="utf-8") for file in site_files))
+            self.assertTrue(any("server_name www.shop.example.test;" in file.read_text(encoding="utf-8") for file in site_files))
+
+    def test_writing_nginx_config_removes_stale_domain_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root_dir = Path(directory)
+            with mock.patch.dict(os.environ, {"NGINX_OUTPUT_FILE": "nginx/generated/freewaf.conf"}, clear=False):
+                output_file = write_nginx_config(root_dir, make_state())
+                stale_file = output_file.parent / "sites" / "stale.example.conf"
+                stale_file.write_text("server { server_name stale.example.test; }", encoding="utf-8")
+                write_nginx_config(root_dir, make_state(sites=[]))
+
+            self.assertFalse(stale_file.exists())
+            self.assertIn("# No enabled sites.", output_file.read_text(encoding="utf-8"))
 
     def test_generates_blocking_rule_for_builtin_sqli(self):
         config = generate_nginx_config(make_state())
@@ -205,7 +251,8 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("access_log ./logs/freewaf/accesslog_site_shop freewaf;", config)
         self.assertIn("add_header Strict-Transport-Security \"max-age=15768000;\" always;", config)
         self.assertIn("proxy_ssl_server_name on;", config)
-        self.assertIn("proxy_pass https://backend_site_shop;", config)
+        self.assertIn("proxy_pass https://backend_site_shop_shop_example_test;", config)
+        self.assertIn("proxy_pass https://backend_site_shop_www_shop_example_test;", config)
 
     def test_redirect_application_returns_configured_address(self):
         state = make_state(

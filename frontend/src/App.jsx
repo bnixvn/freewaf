@@ -298,96 +298,100 @@ export default function App() {
   }
 
   async function saveSite(site) {
-    const applicationType = site.applicationType || 'reverse_proxy';
-    const upstreams = normalizeUpstreamsPayload(site.upstreams || site.origin, applicationType);
-    const ports = normalizeListeningPortsPayload(site.listeningPorts || site.ports);
-    const primaryPort = Number(String(ports[0] || '8080').replace('_ssl', '')) || 8080;
-    const hasHttpPort = ports.some((port) => !String(port).endsWith('_ssl'));
-    const hasHttpsPort = ports.some((port) => String(port).endsWith('_ssl'));
-    const forceHttps = applicationType === 'reverse_proxy' && hasHttpPort && hasHttpsPort;
-    const payload = {
-      id: site.id,
-      name: site.name,
-      applicationType,
-      origin: upstreams[0] || site.origin || '',
-      upstreams,
-      ports,
-      enabled: boolValue(site.enabled),
-      listen: primaryPort,
-      hostnames: listFromText(site.hostnames, /[\s,]+/),
-      redirectStatusCode: Number(site.redirectStatusCode || 301),
-      redirect: {
-        statusCode: Number(site.redirectStatusCode || 301),
-        address: site.redirectAddress || ''
-      },
-      static: {
-        root: site.staticRoot || ''
-      },
-      tls: {
-        enabled: boolValue(site.tlsEnabled),
-        certificateId: site.certificateId || '',
-        redirectHttp: forceHttps,
-        httpListen: Number(site.httpListen || 80),
-        http2: boolValue(site.http2)
-      },
-      proxy: {
-        forceHttps,
+    try {
+      const applicationType = site.applicationType || 'reverse_proxy';
+      const upstreams = normalizeUpstreamsPayload(site.upstreams || site.origin, applicationType);
+      const ports = normalizeListeningPortsPayload(site.listeningPorts || site.ports);
+      const primaryPort = Number(String(ports[0] || '8080').replace('_ssl', '')) || 8080;
+      const hasHttpPort = ports.some((port) => !String(port).endsWith('_ssl'));
+      const hasHttpsPort = ports.some((port) => String(port).endsWith('_ssl'));
+      const forceHttps = applicationType === 'reverse_proxy' && hasHttpPort && hasHttpsPort;
+      const payload = {
+        id: site.id,
+        name: site.name,
+        applicationType,
+        origin: upstreams[0] || site.origin || '',
+        upstreams,
+        ports,
+        enabled: boolValue(site.enabled),
+        listen: primaryPort,
+        hostnames: listFromText(site.hostnames, /[\s,]+/),
         redirectStatusCode: Number(site.redirectStatusCode || 301),
-        hsts: boolValue(site.proxyHsts),
-        hstsMaxAge: String(site.proxyHstsMaxAge || '15768000'),
-        gzip: boolValue(site.proxyGzip),
-        brotli: boolValue(site.proxyBrotli),
-        http2: boolValue(site.http2),
-        resetXff: boolValue(site.proxyResetXff),
-        defaultServer: boolValue(site.proxyDefaultServer),
-        strictHost: boolValue(site.proxyStrictHost),
-        accessLog: boolValue(site.proxyAccessLog),
-        hostHeader: '$http_host',
-        xForwardedProto: '$scheme',
-        xForwardedHost: '$http_host',
-        proxySslServerName: boolValue(site.proxySslServerName)
-      },
-      acl: {
-        enabled: boolValue(site.aclEnabled),
-        accessLimit: {
-          enabled: boolValue(site.aclAccessEnabled),
-          period: Number(site.aclAccessPeriod || 10),
-          count: Number(site.aclAccessCount || 200),
-          action: site.aclAccessAction || 'challenge_v1',
-          blockMin: Number(site.aclAccessBlockMin || 60)
+        redirect: {
+          statusCode: Number(site.redirectStatusCode || 301),
+          address: site.redirectAddress || ''
         },
-        attackLimit: {
-          enabled: boolValue(site.aclAttackEnabled),
-          period: Number(site.aclAttackPeriod || 60),
-          count: Number(site.aclAttackCount || 10),
-          action: site.aclAttackAction || 'block',
-          blockMin: Number(site.aclAttackBlockMin || 30)
+        static: {
+          root: site.staticRoot || ''
         },
-        errorLimit: {
-          enabled: boolValue(site.aclErrorEnabled),
-          period: Number(site.aclErrorPeriod || 10),
-          count: Number(site.aclErrorCount || 10),
-          action: site.aclErrorAction || 'block',
-          blockMin: Number(site.aclErrorBlockMin || 30),
-          statusCodes: listFromText(site.aclErrorStatusCodes, /[\s,]+/)
+        tls: {
+          enabled: boolValue(site.tlsEnabled),
+          certificateId: site.certificateId || '',
+          redirectHttp: forceHttps,
+          httpListen: Number(site.httpListen || 80),
+          http2: boolValue(site.http2)
+        },
+        proxy: {
+          forceHttps,
+          redirectStatusCode: Number(site.redirectStatusCode || 301),
+          hsts: boolValue(site.proxyHsts),
+          hstsMaxAge: String(site.proxyHstsMaxAge || '15768000'),
+          gzip: boolValue(site.proxyGzip),
+          brotli: boolValue(site.proxyBrotli),
+          http2: boolValue(site.http2),
+          resetXff: boolValue(site.proxyResetXff),
+          defaultServer: boolValue(site.proxyDefaultServer),
+          strictHost: boolValue(site.proxyStrictHost),
+          accessLog: boolValue(site.proxyAccessLog),
+          hostHeader: '$http_host',
+          xForwardedProto: '$scheme',
+          xForwardedHost: '$http_host',
+          proxySslServerName: boolValue(site.proxySslServerName)
+        },
+        acl: {
+          enabled: boolValue(site.aclEnabled),
+          accessLimit: {
+            enabled: boolValue(site.aclAccessEnabled),
+            period: Number(site.aclAccessPeriod || 10),
+            count: Number(site.aclAccessCount || 200),
+            action: site.aclAccessAction || 'challenge_v1',
+            blockMin: Number(site.aclAccessBlockMin || 60)
+          },
+          attackLimit: {
+            enabled: boolValue(site.aclAttackEnabled),
+            period: Number(site.aclAttackPeriod || 60),
+            count: Number(site.aclAttackCount || 10),
+            action: site.aclAttackAction || 'block',
+            blockMin: Number(site.aclAttackBlockMin || 30)
+          },
+          errorLimit: {
+            enabled: boolValue(site.aclErrorEnabled),
+            period: Number(site.aclErrorPeriod || 10),
+            count: Number(site.aclErrorCount || 10),
+            action: site.aclErrorAction || 'block',
+            blockMin: Number(site.aclErrorBlockMin || 30),
+            statusCodes: listFromText(site.aclErrorStatusCodes, /[\s,]+/)
+          }
+        },
+        features: {
+          httpFlood: boolValue(site.featureHttpFlood),
+          botProtection: boolValue(site.featureBotProtection),
+          auth: boolValue(site.featureAuth),
+          attacks: boolValue(site.featureAttacks)
         }
-      },
-      features: {
-        httpFlood: boolValue(site.featureHttpFlood),
-        botProtection: boolValue(site.featureBotProtection),
-        auth: boolValue(site.featureAuth),
-        attacks: boolValue(site.featureAttacks)
-      }
-    };
-    const id = payload.id;
-    delete payload.id;
-    await api(id ? `/api/sites/${id}` : '/api/sites', {
-      method: id ? 'PUT' : 'POST',
-      body: payload
-    });
-    setModal(null);
-    await loadState();
-    showToast('Site saved');
+      };
+      const id = payload.id;
+      delete payload.id;
+      await api(id ? `/api/sites/${id}` : '/api/sites', {
+        method: id ? 'PUT' : 'POST',
+        body: payload
+      });
+      setModal(null);
+      await loadState();
+      showToast('Site saved and Nginx reloaded');
+    } catch (error) {
+      showToast(error.message, true);
+    }
   }
 
   async function saveRule(rule) {
