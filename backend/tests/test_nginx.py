@@ -47,6 +47,9 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("SQL injection probes", config)
         self.assertIn("set $sfl_block 1;", config)
         self.assertIn("return 460;", config)
+        self.assertIn("if ($request_method ~*", config)
+        self.assertIn("if ($request_uri ~*", config)
+        self.assertNotIn("$request_method$request_uri", config)
 
     def test_monitor_site_does_not_block_matching_rules(self):
         state = make_state(

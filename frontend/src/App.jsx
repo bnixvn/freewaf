@@ -408,21 +408,25 @@ export default function App() {
   }
 
   async function saveCertificate(certificate) {
-    const payload = {
-      ...certificate,
-      domains: listFromText(certificate.domains, /[\n,]+/),
-      autoRenew: certificate.autoRenew !== false && certificate.autoRenew !== 'false',
-      renewBeforeDays: Number(certificate.renewBeforeDays || 30)
-    };
-    const id = payload.id;
-    delete payload.id;
-    await api(id ? `/api/certificates/${id}` : '/api/certificates', {
-      method: id ? 'PUT' : 'POST',
-      body: payload
-    });
-    setModal(null);
-    await loadState();
-    showToast('Certificate saved');
+    try {
+      const payload = {
+        ...certificate,
+        domains: listFromText(certificate.domains, /[\n,]+/),
+        autoRenew: certificate.autoRenew !== false && certificate.autoRenew !== 'false',
+        renewBeforeDays: Number(certificate.renewBeforeDays || 30)
+      };
+      const id = payload.id;
+      delete payload.id;
+      await api(id ? `/api/certificates/${id}` : '/api/certificates', {
+        method: id ? 'PUT' : 'POST',
+        body: payload
+      });
+      setModal(null);
+      await loadState();
+      showToast('Certificate saved');
+    } catch (error) {
+      showToast(error.message, true);
+    }
   }
 
   async function saveIpGroup(group) {
@@ -1618,6 +1622,10 @@ function CertificateModal({ certificate, onClose, onSave }) {
       window.alert('Paste both certificate and private key PEM.');
       return;
     }
+    if (form.source === 'upload' && !String(form.domains || '').trim()) {
+      window.alert('Enter at least one certificate domain.');
+      return;
+    }
     onSave(form);
   }
 
@@ -1633,6 +1641,12 @@ function CertificateModal({ certificate, onClose, onSave }) {
           {form.source === 'upload' ? (
             <>
               <TextField label="Name" value={form.name} onChange={(value) => update('name', value)} required />
+              <TextAreaField
+                label="Domains"
+                value={form.domains}
+                onChange={(value) => update('domains', value)}
+                placeholder={'minhhien.vn\nwww.minhhien.vn\n*.minhhien.vn'}
+              />
               <label className="field full">
                 <span>Certificate PEM</span>
                 <textarea

@@ -952,49 +952,60 @@ def render_rule_if(rule: dict, effect: str, index: int) -> list[str]:
             "",
         ]
 
-    variable = target_variable(target)
+    variables = target_variables(target)
     pattern = nginx_regex(rule.get("pattern") or "")
     reason = nginx_string(rule.get("name") or rule.get("id") or "Rule matched")
+    match_var = f"$sfl_rule_{index}"
+    lines = [f"    set {match_var} 0;"]
+    for variable in variables:
+        lines.extend(
+            [
+                f"    if ({variable} ~* {pattern}) {{",
+                f"        set {match_var} 1;",
+                "    }",
+            ]
+        )
 
     if effect == "allow":
-        return [
-            f"    if ({variable} ~* {pattern}) {{",
-            "        set $sfl_allow 1;",
-            "        set $sfl_block 0;",
-            "        set $sfl_verdict allow;",
-            f"        set $sfl_reason \"Allowed by {reason}\";",
-            "    }",
-        ]
+        lines.extend(
+            [
+                f"    if ({match_var} = 1) {{",
+                "        set $sfl_allow 1;",
+                "        set $sfl_block 0;",
+                "        set $sfl_verdict allow;",
+                f"        set $sfl_reason \"Allowed by {reason}\";",
+                "    }",
+            ]
+        )
+        return lines
 
     verdict = "monitor" if effect == "monitor" else "block"
     block_value = "0" if effect == "monitor" else "1"
-    match_var = f"$sfl_rule_{index}"
-    return [
-        f"    set {match_var} 0;",
-        f"    if ({variable} ~* {pattern}) {{",
-        f"        set {match_var} 1;",
-        "    }",
-        "    if ($sfl_allow = 1) {",
-        f"        set {match_var} 0;",
-        "    }",
-        f"    if ({match_var} = 1) {{",
-        f"        set $sfl_block {block_value};",
-        f"        set $sfl_verdict {verdict};",
-        f"        set $sfl_reason \"{reason}\";",
-        "    }",
-    ]
+    lines.extend(
+        [
+            "    if ($sfl_allow = 1) {",
+            f"        set {match_var} 0;",
+            "    }",
+            f"    if ({match_var} = 1) {{",
+            f"        set $sfl_block {block_value};",
+            f"        set $sfl_verdict {verdict};",
+            f"        set $sfl_reason \"{reason}\";",
+            "    }",
+        ]
+    )
+    return lines
 
 
-def target_variable(target: str) -> str:
+def target_variables(target: str) -> list[str]:
     if target == "url":
-        return "$request_uri"
+        return ["$request_uri"]
     if target == "method":
-        return "$request_method"
+        return ["$request_method"]
     if target == "ip":
-        return "$remote_addr"
+        return ["$remote_addr"]
     if target == "headers":
-        return "$http_user_agent$http_referer$http_content_type"
-    return "$request_method$request_uri$http_user_agent$http_referer$remote_addr"
+        return ["$http_user_agent", "$http_referer", "$http_content_type"]
+    return ["$request_method", "$request_uri", "$http_user_agent", "$http_referer", "$remote_addr"]
 
 
 def render_rate_limit(state: dict, site: dict) -> list[str]:
