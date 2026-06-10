@@ -51,7 +51,15 @@ class CertificateServerTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"CERTBOT_LIVE_DIR": live_dir}):
                 with mock.patch(
                     "freewaf.server.run_certbot",
-                    return_value={"ok": True, "stdout": "certificate issued", "stderr": ""},
+                    return_value={
+                        "ok": True,
+                        "stdout": (
+                            "Successfully received certificate.\n"
+                            f"Certificate is saved at: {live_dir}/example.test-0001/fullchain.pem\n"
+                            f"Key is saved at:         {live_dir}/example.test-0001/privkey.pem\n"
+                        ),
+                        "stderr": "",
+                    },
                 ) as run_certbot:
                     prepared = prepare_certbot_certificate_payload(
                         {
@@ -63,7 +71,7 @@ class CertificateServerTests(unittest.TestCase):
                     )
 
         run_certbot.assert_called_once_with(["example.test", "www.example.test"], "ops@example.test")
-        expected_live = Path(live_dir) / "example.test"
+        expected_live = Path(live_dir) / "example.test-0001"
         self.assertEqual(prepared["source"], "certbot")
         self.assertEqual(prepared["name"], "example.test")
         self.assertEqual(prepared["certFile"], str(expected_live / "fullchain.pem").replace("\\", "/"))

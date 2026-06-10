@@ -34,6 +34,34 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(certificate["renewBeforeDays"], 30)
         self.assertTrue(certificate["autoRenew"])
 
+    def test_certbot_certificate_paths_are_recovered_from_last_message(self):
+        state = normalize_state(
+            {
+                "sites": [],
+                "rules": [],
+                "certificates": [
+                    {
+                        "id": "certbot-demo",
+                        "name": "example.test",
+                        "source": "certbot",
+                        "domains": ["example.test", "www.example.test"],
+                        "email": "admin@example.test",
+                        "certFile": "/etc/letsencrypt/live/example.test/fullchain.pem",
+                        "keyFile": "/etc/letsencrypt/live/example.test/privkey.pem",
+                        "lastMessage": (
+                            "Successfully received certificate.\n"
+                            "Certificate is saved at: /etc/letsencrypt/live/example.test-0001/fullchain.pem\n"
+                            "Key is saved at:         /etc/letsencrypt/live/example.test-0001/privkey.pem\n"
+                        ),
+                    }
+                ],
+            }
+        )
+
+        certificate = state["certificates"][0]
+        self.assertEqual(certificate["certFile"], "/etc/letsencrypt/live/example.test-0001/fullchain.pem")
+        self.assertEqual(certificate["keyFile"], "/etc/letsencrypt/live/example.test-0001/privkey.pem")
+
     def test_ip_group_reference_state_is_normalized(self):
         state = normalize_state(
             {

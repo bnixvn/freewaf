@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import re
 import secrets
 import shlex
 import ssl
@@ -822,7 +823,7 @@ def prepare_certbot_certificate_payload(payload: dict, certificate_id: str | Non
 
     result = run_certbot(domains, email)
     primary_domain = domains[0].lower()
-    live_dir = Path(os.environ.get("CERTBOT_LIVE_DIR", "/etc/letsencrypt/live")) / primary_domain
+    cert_file, key_file = certbot_paths_from_result(result, primary_domain)
     cert_id = certificate_id or str(payload.get("id") or f"certbot-{uuid.uuid4().hex[:8]}")
 
     return {
@@ -834,11 +835,22 @@ def prepare_certbot_certificate_payload(payload: dict, certificate_id: str | Non
         "email": email,
         "autoRenew": payload.get("autoRenew") is not False,
         "renewBeforeDays": int(payload.get("renewBeforeDays") or 30),
-        "certFile": str(live_dir / "fullchain.pem").replace("\\", "/"),
-        "keyFile": str(live_dir / "privkey.pem").replace("\\", "/"),
+        "certFile": cert_file,
+        "keyFile": key_file,
         "status": "ready" if result["ok"] else "failed",
         "lastMessage": result["stdout"] or result["stderr"],
     }
+
+
+def certbot_paths_from_result(result: dict, primary_domain: str) -> tuple[str, str]:
+    output = "\n".join([str(result.get("stdout") or ""), str(result.get("stderr") or "")])
+    cert_match = re.search(r"Certificate is saved at:\s*(\S+)", output)
+    key_match = re.search(r"Key is saved at:\s*(\S+)", output)
+    if cert_match and key_match:
+        return cert_match.group(1).replace("\\", "/"), key_match.group(1).replace("\\", "/")
+
+    live_dir = Path(os.environ.get("CERTBOT_LIVE_DIR", "/etc/letsencrypt/live")) / primary_domain
+    return str(live_dir / "fullchain.pem").replace("\\", "/"), str(live_dir / "privkey.pem").replace("\\", "/")
 
 
 def run_certbot(domains: list[str], email: str) -> dict:

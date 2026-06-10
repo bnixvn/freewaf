@@ -68,9 +68,10 @@ class Store:
             return
 
         with self.file_path.open("r", encoding="utf-8") as handle:
-            self.state = normalize_state(json.load(handle))
+            raw_state = json.load(handle)
+        self.state = normalize_state(raw_state)
 
-        changed = False
+        changed = self.state != raw_state
         now = utc_now()
         existing = {rule["id"] for rule in self.state["rules"]}
         for rule in BUILTIN_RULES:
@@ -497,21 +498,39 @@ def normalize_stored_rule(rule: dict) -> dict:
 
 def normalize_stored_certificate(certificate: dict) -> dict:
     now = utc_now()
+    source = normalize_certificate_source(certificate.get("source"))
+    last_message = str(certificate.get("lastMessage") or "")
+    cert_file = normalize_file_reference(certificate.get("certFile") or certificate.get("cert_file") or "")
+    key_file = normalize_file_reference(certificate.get("keyFile") or certificate.get("key_file") or "")
+    if source == "certbot":
+        parsed_cert_file, parsed_key_file = parse_certbot_paths(last_message)
+        cert_file = parsed_cert_file or cert_file
+        key_file = parsed_key_file or key_file
+
     return {
         "id": str(certificate.get("id") or create_id("cert")),
         "name": str(certificate.get("name") or "Untitled certificate"),
-        "source": normalize_certificate_source(certificate.get("source")),
+        "source": source,
         "domains": normalize_domain_list(certificate.get("domains")),
         "email": str(certificate.get("email") or ""),
         "autoRenew": certificate.get("autoRenew") is not False,
         "renewBeforeDays": normalize_positive_int(certificate.get("renewBeforeDays"), 30),
         "status": str(certificate.get("status") or "ready"),
-        "lastMessage": str(certificate.get("lastMessage") or ""),
-        "certFile": normalize_file_reference(certificate.get("certFile") or certificate.get("cert_file") or ""),
-        "keyFile": normalize_file_reference(certificate.get("keyFile") or certificate.get("key_file") or ""),
+        "lastMessage": last_message,
+        "certFile": cert_file,
+        "keyFile": key_file,
         "createdAt": certificate.get("createdAt") or now,
         "updatedAt": certificate.get("updatedAt") or now,
     }
+
+
+def parse_certbot_paths(message: str) -> tuple[str, str]:
+    cert_match = re.search(r"Certificate is saved at:\s*(\S+)", message or "")
+    key_match = re.search(r"Key is saved at:\s*(\S+)", message or "")
+    return (
+        normalize_file_reference(cert_match.group(1)) if cert_match else "",
+        normalize_file_reference(key_match.group(1)) if key_match else "",
+    )
 
 
 def normalize_stored_ip_group(group: dict) -> dict:
