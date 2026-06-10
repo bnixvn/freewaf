@@ -8,7 +8,6 @@ import {
   LockKeyhole,
   ListFilter,
   LogOut,
-  MoreHorizontal,
   Network,
   Plus,
   QrCode,
@@ -905,7 +904,9 @@ function ApplicationCard({ site, logs, onEdit, onDelete, onToggle }) {
           <div className="row-actions">
             <span className="pill">{appType}</span>
             <button className="link-button" onClick={onEdit}>DETAIL</button>
-            <button className="table-action" onClick={onDelete} title="Delete"><MoreHorizontal size={17} /></button>
+            <button className="table-action delete-action" onClick={onDelete} title="Delete application" aria-label="Delete application">
+              <Trash2 size={17} />
+            </button>
           </div>
         </div>
         <div className="app-field">

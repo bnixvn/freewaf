@@ -226,6 +226,15 @@ h2 {
   background: #f9fbfc;
 }
 
+.table-action.delete-action {
+  color: var(--red);
+}
+
+.table-action.delete-action:hover {
+  border-color: #efb7b2;
+  background: #fff5f4;
+}
+
 .tool-button {
   display: inline-flex;
   align-items: center;
