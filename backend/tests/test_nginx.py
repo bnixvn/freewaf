@@ -169,6 +169,10 @@ class NginxGeneratorTests(unittest.TestCase):
             self.assertNotEqual(rule["target"], "body")
             re.compile(rule["pattern"], re.IGNORECASE)
 
+        laravel_rule = rules["builtin-laravel-sensitive-files"]
+        self.assertRegex("/vendor/composer/installed.php", laravel_rule["pattern"])
+        self.assertNotRegex("/wp-includes/js/dist/vendor/wp-polyfill.min.js?ver=3.15.0", laravel_rule["pattern"])
+
         config = generate_nginx_config(make_state())
 
         self.assertIn("[WordPress] Sensitive application files", config)
@@ -367,6 +371,8 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("proxy_ssl_server_name on;", config)
         self.assertIn("proxy_pass https://backend_site_shop_shop_example_test;", config)
         self.assertIn("proxy_pass https://backend_site_shop_www_shop_example_test;", config)
+        self.assertIn("location ~ ^/wp-content/cache/min/1/(.+)$", config)
+        self.assertIn("rewrite ^/wp-content/cache/min/1/(.+)$ /$1 last;", config)
 
     def test_generates_modsecurity_and_explicit_forwarding_controls(self):
         state = make_state(

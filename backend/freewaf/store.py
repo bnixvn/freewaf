@@ -106,10 +106,26 @@ class Store:
 
         changed = self.state != raw_state
         now = utc_now()
-        existing = {rule["id"] for rule in self.state["rules"]}
+        existing = {rule["id"]: rule for rule in self.state["rules"]}
         for rule in BUILTIN_RULES:
-            if rule["id"] not in existing:
+            stored_rule = existing.get(rule["id"])
+            if not stored_rule:
                 self.state["rules"].append({**deepcopy(rule), "createdAt": now, "updatedAt": now})
+                changed = True
+                continue
+            if not stored_rule.get("builtin"):
+                continue
+
+            preserved = {
+                "enabled": stored_rule.get("enabled", rule["enabled"]),
+                "siteId": stored_rule.get("siteId") or rule["siteId"],
+                "createdAt": stored_rule.get("createdAt") or now,
+            }
+            updated_rule = {**stored_rule, **deepcopy(rule), **preserved}
+            if updated_rule != stored_rule:
+                updated_rule["updatedAt"] = now
+                stored_rule.clear()
+                stored_rule.update(updated_rule)
                 changed = True
 
         if not self.state["ipGroups"]:

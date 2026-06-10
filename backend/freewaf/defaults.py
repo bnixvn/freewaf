@@ -220,7 +220,7 @@ BUILTIN_RULES = [
         "siteId": "*",
         "matcher": "regex",
         "target": "url",
-        "pattern": r"(?:/\.env(?:$|\?|/)|/storage/logs/laravel(?:-\d{4}-\d{2}-\d{2})?\.log|/(?:artisan|server\.php|composer\.(?:json|lock))(?:$|\?)|/(?:vendor|bootstrap/cache|storage/framework)(?:/|$)|/_ignition/(?:execute-solution|health-check)|/(?:telescope|horizon)(?:/|$))",
+        "pattern": r"(?:/\.env(?:$|\?|/)|/storage/logs/laravel(?:-\d{4}-\d{2}-\d{2})?\.log|/(?:artisan|server\.php|composer\.(?:json|lock))(?:$|\?)|^/vendor(?:/|$)|/(?:bootstrap/cache|storage/framework)(?:/|$)|/_ignition/(?:execute-solution|health-check)|/(?:telescope|horizon)(?:/|$))",
         "action": "block",
         "severity": "critical",
     },

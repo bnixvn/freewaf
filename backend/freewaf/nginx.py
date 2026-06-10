@@ -607,6 +607,7 @@ def render_proxy_server(
             "",
             *render_internal_waf_locations(site, state),
             "",
+            *render_wordpress_cache_min_fallback_location(site),
             "    location / {",
             "        if ($sfl_block = 1) {",
             "            return 460;",
@@ -621,6 +622,17 @@ def render_proxy_server(
     )
 
     return "\n".join(lines)
+
+
+def render_wordpress_cache_min_fallback_location(site: dict) -> list[str]:
+    if application_type(site) != "reverse_proxy":
+        return []
+    return [
+        "    location ~ ^/wp-content/cache/min/1/(.+)$ {",
+        "        rewrite ^/wp-content/cache/min/1/(.+)$ /$1 last;",
+        "    }",
+        "",
+    ]
 
 
 def render_site_waf_directives(site: dict, state: dict) -> list[str]:

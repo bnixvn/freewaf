@@ -1,4 +1,5 @@
 import gzip
+import json
 import os
 import sys
 import tempfile
@@ -8,10 +9,32 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from freewaf.defaults import BUILTIN_RULES
 from freewaf.store import Store, build_stats, country_for_ip, normalize_state
 
 
 class StoreTests(unittest.TestCase):
+    def test_init_updates_builtin_rule_definition_and_preserves_user_controls(self):
+        builtin = next(rule for rule in BUILTIN_RULES if rule["id"] == "builtin-laravel-sensitive-files")
+        with tempfile.TemporaryDirectory() as directory:
+            state_file = Path(directory) / "state.json"
+            store = Store(state_file)
+            store.init()
+            state = store.get_state()
+            stored = next(rule for rule in state["rules"] if rule["id"] == builtin["id"])
+            stored["pattern"] = "legacy-pattern"
+            stored["enabled"] = False
+            stored["siteId"] = "site-custom"
+            state_file.write_text(json.dumps(state), encoding="utf-8")
+
+            migrated = Store(state_file)
+            migrated.init()
+            rule = next(rule for rule in migrated.get_state()["rules"] if rule["id"] == builtin["id"])
+
+        self.assertEqual(rule["pattern"], builtin["pattern"])
+        self.assertFalse(rule["enabled"])
+        self.assertEqual(rule["siteId"], "site-custom")
+
     def test_stats_count_challenges_as_protected_events(self):
         with mock.patch("freewaf.store.country_for_ip", side_effect=lambda ip: {"code": "US", "name": "United States"}):
             stats = build_stats(
