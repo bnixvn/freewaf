@@ -1626,6 +1626,8 @@ def build_stats(state: dict) -> dict:
     )
     top_sites = Counter(entry.get("siteName") or "Unmatched" for entry in logs)
     status_groups = Counter(status_group(entry) for entry in logs)
+    timeline = build_timeline(logs)
+    qps_timeline = build_qps_timeline(logs)
 
     return {
         "total": total,
@@ -1649,7 +1651,9 @@ def build_stats(state: dict) -> dict:
         "topRules": counter_items(top_rules),
         "topSites": counter_items(top_sites),
         "statusGroups": counter_items(status_groups),
-        "timeline": build_timeline(logs),
+        "qps": qps_timeline[-1]["qps"] if qps_timeline else 0,
+        "qpsTimeline": qps_timeline,
+        "timeline": timeline,
     }
 
 
@@ -1860,12 +1864,10 @@ def geoip_attribution() -> dict:
 
 
 def build_timeline(logs: list[dict]) -> list[dict]:
-    import time
-
     bucket_ms = 5 * 60 * 1000
     bucket_count = 24
     now_ms = int(time.time() * 1000)
-    start_ms = now_ms - bucket_ms * (bucket_count - 1)
+    start_ms = now_ms - bucket_ms * bucket_count
     buckets = []
     for index in range(bucket_count):
         at = start_ms + bucket_ms * index
@@ -1873,9 +1875,8 @@ def build_timeline(logs: list[dict]) -> list[dict]:
         buckets.append({"at": at, "endAt": at + bucket_ms, "label": label, "total": 0, "blocked": 0, "challenged": 0, "protected": 0})
 
     for entry in logs:
-        try:
-            at_ms = int(datetime.fromisoformat(str(entry.get("at")).replace("Z", "+00:00")).timestamp() * 1000)
-        except ValueError:
+        at_ms = entry_timestamp_ms(entry)
+        if at_ms is None:
             continue
         if at_ms < start_ms:
             continue
@@ -1889,6 +1890,39 @@ def build_timeline(logs: list[dict]) -> list[dict]:
             buckets[index]["protected"] += 1
 
     return buckets
+
+
+def build_qps_timeline(logs: list[dict]) -> list[dict]:
+    bucket_ms = 10 * 1000
+    bucket_count = 30
+    now_ms = int(time.time() * 1000)
+    start_ms = now_ms - bucket_ms * bucket_count
+    buckets = []
+    for index in range(bucket_count):
+        at = start_ms + bucket_ms * index
+        label = datetime.fromtimestamp(at / 1000).strftime("%H:%M:%S")
+        buckets.append({"at": at, "endAt": at + bucket_ms, "label": label, "count": 0, "qps": 0})
+
+    for entry in logs:
+        at_ms = entry_timestamp_ms(entry)
+        if at_ms is None or at_ms < start_ms:
+            continue
+        index = min(bucket_count - 1, max(0, (at_ms - start_ms) // bucket_ms))
+        buckets[index]["count"] += 1
+
+    seconds = bucket_ms / 1000
+    for bucket in buckets:
+        qps = bucket["count"] / seconds
+        bucket["qps"] = round(qps, 1) if qps < 10 else round(qps)
+
+    return buckets
+
+
+def entry_timestamp_ms(entry: dict) -> int | None:
+    try:
+        return int(datetime.fromisoformat(str(entry.get("at")).replace("Z", "+00:00")).timestamp() * 1000)
+    except (TypeError, ValueError):
+        return None
 
 
 def status_group(entry: dict) -> str:

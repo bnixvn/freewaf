@@ -677,87 +677,117 @@ h2 {
   font-size: 11px;
 }
 
-.current-traffic {
+.current-traffic-stack {
   display: grid;
   gap: 14px;
 }
 
-.current-traffic-main {
-  display: grid;
-  gap: 5px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--line);
+.traffic-widget {
+  min-height: 186px;
 }
 
-.current-traffic-main span,
-.current-traffic-main small,
-.current-traffic-grid span {
-  color: var(--muted);
+.traffic-widget-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.traffic-widget-heading h2 {
+  margin-bottom: 0;
+  font-size: 14px;
+}
+
+.traffic-title-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.qps-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 0 9px;
+  border-radius: 5px;
+  background: #eef3f6;
+  color: var(--text);
   font-size: 12px;
+  font-weight: 800;
 }
 
-.current-traffic-main strong {
-  font-size: 42px;
-  line-height: 1;
+.qps-badge svg,
+.traffic-refresh-icon {
+  color: #17bfc0;
 }
 
-.current-traffic-chart {
+.traffic-refresh-icon {
+  flex: 0 0 auto;
+}
+
+.traffic-max {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.traffic-max strong {
+  margin-left: 6px;
+  font-size: 14px;
+}
+
+.qps-bars {
   display: flex;
   align-items: flex-end;
   gap: 5px;
-  height: 92px;
-  padding: 2px 0;
+  height: 124px;
+  padding: 8px 2px 0;
 }
 
-.current-traffic-bar {
+.qps-bar-wrap {
   display: flex;
   flex: 1;
   align-items: flex-end;
   min-width: 0;
   height: 100%;
-  border-radius: 4px 4px 0 0;
-  background: #edf3f5;
 }
 
-.current-traffic-fill {
-  position: relative;
+.qps-bar {
   display: block;
   width: 100%;
   min-height: 5px;
-  overflow: hidden;
-  border-radius: inherit;
-  background: #d7e6e6;
+  border-radius: 3px 3px 0 0;
+  background: #d8e8eb;
 }
 
-.current-traffic-fill.has-data {
-  background: #9bd2c8;
+.qps-bar.has-data {
+  background: #18c2c2;
 }
 
-.current-traffic-fill span {
-  position: absolute;
-  inset: auto 0 0;
+.request-status-chart {
   display: block;
-  min-height: 0;
-  background: #de4b40;
+  width: 100%;
+  height: 166px;
+  overflow: visible;
 }
 
-.current-traffic-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
+.request-status-chart line {
+  stroke: #edf1f4;
+  stroke-width: 1;
 }
 
-.current-traffic-grid div {
-  min-width: 0;
+.request-status-area {
+  fill: rgba(44, 138, 229, 0.06);
 }
 
-.current-traffic-grid strong {
-  display: block;
-  margin-top: 5px;
-  overflow-wrap: anywhere;
-  font-size: 18px;
+.request-status-line {
+  fill: none;
+  stroke: #2f89df;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 4;
 }
 
 .incident-list {
@@ -1989,10 +2019,6 @@ td {
   }
 
   .feature-toggle-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .current-traffic-grid {
     grid-template-columns: 1fr;
   }
 

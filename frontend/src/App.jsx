@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
+  BarChart3,
   Copy,
   Edit3,
   Globe2,
@@ -58,6 +59,8 @@ const emptyStats = {
   topRules: [],
   topSites: [],
   statusGroups: [],
+  qps: 0,
+  qpsTimeline: [],
   timeline: []
 };
 
@@ -1102,17 +1105,15 @@ function DashboardView({ data, resetStatistics }) {
   const botTypes = stats.botTypes || [];
   const countries = stats.topCountries || [];
   const blockedCountries = stats.blockedCountries || countries.filter((country) => Number(country.blocked || 0) > 0);
+  const qpsTimeline = stats.qpsTimeline || [];
+  const qpsValue = Number(stats.qps ?? qpsTimeline[qpsTimeline.length - 1]?.qps ?? 0);
+  const requestsMax = Math.max(0, ...timeline.map((point) => Number(point.total || 0)));
   const trafficWindow = timeline.reduce((totals, point) => ({
     total: totals.total + Number(point.total || 0),
     protected: totals.protected + Number(point.protected ?? (Number(point.blocked || 0) + Number(point.challenged || 0))),
     challenged: totals.challenged + Number(point.challenged || 0),
     blocked: totals.blocked + Number(point.blocked || 0)
   }), { total: 0, protected: 0, challenged: 0, blocked: 0 });
-  const currentPoint = timeline[timeline.length - 1] || null;
-  const currentTotal = Number(currentPoint?.total || 0);
-  const currentProtected = Number(currentPoint?.protected ?? (Number(currentPoint?.blocked || 0) + Number(currentPoint?.challenged || 0)));
-  const currentChallenged = Number(currentPoint?.challenged || 0);
-  const currentBlocked = Number(currentPoint?.blocked || 0);
 
   return (
     <>
@@ -1194,34 +1195,25 @@ function DashboardView({ data, resetStatistics }) {
           </div>
           <Timeline points={timeline} />
         </section>
-        <section className="panel">
-          <div className="panel-heading">
-            <h2>Current Traffic</h2>
-            <span className="pill">live bucket</span>
-          </div>
-          <div className="current-traffic">
-            <div className="current-traffic-main">
-              <span>Current access</span>
-              <strong>{formatCompact(currentTotal)}</strong>
-              <small>{currentPoint ? formatBucketRange(currentPoint) : 'Waiting for request data'}</small>
+        <div className="current-traffic-stack">
+          <section className="panel traffic-widget">
+            <div className="traffic-widget-heading">
+              <div className="traffic-title-row">
+                <h2>Query Per Second</h2>
+                <span className="qps-badge"><BarChart3 size={14} /> {formatQps(qpsValue)}</span>
+              </div>
+              <RefreshCw size={17} className="traffic-refresh-icon" />
             </div>
-            <CurrentTrafficChart points={timeline.slice(-12)} />
-            <div className="current-traffic-grid">
-              <div>
-                <span>Protected</span>
-                <strong>{formatCompact(currentProtected)}</strong>
-              </div>
-              <div>
-                <span>Challenged</span>
-                <strong>{formatCompact(currentChallenged)}</strong>
-              </div>
-              <div>
-                <span>Blocked</span>
-                <strong>{formatCompact(currentBlocked)}</strong>
-              </div>
+            <QpsBars points={qpsTimeline} />
+          </section>
+          <section className="panel traffic-widget">
+            <div className="traffic-widget-heading">
+              <h2>Requests Status</h2>
+              <span className="traffic-max">Max <strong>{formatCompact(requestsMax)}</strong></span>
             </div>
-          </div>
-        </section>
+            <RequestsStatusChart points={timeline} />
+          </section>
+        </div>
       </div>
     </>
   );
@@ -1833,30 +1825,70 @@ function Timeline({ points = [] }) {
   );
 }
 
-function CurrentTrafficChart({ points = [] }) {
-  const displayPoints = points.length
-    ? points.slice(-12)
-    : Array.from({ length: 12 }, (_, index) => ({ at: index, label: '', total: 0, blocked: 0, challenged: 0, protected: 0 }));
-  const max = Math.max(1, ...displayPoints.map((point) => Number(point.total || 0)));
+function QpsBars({ points = [] }) {
+  const displayPoints = padSeries(points, 30, { qps: 0, count: 0 });
+  const max = Math.max(1, ...displayPoints.map((point) => Number(point.qps || 0)));
 
   return (
-    <div className="current-traffic-chart" aria-label="Current traffic chart">
+    <div className="qps-bars" aria-label="Query per second chart">
       {displayPoints.map((point, index) => {
-        const total = Number(point.total || 0);
-        const blocked = Number(point.blocked || 0);
-        const height = total ? Math.max(8, Math.round((total / max) * 100)) : 5;
-        const blockedHeight = total ? Math.round((blocked / total) * 100) : 0;
-        const title = `${point.label || 'Pending'}: ${formatCompact(total)} requests, ${formatCompact(blocked)} blocked`;
+        const qps = Number(point.qps || 0);
+        const height = qps ? Math.max(10, Math.round((qps / max) * 100)) : 5;
+        const title = `${formatPreciseBucketRange(point)}: ${formatQps(qps)} qps`;
         return (
-          <span className="current-traffic-bar" key={`${point.at}-${index}`} title={title}>
-            <span className={`current-traffic-fill ${total ? 'has-data' : ''}`} style={{ height: `${height}%` }}>
-              <span style={{ height: `${blockedHeight}%` }} />
-            </span>
+          <span className="qps-bar-wrap" key={`${point.at || 'empty'}-${index}`} title={title}>
+            <span className={`qps-bar ${qps ? 'has-data' : ''}`} style={{ height: `${height}%` }} />
           </span>
         );
       })}
     </div>
   );
+}
+
+function RequestsStatusChart({ points = [] }) {
+  const displayPoints = padSeries(points, 24, { total: 0 });
+  const width = 360;
+  const height = 166;
+  const values = displayPoints.map((point) => Number(point.total || 0));
+  const path = smoothLinePath(values, width, height);
+  const areaPath = `${path} L ${width} ${height - 14} L 0 ${height - 14} Z`;
+
+  return (
+    <svg className="request-status-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Requests status chart">
+      {[28, 60, 92, 124, 152].map((y) => <line key={y} x1="0" y1={y} x2={width} y2={y} />)}
+      <path className="request-status-area" d={areaPath} />
+      <path className="request-status-line" d={path} />
+    </svg>
+  );
+}
+
+function padSeries(points, count, emptyPoint) {
+  const source = Array.isArray(points) ? points.slice(-count) : [];
+  const missing = Math.max(0, count - source.length);
+  return [
+    ...Array.from({ length: missing }, (_, index) => ({ ...emptyPoint, at: `empty-${index}` })),
+    ...source
+  ];
+}
+
+function smoothLinePath(values, width, height) {
+  const max = Math.max(1, ...values);
+  const bottom = height - 14;
+  const top = 16;
+  const range = Math.max(1, bottom - top);
+  const lastIndex = Math.max(1, values.length - 1);
+  const coords = values.map((value, index) => ({
+    x: (index / lastIndex) * width,
+    y: bottom - (Number(value || 0) / max) * range
+  }));
+
+  if (!coords.length) return `M 0 ${bottom} L ${width} ${bottom}`;
+  return coords.reduce((path, point, index) => {
+    if (index === 0) return `M ${point.x.toFixed(2)} ${point.y.toFixed(2)}`;
+    const previous = coords[index - 1];
+    const midX = (previous.x + point.x) / 2;
+    return `${path} C ${midX.toFixed(2)} ${previous.y.toFixed(2)}, ${midX.toFixed(2)} ${point.y.toFixed(2)}, ${point.x.toFixed(2)} ${point.y.toFixed(2)}`;
+  }, '');
 }
 
 function InsightRows({ rows = [], empty, maxValue = 1, label, barValue, valueLabel, detailLabel }) {
@@ -3107,6 +3139,15 @@ function formatBucketRange(point) {
   return `${date} ${startTime} - ${endTime}`;
 }
 
+function formatPreciseBucketRange(point) {
+  if (!point?.at || String(point.at).startsWith('empty-')) return 'Waiting for data';
+  const start = new Date(Number(point.at));
+  const end = new Date(Number(point.endAt || Number(point.at) + 10 * 1000));
+  const startTime = start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const endTime = end.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return `${startTime} - ${endTime}`;
+}
+
 function listFromText(value, splitter) {
   if (Array.isArray(value)) return value.filter(Boolean);
   return String(value || '').split(splitter).map((item) => item.trim()).filter(Boolean);
@@ -3602,6 +3643,13 @@ function formatCompact(value) {
   if (number >= 1000000) return `${(number / 1000000).toFixed(1)}m`;
   if (number >= 1000) return `${(number / 1000).toFixed(1)}k`;
   return String(number);
+}
+
+function formatQps(value) {
+  const number = Number(value || 0);
+  if (number >= 1000) return formatCompact(number);
+  if (number >= 10 || Number.isInteger(number)) return String(Math.round(number));
+  return number.toFixed(1);
 }
 
 function countryDisplayName(country) {
