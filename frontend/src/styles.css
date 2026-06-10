@@ -226,6 +226,15 @@ h2 {
   background: #f9fbfc;
 }
 
+.icon-button.danger {
+  color: var(--red);
+}
+
+.icon-button.danger:hover {
+  border-color: #efb7b2;
+  background: #fff5f4;
+}
+
 .table-action.delete-action {
   color: var(--red);
 }
@@ -261,20 +270,6 @@ h2 {
 .view {
   display: grid;
   gap: 12px;
-}
-
-.dashboard-actions {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.dashboard-actions.compact {
-  min-height: 30px;
-}
-
-.compact-action {
-  min-height: 30px;
-  padding: 0 10px;
 }
 
 .metric-grid {

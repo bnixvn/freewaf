@@ -934,6 +934,11 @@ export default function App() {
             <button className="icon-button" onClick={refreshCurrentView} title="Refresh" disabled={loading || logsLoading}>
               <RefreshCw size={18} className={loading || logsLoading ? 'spin' : ''} />
             </button>
+            {activeView === 'dashboard' && (
+              <button className="icon-button danger" onClick={resetStatistics} title="Reset statistics" disabled={loading}>
+                <Trash2 size={18} />
+              </button>
+            )}
             <button className="icon-button" onClick={logout} title="Sign out">
               <LogOut size={18} />
             </button>
@@ -1095,7 +1100,7 @@ function AuthScreen({ mode, loading, onSubmit }) {
   );
 }
 
-function DashboardView({ data, resetStatistics }) {
+function DashboardView({ data }) {
   const stats = { ...emptyStats, ...(data?.stats || {}) };
   const topRule = stats.topRules[0]?.name || 'None';
   const timeline = stats.timeline || [];
@@ -1117,11 +1122,6 @@ function DashboardView({ data, resetStatistics }) {
 
   return (
     <>
-      <div className="dashboard-actions compact">
-        <button className="tool-button danger compact-action" onClick={resetStatistics}>
-          <Trash2 size={18} /> Reset
-        </button>
-      </div>
       <div className="metric-grid">
         <Metric label="Requests" value={formatCompact(stats.total)} note="Analyzed request events" />
         <Metric label="Protected" value={formatCompact(protectedTotal)} note={`${stats.protectedRate ?? stats.blockRate}% challenge or block rate`} />
