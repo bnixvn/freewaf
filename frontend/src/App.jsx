@@ -1956,7 +1956,7 @@ function LogsView({
         </div>
       </div>
       <div className="table-wrap">
-        <table>
+        <table className="logs-table">
           <thead>
             <tr>
               <th>Verdict</th>
@@ -1974,17 +1974,17 @@ function LogsView({
               <tr><td colSpan="8" className="muted">Loading logs...</td></tr>
             ) : logs.length ? logs.map((entry) => (
               <tr key={entry.id}>
-                <td><span className={`status ${entry.verdict}`}>{entry.verdict}</span></td>
-                <td>{formatTime(entry.at)}<br /><span className="muted">{entry.durationMs} ms</span></td>
-                <td>{entry.siteName}<br /><span className="muted">{entry.host}</span></td>
-                <td>{entry.method}</td>
-                <td className="path-cell">{entry.path}</td>
-                <td>
+                <td data-label="Verdict"><span className={`status ${entry.verdict}`}>{entry.verdict}</span></td>
+                <td data-label="Time">{formatTime(entry.at)}<br /><span className="muted">{entry.durationMs} ms</span></td>
+                <td data-label="Site">{entry.siteName}<br /><span className="muted">{entry.host}</span></td>
+                <td data-label="Method">{entry.method}</td>
+                <td data-label="Path" className="path-cell">{entry.path}</td>
+                <td data-label="IP">
                   {entry.ip}
                   {entry.country && <><br /><span className="muted">{countryLogLabel(entry.country)}</span></>}
                 </td>
-                <td>{entry.reason}</td>
-                <td>{entry.upstreamStatus || entry.statusCode || ''}</td>
+                <td data-label="Reason">{entry.reason}</td>
+                <td data-label="Status">{entry.upstreamStatus || entry.statusCode || ''}</td>
               </tr>
             )) : (
               <tr><td colSpan="8" className="muted">No log entries.</td></tr>

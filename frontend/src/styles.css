@@ -2611,6 +2611,123 @@ td {
     min-width: 0;
   }
 
+  .log-filter-controls {
+    flex-direction: column;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .log-filter-controls .search,
+  .log-filter-controls .domain-select,
+  .log-filter-controls .page-size-select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .logs-table {
+    min-width: 0;
+  }
+
+  .logs-table thead {
+    display: none;
+  }
+
+  .logs-table,
+  .logs-table tbody,
+  .logs-table tr,
+  .logs-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .logs-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+    column-gap: 10px;
+    row-gap: 4px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .logs-table tr:last-child {
+    border-bottom: 0;
+  }
+
+  .logs-table td {
+    padding: 0;
+    border: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    font-size: 13px;
+  }
+
+  .logs-table td::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .logs-table td[data-label="Verdict"] {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding-bottom: 4px;
+  }
+
+  .logs-table td[data-label="Verdict"]::before {
+    order: 2;
+  }
+
+  .logs-table td[data-label="Path"],
+  .logs-table td[data-label="Reason"] {
+    grid-column: 1 / -1;
+    display: grid;
+    gap: 2px;
+  }
+
+  .logs-table td[data-label="Time"] { grid-column: 1; }
+  .logs-table td[data-label="Method"] { grid-column: 2; text-align: right; }
+  .logs-table td[data-label="Time"]::before,
+  .logs-table td[data-label="Method"]::before { display: block; margin-bottom: 2px; }
+  .logs-table td[data-label="Method"]::before { text-align: right; }
+
+  .logs-table td[data-label="Site"] { grid-column: 1; }
+  .logs-table td[data-label="Status"] { grid-column: 2; text-align: right; }
+  .logs-table td[data-label="Site"]::before,
+  .logs-table td[data-label="Status"]::before { display: block; margin-bottom: 2px; }
+  .logs-table td[data-label="Status"]::before { text-align: right; }
+
+  .logs-table td[data-label="IP"] {
+    grid-column: 1 / -1;
+    display: grid;
+    gap: 2px;
+  }
+
+  .logs-table td.muted {
+    grid-column: 1 / -1;
+    text-align: center;
+    padding: 16px 0;
+  }
+
+  .logs-table td.muted::before {
+    display: none;
+  }
+
+  .pagination {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .pagination-actions {
+    justify-content: space-between;
+  }
+
   .toast {
     right: 10px;
     left: 10px;
