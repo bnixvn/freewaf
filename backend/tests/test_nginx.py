@@ -130,6 +130,37 @@ class NginxGeneratorTests(unittest.TestCase):
             self.assertTrue(any("server_name shop.example.test;" in file.read_text(encoding="utf-8") for file in site_files))
             self.assertTrue(any("server_name www.shop.example.test;" in file.read_text(encoding="utf-8") for file in site_files))
 
+    def test_exact_and_wildcard_domains_use_distinct_upstream_names(self):
+        state = make_state(
+            sites=[
+                {
+                    "id": "site-manguon",
+                    "name": "Ma Nguon",
+                    "hostnames": ["manguon.top", "*.manguon.top"],
+                    "origin": "http://127.0.0.1:9090",
+                    "ports": ["80"],
+                    "mode": "block",
+                    "enabled": True,
+                }
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root_dir = Path(directory)
+            with mock.patch.dict(os.environ, {"NGINX_OUTPUT_FILE": "nginx/generated/freewaf.conf"}, clear=False):
+                output_file = write_nginx_config(root_dir, state)
+
+            site_files = sorted((output_file.parent / "sites").glob("*.conf"))
+            site_config = "\n".join(file.read_text(encoding="utf-8") for file in site_files)
+
+        upstream_names = re.findall(r"^upstream\s+(\S+)\s+\{", site_config, re.MULTILINE)
+        self.assertEqual(len(site_files), 2)
+        self.assertEqual(len(upstream_names), 2)
+        self.assertEqual(len(set(upstream_names)), 2)
+        self.assertIn("upstream backend_site_manguon_manguon_top", site_config)
+        self.assertIn("upstream backend_site_manguon_wildcard_manguon_top", site_config)
+        self.assertIn("server_name *.manguon.top;", site_config)
+
     def test_writing_nginx_config_removes_stale_domain_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root_dir = Path(directory)

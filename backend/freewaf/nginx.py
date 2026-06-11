@@ -543,7 +543,7 @@ def site_hostnames(site: dict) -> list[str]:
 
 def domain_config_filename(site: dict, hostname: str) -> str:
     site_id = safe_identifier(site.get("id") or site.get("name") or "site")
-    domain_id = safe_identifier(str(hostname or "_").replace("*.", "wildcard_").replace("*", "catchall"))
+    domain_id = domain_identifier(hostname)
     return f"{site_id}__{domain_id}.conf"
 
 
@@ -992,8 +992,13 @@ def site_upstreams(site: dict) -> list[str]:
 
 
 def backend_name(site: dict, hostname: str | None = None) -> str:
-    suffix = f"_{safe_identifier(hostname)}" if hostname else ""
+    suffix = f"_{domain_identifier(hostname)}" if hostname else ""
     return f"backend_{safe_identifier(site.get('id') or site.get('name') or 'site')}{suffix}"
+
+
+def domain_identifier(hostname: str) -> str:
+    value = str(hostname or "_").replace("*.", "wildcard_").replace("*", "catchall")
+    return safe_identifier(value)
 
 
 def site_ports(site: dict) -> list[tuple[int, bool]]:

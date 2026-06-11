@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   BarChart3,
@@ -2896,6 +2896,7 @@ function LimitEditFields({ prefix, form, updateLimit, includeStatusCodes = false
 
 function SiteModal({ site, certificates, onClose, onSave }) {
   const [submitting, setSubmitting] = useState(false);
+  const domainFieldRef = useRef(null);
   const [form, setForm] = useState(() => ({
     ...defaultSite,
     ...(site || {}),
@@ -2994,7 +2995,8 @@ function SiteModal({ site, certificates, onClose, onSave }) {
   async function submit(event) {
     event.preventDefault();
     if (submitting) return;
-    const hostnames = listFromText(form.hostnames, /[\s,]+/);
+    const hostnameText = domainFieldRef.current?.commit() || form.hostnames;
+    const hostnames = listFromText(hostnameText, /[\s,]+/);
     if (!hostnames.length) {
       window.alert('Enter at least one application domain.');
       return;
@@ -3031,7 +3033,7 @@ function SiteModal({ site, certificates, onClose, onSave }) {
     <Modal title={site ? 'Edit Application' : 'Add Application'} onClose={onClose} wide>
       <form onSubmit={submit}>
         <div className="safe-form">
-          <DomainChipField label="Domain" value={form.hostnames} onChange={(value) => update('hostnames', value)} placeholder="www.example.com, support *" required />
+          <DomainChipField ref={domainFieldRef} label="Domain" value={form.hostnames} onChange={(value) => update('hostnames', value)} placeholder="example.com, *.example.com" required />
 
           <div className="safe-fieldset">
             {form.listeningPorts.map((row, index) => (
@@ -3152,6 +3154,7 @@ function ApplicationOption({ label, checked, onChange }) {
 
 function CertificateModal({ certificate, onClose, onSave }) {
   const [submitting, setSubmitting] = useState(false);
+  const domainFieldRef = useRef(null);
   const [form, setForm] = useState(() => ({
     ...defaultCertificate,
     ...(certificate || {}),
@@ -3168,7 +3171,8 @@ function CertificateModal({ certificate, onClose, onSave }) {
   async function submit(event) {
     event.preventDefault();
     if (submitting) return;
-    const domains = listFromText(form.domains, /[\s,]+/);
+    const domainText = domainFieldRef.current?.commit() || form.domains;
+    const domains = listFromText(domainText, /[\s,]+/);
     if (!domains.length) {
       window.alert('Enter at least one certificate domain.');
       return;
@@ -3205,7 +3209,7 @@ function CertificateModal({ certificate, onClose, onSave }) {
 
         {form.source === 'upload' ? (
           <>
-            <DomainChipField label="Domain" value={form.domains} onChange={(value) => update('domains', value)} required />
+            <DomainChipField ref={domainFieldRef} label="Domain" value={form.domains} onChange={(value) => update('domains', value)} placeholder="example.com, *.example.com" required />
             <label className="field cert-text-field full">
               <span>Name <b>*</b></span>
               <input value={form.name} onChange={(event) => update('name', event.target.value)} placeholder="Certificate name" required />
@@ -3237,7 +3241,7 @@ function CertificateModal({ certificate, onClose, onSave }) {
           </>
         ) : (
           <>
-            <DomainChipField label="Domain" value={form.domains} onChange={(value) => update('domains', value)} required />
+            <DomainChipField ref={domainFieldRef} label="Domain" value={form.domains} onChange={(value) => update('domains', value)} placeholder="example.com, *.example.com" required />
             <label className="field cert-text-field full">
               <span>Email Address <b>*</b></span>
               <input type="email" value={form.email} onChange={(event) => update('email', event.target.value)} placeholder="admin@example.com" required />
@@ -3660,25 +3664,36 @@ function Modal({ title, onClose, children, wide = false, className = '' }) {
   );
 }
 
-function DomainChipField({ label, value, onChange, placeholder = 'Support multiple', required = false }) {
+const DomainChipField = forwardRef(function DomainChipField({ label, value, onChange, placeholder = 'Support multiple', required = false }, ref) {
   const inputRef = useRef(null);
   const domains = useMemo(() => listFromText(value, /[\s,]+/), [value]);
   const [draft, setDraft] = useState('');
 
+  function normalizeItems(nextItems) {
+    return Array.from(new Set(nextItems.map((item) => item.trim()).filter(Boolean)));
+  }
+
   function emit(nextItems) {
-    const unique = Array.from(new Set(nextItems.map((item) => item.trim()).filter(Boolean)));
-    onChange(unique.join('\n'));
+    const nextValue = normalizeItems(nextItems).join('\n');
+    onChange(nextValue);
+    return nextValue;
   }
 
   function commit(raw = draft) {
     const items = listFromText(raw, /[\s,]+/);
     if (!items.length) {
       setDraft('');
-      return;
+      return domains.join('\n');
     }
-    emit([...domains, ...items]);
+    const nextValue = emit([...domains, ...items]);
     setDraft('');
+    return nextValue;
   }
+
+  useImperativeHandle(ref, () => ({
+    commit,
+    value: () => normalizeItems([...domains, ...listFromText(draft, /[\s,]+/)]).join('\n')
+  }), [domains, draft, onChange]);
 
   function remove(item) {
     emit(domains.filter((domain) => domain !== item));
@@ -3761,7 +3776,7 @@ function DomainChipField({ label, value, onChange, placeholder = 'Support multip
       </div>
     </div>
   );
-}
+});
 
 function ModalFooter({ onClose, submitting = false, submitText = 'Save', pendingText = 'Saving...' }) {
   return (
