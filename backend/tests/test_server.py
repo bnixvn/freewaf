@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -16,6 +17,7 @@ from freewaf.server import (
     prepare_certbot_certificate_payload,
     remove_certificate_files,
     render_challenge_page,
+    ip_items_from_reference_text,
     secure_link_token,
     sync_ip_group_reference,
     verify_challenge_nonce,
@@ -212,6 +214,29 @@ class CertificateServerTests(unittest.TestCase):
         self.assertEqual(synced["items"], ["203.0.113.10", "198.51.100.0/24", "2001:db8::/32"])
         self.assertEqual(synced["lastSyncStatus"], "ok")
         self.assertEqual(synced["lastSyncMessage"], "3 entries synced")
+
+    def test_ip_group_reference_parser_reads_json_prefix_feeds(self):
+        payload = {
+            "creationTime": "2026-06-11T00:00:00Z",
+            "prefixes": [
+                {"ipv4Prefix": "66.249.64.0/27"},
+                {"ipv6Prefix": "2001:4860:4801:10::/64"},
+                {"service": "bingbot", "prefix": "40.77.167.0/24"},
+                {"cidr": "157.55.39.0/24"},
+            ],
+        }
+
+        items = ip_items_from_reference_text(json.dumps(payload))
+
+        self.assertEqual(
+            items,
+            [
+                "66.249.64.0/27",
+                "2001:4860:4801:10::/64",
+                "40.77.167.0/24",
+                "157.55.39.0/24",
+            ],
+        )
 
 
 class LogPaginationTests(unittest.TestCase):

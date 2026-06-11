@@ -1736,7 +1736,12 @@ function IpGroupsView({ data, setModal, toggleIpGroup, deleteIpGroup, syncIpGrou
           <tbody>
             {data.ipGroups.map((group) => (
               <tr key={group.id}>
-                <td><strong>{group.name}</strong><br /><span className="muted">{group.description || 'IP/CIDR list'}</span></td>
+                <td>
+                  <strong>{group.name}</strong>
+                  {group.managed && <span className="pill inline">managed</span>}
+                  <br />
+                  <span className="muted">{group.description || 'IP/CIDR list'}</span>
+                </td>
                 <td className="path-cell">
                   {group.referenceUrl ? <span className="code">{group.referenceUrl}</span> : <span className="muted">Manual</span>}
                 </td>
@@ -1766,8 +1771,12 @@ function IpGroupsView({ data, setModal, toggleIpGroup, deleteIpGroup, syncIpGrou
                         <RefreshCw size={17} className={pendingActions[`ip-group:${group.id}:sync`] ? 'spin' : ''} />
                       </button>
                     )}
-                    <button className="table-action" onClick={() => setModal({ type: 'ipGroup', group })} title="Edit"><Edit3 size={17} /></button>
-                    <button className="table-action" onClick={() => deleteIpGroup(group)} title="Delete"><Trash2 size={17} /></button>
+                    {!group.managed && (
+                      <>
+                        <button className="table-action" onClick={() => setModal({ type: 'ipGroup', group })} title="Edit"><Edit3 size={17} /></button>
+                        <button className="table-action" onClick={() => deleteIpGroup(group)} title="Delete"><Trash2 size={17} /></button>
+                      </>
+                    )}
                   </div>
                 </td>
               </tr>
@@ -2597,7 +2606,27 @@ function BotProtectModal({ site, onClose, onSave }) {
           <strong>Anti-Bot Challenge</strong>
           <Switch checked={boolValue(form.antiBotChallenge)} onChange={(checked) => update('antiBotChallenge', String(checked))} />
           <Info size={16} />
-          <span className="muted">Login pages and request spikes are challenged without challenging crawlers by User-Agent.</span>
+          <span className="muted">Login pages and request spikes are challenged; verified search engines can be bypassed by IP and User-Agent.</span>
+        </div>
+
+        <div className="bot-option-panel">
+          <div className="bot-control-row">
+            <span className="flood-accent" />
+            <strong>Verified Search Engine Bots</strong>
+            <Switch checked={boolValue(form.verifiedSearchBots)} onChange={(checked) => update('verifiedSearchBots', String(checked))} />
+            <Info size={16} />
+            <span className="muted">Only Google common crawlers and Bingbot from official synced CIDR feeds are trusted.</span>
+          </div>
+          <BotOptionCheckbox
+            label="Bypass browser challenge"
+            checked={boolValue(form.verifiedBypassChallenge)}
+            onChange={(checked) => update('verifiedBypassChallenge', String(checked))}
+          />
+          <BotOptionCheckbox
+            label="Bypass rate limits"
+            checked={boolValue(form.verifiedBypassRateLimit)}
+            onChange={(checked) => update('verifiedBypassRateLimit', String(checked))}
+          />
         </div>
 
         <div className="bot-option-panel">
@@ -4237,6 +4266,9 @@ function botProtectFormFromSite(site) {
   const config = botProtectPayloadFromConfig(site?.botProtection, site?.features?.botProtection !== false);
   return {
     antiBotChallenge: String(config.antiBotChallenge),
+    verifiedSearchBots: String(config.verifiedSearchBots.enabled),
+    verifiedBypassChallenge: String(config.verifiedSearchBots.bypassChallenge),
+    verifiedBypassRateLimit: String(config.verifiedSearchBots.bypassRateLimit),
     loginChallenge: String(config.loginChallenge.enabled),
     loginPathPatterns: textFromList(config.loginChallenge.pathPatterns),
     rateChallenge: String(config.rateChallenge.enabled),
@@ -4266,6 +4298,11 @@ function botProtectPayload(form) {
   return {
     enabled: antiBotChallenge || dynamicEnabled || antiReplay,
     antiBotChallenge,
+    verifiedSearchBots: {
+      enabled: antiBotChallenge && boolValue(form.verifiedSearchBots),
+      bypassChallenge: boolValue(form.verifiedBypassChallenge),
+      bypassRateLimit: boolValue(form.verifiedBypassRateLimit)
+    },
     loginChallenge: {
       enabled: loginChallenge,
       pathPatterns: listFromText(form.loginPathPatterns, /\n+/)
@@ -4295,6 +4332,7 @@ function botProtectPayloadFromConfig(config, enabledFallback = true) {
   const replay = source.antiReplay || {};
   const login = source.loginChallenge || {};
   const rate = source.rateChallenge || {};
+  const verified = source.verifiedSearchBots || {};
   const antiBotChallenge = source.antiBotChallenge ?? enabledFallback;
   const loginPatterns = Array.isArray(login.pathPatterns) ? login.pathPatterns : defaultBotLoginPathPatterns;
   const loginEnabled = Boolean(antiBotChallenge) && Boolean(login.enabled ?? true) && loginPatterns.length > 0;
@@ -4317,6 +4355,11 @@ function botProtectPayloadFromConfig(config, enabledFallback = true) {
   return {
     enabled: Boolean(enabled),
     antiBotChallenge: Boolean(antiBotChallenge),
+    verifiedSearchBots: {
+      enabled: Boolean(antiBotChallenge) && Boolean(verified.enabled ?? true),
+      bypassChallenge: Boolean(verified.bypassChallenge ?? true),
+      bypassRateLimit: Boolean(verified.bypassRateLimit ?? true)
+    },
     loginChallenge: {
       enabled: loginEnabled,
       pathPatterns: loginPatterns

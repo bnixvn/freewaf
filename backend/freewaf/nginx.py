@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .defaults import DEFAULT_BOT_LOGIN_PATH_PATTERNS, DEFAULT_BOT_RATE_CHALLENGE, challenge_secret
+from .defaults import DEFAULT_BOT_LOGIN_PATH_PATTERNS, DEFAULT_BOT_RATE_CHALLENGE, VERIFIED_BOT_PROVIDERS, challenge_secret
 
 
 NATIVE_TARGETS = {"all", "url", "headers", "method", "ip"}
@@ -97,6 +97,10 @@ def generate_nginx_common_blocks(state: dict) -> list[str]:
         "",
     ]
 
+    verified_bot_maps = render_verified_bot_maps(state, enabled_sites)
+    if verified_bot_maps:
+        blocks.extend(verified_bot_maps)
+
     if any(site_bot_protection(site).get("antiBotChallenge") for site in enabled_sites):
         blocks.extend(render_bot_detection_maps())
 
@@ -113,7 +117,7 @@ def generate_nginx_common_blocks(state: dict) -> list[str]:
         for site in enabled_sites
     )
     if rate_limit.get("enabled") and uses_global_rate:
-        blocks.extend(render_global_rate_limit_zones(rate_limit))
+        blocks.extend(render_global_rate_limit_zones(rate_limit, any_verified_bot_rate_bypass(enabled_sites)))
 
     acl_zones = render_acl_limit_zones(enabled_sites)
     if acl_zones:
@@ -310,6 +314,40 @@ def render_bot_detection_maps() -> list[str]:
     ]
 
 
+def render_verified_bot_maps(state: dict, sites: list[dict]) -> list[str]:
+    if not any(site_verified_search_bots(site).get("enabled") for site in sites):
+        return []
+
+    groups = {group.get("id"): group for group in state.get("ipGroups", []) if group.get("enabled")}
+    blocks = []
+    provider_vars = []
+    for provider_name, provider in VERIFIED_BOT_PROVIDERS.items():
+        ip_var = f"sfl_verified_{provider_name}_ip"
+        verified_var = f"sfl_verified_{provider_name}_bot"
+        ip_ref = f"${ip_var}"
+        provider_vars.append(f"${verified_var}")
+        blocks.append(render_geo_map(ip_var, ip_group_items(groups.get(provider["id"]))))
+        blocks.extend(
+            [
+                f'map "{ip_ref}:$http_user_agent" ${verified_var} {{',
+                "    default 0;",
+                f"    ~*^1:.*{provider['userAgentPattern']} 1;",
+                "}",
+            ]
+        )
+
+    blocks.extend(
+        [
+            f'map "{"|".join(provider_vars)}" $sfl_verified_search_bot {{',
+            "    default 0;",
+            "    ~1 1;",
+            "}",
+            "",
+        ]
+    )
+    return blocks
+
+
 def render_challenge_maps() -> list[str]:
     return [
         "map \"$request_method:$uri\" $sfl_under_attack_bypass {",
@@ -321,11 +359,31 @@ def render_challenge_maps() -> list[str]:
     ]
 
 
-def render_global_rate_limit_zones(rate_limit: dict) -> list[str]:
+def render_global_rate_limit_zones(rate_limit: dict, verified_bot_bypass: bool = False) -> list[str]:
     rate = nginx_rate(rate_limit)
+    ip_key = "$binary_remote_addr"
+    fingerprint_key = '"$remote_addr|$request_method|$http_user_agent"'
+    lines = []
+    if verified_bot_bypass:
+        lines.extend(
+            [
+                "map $sfl_verified_search_bot $sfl_global_rate_key {",
+                "    default $binary_remote_addr;",
+                '    1 "";',
+                "}",
+                "map $sfl_verified_search_bot $sfl_global_rate_fingerprint_key {",
+                '    default "$remote_addr|$request_method|$http_user_agent";',
+                '    1 "";',
+                "}",
+                "",
+            ]
+        )
+        ip_key = "$sfl_global_rate_key"
+        fingerprint_key = "$sfl_global_rate_fingerprint_key"
     return [
-        f"limit_req_zone $binary_remote_addr zone=freewaf_rate:10m rate={rate};",
-        f"limit_req_zone \"$remote_addr|$request_method|$http_user_agent\" zone=freewaf_rate_fingerprint:10m rate={rate};",
+        *lines,
+        f"limit_req_zone {ip_key} zone=freewaf_rate:10m rate={rate};",
+        f"limit_req_zone {fingerprint_key} zone=freewaf_rate_fingerprint:10m rate={rate};",
     ]
 
 
@@ -335,9 +393,20 @@ def render_bot_limit_zones(sites: list[dict]) -> list[str]:
         protection = site_bot_protection(site)
         if not protection.get("antiReplay"):
             continue
-        zones.append(
-            f"limit_req_zone \"$binary_remote_addr|$request_method|$request_uri|$http_user_agent\" zone={bot_replay_zone_name(site)}:10m rate=1r/s;"
-        )
+        key = '"$binary_remote_addr|$request_method|$request_uri|$http_user_agent"'
+        if site_verified_search_bots(site).get("bypassRateLimit"):
+            key_name = bot_replay_key_name(site)
+            zones.extend(
+                [
+                    f'map "$sfl_verified_search_bot:$remote_addr:$request_method:$request_uri:$http_user_agent" ${key_name} {{',
+                    '    ~^1: "";',
+                    '    default "$remote_addr|$request_method|$request_uri|$http_user_agent";',
+                    "}",
+                    "",
+                ]
+            )
+            key = f"${key_name}"
+        zones.append(f"limit_req_zone {key} zone={bot_replay_zone_name(site)}:10m rate=1r/s;")
     return zones
 
 
@@ -525,7 +594,7 @@ def render_redirect_server(site: dict, state: dict, server_name: str, port: int,
         "        if ($sfl_challenge = 1) {",
         "            return 461;",
         "        }",
-        *render_http_flood_modsecurity_rules(site),
+        *render_http_flood_modsecurity_rules(site, state),
         *render_rate_limit(state, site),
         *render_bot_replay_limit(site),
         f"        return {redirect_code} https://$host:{https_port}$request_uri;",
@@ -784,8 +853,8 @@ def render_application_location(site: dict, state: dict, upstream_name: str, ups
         address = nginx_path(redirect.get("address") or "http://127.0.0.1")
         status = int(redirect.get("statusCode") or proxy.get("redirectStatusCode") or 301)
         return [
-            *render_http_flood_modsecurity_rules(site),
-            *render_bot_rate_modsecurity_rules(site),
+            *render_http_flood_modsecurity_rules(site, state),
+            *render_bot_rate_modsecurity_rules(site, state),
             *render_hsts_header(proxy, is_ssl),
             *render_dynamic_protection_headers(site),
             *render_bot_replay_limit(site),
@@ -795,8 +864,8 @@ def render_application_location(site: dict, state: dict, upstream_name: str, ups
     if app_type == "static_files":
         root = static_root(site)
         return [
-            *render_http_flood_modsecurity_rules(site),
-            *render_bot_rate_modsecurity_rules(site),
+            *render_http_flood_modsecurity_rules(site, state),
+            *render_bot_rate_modsecurity_rules(site, state),
             *render_hsts_header(proxy, is_ssl),
             *render_dynamic_protection_headers(site),
             *render_bot_replay_limit(site),
@@ -805,8 +874,8 @@ def render_application_location(site: dict, state: dict, upstream_name: str, ups
         ]
 
     lines = [
-        *render_http_flood_modsecurity_rules(site),
-        *render_bot_rate_modsecurity_rules(site),
+        *render_http_flood_modsecurity_rules(site, state),
+        *render_bot_rate_modsecurity_rules(site, state),
         "        proxy_http_version 1.1;",
         "        proxy_set_header Upgrade $http_upgrade;",
         "        proxy_set_header Connection $sfl_connection_upgrade;",
@@ -995,7 +1064,7 @@ def http_flood_cooldown_required(site: dict) -> bool:
     return block_count > count
 
 
-def render_bot_rate_modsecurity_rules(site: dict, indent: str = "        ") -> list[str]:
+def render_bot_rate_modsecurity_rules(site: dict, state: dict | None = None, indent: str = "        ") -> list[str]:
     protection = site_bot_protection(site)
     rate = protection.get("rateChallenge") or {}
     if (
@@ -1024,6 +1093,7 @@ def render_bot_rate_modsecurity_rules(site: dict, indent: str = "        ") -> l
     marker = f"FREEWAF_BOT_RATE_DONE_{safe_identifier(site.get('id') or site.get('name') or 'site').upper()}"
     base = modsecurity_rule_id_base(site)
     rules = [
+        *render_verified_bot_modsecurity_skip_rules(state or {}, site, marker, base + 120, require_rate_bypass=True),
         (
             f'SecAction "id:{base + 1},phase:1,nolog,pass,'
             f'setvar:tx.{ua_hash_var}=none,setvar:tx.{accept_hash_var}=none,'
@@ -1104,7 +1174,7 @@ def bot_rate_block_minutes(rate: dict) -> int:
     return value if value in {10, 30, 60} else DEFAULT_BOT_RATE_CHALLENGE["blockMinutes"]
 
 
-def render_http_flood_modsecurity_rules(site: dict, indent: str = "        ") -> list[str]:
+def render_http_flood_modsecurity_rules(site: dict, state: dict | None = None, indent: str = "        ") -> list[str]:
     if not http_flood_cooldown_required(site) or os.environ.get("NGINX_HAS_MODSECURITY", "false").lower() != "true":
         return []
 
@@ -1118,7 +1188,9 @@ def render_http_flood_modsecurity_rules(site: dict, indent: str = "        ") ->
     count_var = f"freewaf_{site_key}_flood_count"
     blocked_var = f"freewaf_{site_key}_flood_blocked"
     base = modsecurity_rule_id_base(site) + 200
+    marker = f"FREEWAF_HTTP_FLOOD_DONE_{safe_identifier(site.get('id') or site.get('name') or 'site').upper()}"
     rules = [
+        *render_verified_bot_modsecurity_skip_rules(state or {}, site, marker, base + 80, require_rate_bypass=True),
         (
             f'SecAction "id:{base + 1},phase:1,nolog,pass,initcol:ip=%{{REMOTE_ADDR}},'
             f'setvar:tx.{window_var}=%{{TIME_YEAR}}-%{{TIME_MON}}-%{{TIME_DAY}}-%{{TIME_HOUR}}-%{{TIME_MIN}}"'
@@ -1138,8 +1210,43 @@ def render_http_flood_modsecurity_rules(site: dict, indent: str = "        ") ->
             f'"id:{base + 72},phase:1,deny,status:460,log,msg:FreeWAFHttpFloodBlock,'
             f'setvar:ip.{blocked_var}=1,expirevar:ip.{blocked_var}={block_seconds}"'
         ),
+        f"SecMarker {marker}",
     ]
     return [f"{indent}modsecurity_rules '{rule}';" for rule in rules]
+
+
+def render_verified_bot_modsecurity_skip_rules(
+    state: dict,
+    site: dict,
+    marker: str,
+    first_rule_id: int,
+    require_rate_bypass: bool = False,
+) -> list[str]:
+    config = site_verified_search_bots(site)
+    if not config.get("enabled"):
+        return []
+    if require_rate_bypass and not config.get("bypassRateLimit"):
+        return []
+
+    groups = {group.get("id"): group for group in state.get("ipGroups", []) if group.get("enabled")}
+    rules = []
+    rule_id = first_rule_id
+    for provider in VERIFIED_BOT_PROVIDERS.values():
+        items = ip_group_items(groups.get(provider["id"]))
+        if not items:
+            continue
+        for chunk in chunks(items, 80):
+            rules.append(
+                "\n".join(
+                    [
+                        f'SecRule REMOTE_ADDR "@ipMatch {",".join(chunk)}" '
+                        f'"id:{rule_id},phase:1,nolog,pass,chain,skipAfter:{marker}"',
+                        f'    SecRule REQUEST_HEADERS:User-Agent "@rx (?i:{provider["userAgentPattern"]})" "t:none"',
+                    ]
+                )
+            )
+            rule_id += 1
+    return rules
 
 
 def modsecurity_rule_id_base(site: dict) -> int:
@@ -1332,21 +1439,8 @@ def render_acl_limit_zones(sites: list[dict]) -> list[str]:
         limit = active_acl_access_limit(site)
         if not limit:
             continue
-        if acl_limit_action(limit) == "challenge_v1":
-            zones.extend(
-                [
-                    f"map $cookie_freewaf_challenge ${acl_key_name(site)} {{",
-                    "    default $binary_remote_addr;",
-                    "    passed \"\";",
-                    "}",
-                    "",
-                    f"map $cookie_freewaf_challenge ${acl_fingerprint_key_name(site)} {{",
-                    "    default \"$remote_addr|$request_method|$http_user_agent\";",
-                    "    passed \"\";",
-                    "}",
-                    "",
-                ]
-            )
+        if acl_limit_uses_mapped_key(site, limit):
+            zones.extend(render_acl_limit_key_maps(site, limit))
         zones.append(
             f"limit_req_zone {acl_limit_key(site, limit)} zone={acl_zone_name(site)}:10m rate={nginx_acl_rate(limit)};"
         )
@@ -1355,6 +1449,53 @@ def render_acl_limit_zones(sites: list[dict]) -> list[str]:
                 f"limit_req_zone {acl_fingerprint_limit_key(site, limit)} zone={acl_fingerprint_zone_name(site)}:10m rate={nginx_acl_rate(limit)};"
             )
     return zones
+
+
+def render_acl_limit_key_maps(site: dict, limit: dict) -> list[str]:
+    challenge = acl_limit_action(limit) == "challenge_v1"
+    verified_bypass = site_verified_search_bots(site).get("bypassRateLimit")
+    if challenge and verified_bypass:
+        return [
+            f'map "$sfl_verified_search_bot:$cookie_freewaf_challenge" ${acl_key_name(site)} {{',
+            "    default $binary_remote_addr;",
+            '    ~^1: "";',
+            '    "0:passed" "";',
+            "}",
+            "",
+            f'map "$sfl_verified_search_bot:$cookie_freewaf_challenge" ${acl_fingerprint_key_name(site)} {{',
+            '    default "$remote_addr|$request_method|$http_user_agent";',
+            '    ~^1: "";',
+            '    "0:passed" "";',
+            "}",
+            "",
+        ]
+    if challenge:
+        return [
+            f"map $cookie_freewaf_challenge ${acl_key_name(site)} {{",
+            "    default $binary_remote_addr;",
+            "    passed \"\";",
+            "}",
+            "",
+            f"map $cookie_freewaf_challenge ${acl_fingerprint_key_name(site)} {{",
+            "    default \"$remote_addr|$request_method|$http_user_agent\";",
+            "    passed \"\";",
+            "}",
+            "",
+        ]
+    if verified_bypass:
+        return [
+            f"map $sfl_verified_search_bot ${acl_key_name(site)} {{",
+            "    default $binary_remote_addr;",
+            '    1 "";',
+            "}",
+            "",
+            f"map $sfl_verified_search_bot ${acl_fingerprint_key_name(site)} {{",
+            '    default "$remote_addr|$request_method|$http_user_agent";',
+            '    1 "";',
+            "}",
+            "",
+        ]
+    return []
 
 
 def active_acl_access_limit(site: dict) -> dict | None:
@@ -1393,15 +1534,19 @@ def acl_fingerprint_key_name(site: dict) -> str:
 
 
 def acl_limit_key(site: dict, limit: dict) -> str:
-    if acl_limit_action(limit) == "challenge_v1":
+    if acl_limit_uses_mapped_key(site, limit):
         return f"${acl_key_name(site)}"
     return "$binary_remote_addr"
 
 
 def acl_fingerprint_limit_key(site: dict, limit: dict) -> str:
-    if acl_limit_action(limit) == "challenge_v1":
+    if acl_limit_uses_mapped_key(site, limit):
         return f"${acl_fingerprint_key_name(site)}"
     return "\"$remote_addr|$request_method|$http_user_agent\""
+
+
+def acl_limit_uses_mapped_key(site: dict, limit: dict) -> bool:
+    return acl_limit_action(limit) == "challenge_v1" or bool(site_verified_search_bots(site).get("bypassRateLimit"))
 
 
 def acl_limit_action(limit: dict | None) -> str:
@@ -1463,6 +1608,7 @@ def site_bot_protection(site: dict) -> dict:
     source = site.get("botProtection") if isinstance(site.get("botProtection"), dict) else {}
     dynamic = source.get("dynamicProtection") if isinstance(source.get("dynamicProtection"), dict) else {}
     anti_replay = source.get("antiReplay") if isinstance(source.get("antiReplay"), dict) else {}
+    verified = source.get("verifiedSearchBots") if isinstance(source.get("verifiedSearchBots"), dict) else {}
     enabled = features["botProtection"] and source.get("enabled") is not False
     anti_bot = enabled and source.get("antiBotChallenge") is not False
     login = source.get("loginChallenge") if isinstance(source.get("loginChallenge"), dict) else {}
@@ -1477,6 +1623,11 @@ def site_bot_protection(site: dict) -> dict:
     return {
         "enabled": enabled,
         "antiBotChallenge": anti_bot,
+        "verifiedSearchBots": {
+            "enabled": anti_bot and verified.get("enabled") is not False,
+            "bypassChallenge": verified.get("bypassChallenge") is not False,
+            "bypassRateLimit": verified.get("bypassRateLimit") is not False,
+        },
         "loginChallenge": {
             "enabled": anti_bot and login.get("enabled") is not False and bool(login_patterns),
             "pathPatterns": login_patterns[:64],
@@ -1503,8 +1654,26 @@ def site_under_attack(site: dict) -> dict:
     return {"enabled": bool(source.get("enabled"))}
 
 
+def site_verified_search_bots(site: dict) -> dict:
+    protection = site_bot_protection(site)
+    config = protection.get("verifiedSearchBots") if isinstance(protection.get("verifiedSearchBots"), dict) else {}
+    return {
+        "enabled": bool(config.get("enabled")),
+        "bypassChallenge": bool(config.get("enabled") and config.get("bypassChallenge")),
+        "bypassRateLimit": bool(config.get("enabled") and config.get("bypassRateLimit")),
+    }
+
+
+def any_verified_bot_rate_bypass(sites: list[dict]) -> bool:
+    return any(site_verified_search_bots(site).get("bypassRateLimit") for site in sites)
+
+
 def bot_replay_zone_name(site: dict) -> str:
     return f"sfl_replay_{safe_identifier(site.get('id') or site.get('name') or 'site')}"
+
+
+def bot_replay_key_name(site: dict) -> str:
+    return f"{bot_replay_zone_name(site)}_key"
 
 
 def should_emit_rule_for_site(rule: dict, site: dict) -> bool:
@@ -1549,6 +1718,15 @@ def render_bot_protection(site: dict) -> list[str]:
             "    if ($sfl_challenge_passed = 1) {",
             "        set $sfl_bot_challenge 0;",
             "    }",
+            *(
+                [
+                    "    if ($sfl_verified_search_bot = 1) {",
+                    "        set $sfl_bot_challenge 0;",
+                    "    }",
+                ]
+                if site_verified_search_bots(site).get("bypassChallenge")
+                else []
+            ),
             "    if ($sfl_allow = 1) {",
             "        set $sfl_bot_block 0;",
             "        set $sfl_bot_challenge 0;",
@@ -1605,6 +1783,15 @@ def render_under_attack_protection(site: dict) -> list[str]:
         "    if ($sfl_challenge_passed = 1) {",
         "        set $sfl_under_attack_challenge 0;",
         "    }",
+        *(
+            [
+                "    if ($sfl_verified_search_bot = 1) {",
+                "        set $sfl_under_attack_challenge 0;",
+                "    }",
+            ]
+            if site_verified_search_bots(site).get("bypassChallenge")
+            else []
+        ),
         "    if ($sfl_allow = 1) {",
         "        set $sfl_under_attack_challenge 0;",
         "    }",
@@ -2068,3 +2255,8 @@ def parse_int(value) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def chunks(items: list[str], size: int) -> list[list[str]]:
+    width = max(1, size)
+    return [items[index : index + width] for index in range(0, len(items), width)]

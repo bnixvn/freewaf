@@ -10,7 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from freewaf.defaults import BUILTIN_RULES, DEFAULT_SETTINGS
+from freewaf.defaults import BUILTIN_RULES, DEFAULT_SETTINGS, VERIFIED_BOT_PROVIDERS
 from freewaf.nginx import generate_nginx_config, parse_nginx_logs, write_nginx_config
 
 
@@ -713,6 +713,7 @@ class NginxGeneratorTests(unittest.TestCase):
                     "features": {"botProtection": True},
                     "botProtection": {
                         "antiBotChallenge": True,
+                        "verifiedSearchBots": {"enabled": False},
                         "rateChallenge": {
                             "enabled": True,
                             "windowSeconds": 10,
@@ -758,6 +759,68 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn('REQUEST_COOKIES:freewaf_challenge "@rx .+"', config)
         self.assertGreater(config.find("freewaf_site_demo_bot_count"), config.find("    location / {"))
         self.assertIn('limit_req_zone "$remote_addr|$request_method|$http_user_agent" zone=freewaf_rate_fingerprint', config)
+
+    def test_verified_search_engine_bots_use_official_ip_and_user_agent_match(self):
+        google = VERIFIED_BOT_PROVIDERS["google"]
+        bing = VERIFIED_BOT_PROVIDERS["bing"]
+        state = make_state(
+            ipGroups=[
+                {"id": google["id"], "name": google["name"], "items": ["66.249.64.0/27"], "enabled": True},
+                {"id": bing["id"], "name": bing["name"], "items": ["40.77.167.0/24"], "enabled": True},
+            ],
+            sites=[
+                {
+                    "id": "site-demo",
+                    "name": "Demo",
+                    "hostnames": ["localhost"],
+                    "origin": "http://127.0.0.1:9090",
+                    "listen": 8080,
+                    "mode": "block",
+                    "enabled": True,
+                    "features": {"httpFlood": True, "botProtection": True},
+                    "underAttack": {"enabled": True},
+                    "botProtection": {
+                        "antiBotChallenge": True,
+                        "verifiedSearchBots": {
+                            "enabled": True,
+                            "bypassChallenge": True,
+                            "bypassRateLimit": True,
+                        },
+                        "rateChallenge": {
+                            "enabled": True,
+                            "windowSeconds": 10,
+                            "challengeCount": 300,
+                            "blockCount": 700,
+                            "blockMinutes": 30,
+                        },
+                    },
+                }
+            ],
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "NGINX_HAS_MODSECURITY": "true",
+                "NGINX_MODSECURITY_BASE_RULES_FILE": "/etc/freewaf/modsecurity/base.conf",
+            },
+            clear=False,
+        ):
+            config = generate_nginx_config(state)
+
+        self.assertIn("geo $sfl_verified_google_ip", config)
+        self.assertIn("66.249.64.0/27 1;", config)
+        self.assertIn('map "$sfl_verified_google_ip:$http_user_agent" $sfl_verified_google_bot {', config)
+        self.assertIn("Googlebot|Google-InspectionTool|GoogleOther", config)
+        self.assertIn("geo $sfl_verified_bing_ip", config)
+        self.assertIn("40.77.167.0/24 1;", config)
+        self.assertIn('map "$sfl_verified_google_bot|$sfl_verified_bing_bot" $sfl_verified_search_bot {', config)
+        self.assertIn("map $sfl_verified_search_bot $sfl_global_rate_key", config)
+        self.assertIn("limit_req_zone $sfl_global_rate_key zone=freewaf_rate:10m", config)
+        self.assertIn("if ($sfl_verified_search_bot = 1)", config)
+        self.assertIn("set $sfl_under_attack_challenge 0;", config)
+        self.assertIn('SecRule REMOTE_ADDR "@ipMatch 66.249.64.0/27"', config)
+        self.assertIn("skipAfter:FREEWAF_BOT_RATE_DONE_SITE_DEMO", config)
 
     def test_http_flood_emits_temporary_block_cooldown_rules(self):
         state = make_state(

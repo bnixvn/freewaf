@@ -77,6 +77,23 @@ DEFAULT_BOT_RATE_CHALLENGE = {
     "blockMinutes": 30,
 }
 
+VERIFIED_BOT_PROVIDERS = {
+    "google": {
+        "id": "ipgroup-verified-googlebot",
+        "name": "Verified Google Common Crawlers",
+        "description": "Official Google common crawler CIDR ranges. Managed and synced daily by FreeWAF.",
+        "referenceUrl": "https://developers.google.com/static/crawling/ipranges/common-crawlers.json",
+        "userAgentPattern": r"(?:Googlebot|Google-InspectionTool|GoogleOther|Storebot-Google|Google-CloudVertexBot)",
+    },
+    "bing": {
+        "id": "ipgroup-verified-bingbot",
+        "name": "Verified Bingbot",
+        "description": "Official Bingbot CIDR ranges. Managed and synced daily by FreeWAF.",
+        "referenceUrl": "https://www.bing.com/toolbox/bingbot.json",
+        "userAgentPattern": r"(?:bingbot|adidxbot|MicrosoftPreview)",
+    },
+}
+
 
 def challenge_secret() -> str:
     return os.environ.get("FREEWAF_CHALLENGE_SECRET", "").strip() or "freewaf-development-challenge-secret"
@@ -364,6 +381,11 @@ def create_default_state(now: str | None = None) -> dict:
                 "botProtection": {
                     "enabled": True,
                     "antiBotChallenge": True,
+                    "verifiedSearchBots": {
+                        "enabled": True,
+                        "bypassChallenge": True,
+                        "bypassRateLimit": True,
+                    },
                     "loginChallenge": {
                         "enabled": True,
                         "pathPatterns": deepcopy(DEFAULT_BOT_LOGIN_PATH_PATTERNS),
@@ -412,7 +434,25 @@ def create_default_state(now: str | None = None) -> dict:
                 "enabled": True,
                 "createdAt": timestamp,
                 "updatedAt": timestamp,
-            }
+            },
+            *[
+                {
+                    "id": provider["id"],
+                    "name": provider["name"],
+                    "description": provider["description"],
+                    "referenceUrl": provider["referenceUrl"],
+                    "items": [],
+                    "lastSyncedAt": "",
+                    "lastSyncStatus": "",
+                    "lastSyncMessage": "",
+                    "enabled": True,
+                    "managed": True,
+                    "provider": provider_name,
+                    "createdAt": timestamp,
+                    "updatedAt": timestamp,
+                }
+                for provider_name, provider in VERIFIED_BOT_PROVIDERS.items()
+            ],
         ],
         "accessRules": [],
         "users": [],

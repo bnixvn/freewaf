@@ -1053,7 +1053,32 @@ def fetch_reference_text(url: str) -> str:
 
 
 def ip_items_from_reference_text(text: str) -> list[str]:
-    return normalize_ip_items(text)
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return normalize_ip_items(text)
+
+    candidates = []
+
+    def walk(value) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                lowered = str(key).lower()
+                if isinstance(item, str) and (
+                    lowered in {"ipv4prefix", "ipv6prefix", "prefix", "cidr"}
+                    or lowered.endswith("prefix")
+                    or lowered.endswith("cidr")
+                ):
+                    candidates.append(item)
+                    continue
+                walk(item)
+            return
+        if isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(payload)
+    return normalize_ip_items(candidates) if candidates else normalize_ip_items(text)
 
 
 def is_ip_group_sync_due(group: dict) -> bool:

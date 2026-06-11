@@ -9,11 +9,41 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from freewaf.defaults import BUILTIN_RULES
-from freewaf.store import Store, build_stats, country_for_ip, normalize_state
+from freewaf.defaults import BUILTIN_RULES, VERIFIED_BOT_PROVIDERS
+from freewaf.store import Store, StoreError, build_stats, country_for_ip, normalize_state
 
 
 class StoreTests(unittest.TestCase):
+    def test_verified_search_bot_ip_groups_are_managed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.json")
+            store.init()
+            groups = {group["id"]: group for group in store.get_state()["ipGroups"]}
+
+            for provider_name, provider in VERIFIED_BOT_PROVIDERS.items():
+                group = groups[provider["id"]]
+                self.assertEqual(group["name"], provider["name"])
+                self.assertEqual(group["referenceUrl"], provider["referenceUrl"])
+                self.assertEqual(group["provider"], provider_name)
+                self.assertTrue(group["managed"])
+                self.assertTrue(group["enabled"])
+
+                updated = store.upsert_ip_group(
+                    {
+                        "name": "User changed name",
+                        "referenceUrl": "https://example.test/unsafe.txt",
+                        "items": ["203.0.113.10"],
+                    },
+                    provider["id"],
+                )
+                self.assertEqual(updated["name"], provider["name"])
+                self.assertEqual(updated["referenceUrl"], provider["referenceUrl"])
+                self.assertEqual(updated["provider"], provider_name)
+                self.assertTrue(updated["managed"])
+
+                with self.assertRaises(StoreError):
+                    store.delete_ip_group(provider["id"])
+
     def test_init_updates_builtin_rule_definition_and_preserves_user_controls(self):
         builtin = next(rule for rule in BUILTIN_RULES if rule["id"] == "builtin-laravel-sensitive-files")
         with tempfile.TemporaryDirectory() as directory:

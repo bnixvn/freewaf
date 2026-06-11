@@ -26,6 +26,7 @@ from .defaults import (
     DEFAULT_BOT_LOGIN_PATH_PATTERNS,
     DEFAULT_BOT_RATE_CHALLENGE,
     DEFAULT_SETTINGS,
+    VERIFIED_BOT_PROVIDERS,
     create_default_state,
     utc_now,
 )
@@ -142,6 +143,30 @@ class Store:
                 }
             )
             changed = True
+
+        existing_groups = {group["id"]: group for group in self.state["ipGroups"]}
+        for provider_name, provider in VERIFIED_BOT_PROVIDERS.items():
+            stored = existing_groups.get(provider["id"])
+            managed = {
+                "id": provider["id"],
+                "name": provider["name"],
+                "description": provider["description"],
+                "referenceUrl": provider["referenceUrl"],
+                "managed": True,
+                "provider": provider_name,
+                "enabled": True,
+                "createdAt": (stored or {}).get("createdAt") or now,
+                "updatedAt": (stored or {}).get("updatedAt") or now,
+            }
+            if stored:
+                updated = {**stored, **managed}
+                if updated != stored:
+                    stored.clear()
+                    stored.update(updated)
+                    changed = True
+            else:
+                self.state["ipGroups"].append({**managed, "items": [], "lastSyncedAt": "", "lastSyncStatus": "", "lastSyncMessage": ""})
+                changed = True
 
         for index, group in enumerate(self.state["ipGroups"]):
             prepared = self.prepare_ip_group_storage(group)
@@ -274,6 +299,18 @@ class Store:
             groups = self._state()["ipGroups"]
             index = find_index(groups, target_id) if target_id else -1
             existing = groups[index] if index >= 0 else None
+            if existing and existing.get("managed"):
+                provider = VERIFIED_BOT_PROVIDERS.get(str(existing.get("provider") or ""))
+                if provider:
+                    payload = {
+                        **payload,
+                        "name": provider["name"],
+                        "description": provider["description"],
+                        "referenceUrl": provider["referenceUrl"],
+                        "managed": True,
+                        "provider": existing.get("provider"),
+                        "enabled": True,
+                    }
             has_items = "items" in payload or "content" in payload
             group = normalize_ip_group_input(payload, target_id, now)
             if existing and not has_items:
@@ -299,6 +336,8 @@ class Store:
     def delete_ip_group(self, group_id: str) -> None:
         with self.lock:
             existing = next((group for group in self._state()["ipGroups"] if group["id"] == group_id), None)
+            if existing and existing.get("managed"):
+                raise StoreError(400, "Managed verified bot IP groups cannot be deleted")
             before = len(self._state()["ipGroups"])
             self._state()["ipGroups"] = [group for group in self._state()["ipGroups"] if group["id"] != group_id]
             if len(self._state()["ipGroups"]) == before:
@@ -766,6 +805,8 @@ def normalize_stored_ip_group(group: dict) -> dict:
         "lastSyncStatus": str(group.get("lastSyncStatus") or ""),
         "lastSyncMessage": str(group.get("lastSyncMessage") or ""),
         "enabled": group.get("enabled") is not False,
+        "managed": bool(group.get("managed")),
+        "provider": str(group.get("provider") or ""),
         "createdAt": group.get("createdAt") or now,
         "updatedAt": group.get("updatedAt") or now,
     }
@@ -918,6 +959,8 @@ def normalize_ip_group_input(payload: dict, group_id: str | None, now: str) -> d
         "lastSyncStatus": str(payload.get("lastSyncStatus") or ""),
         "lastSyncMessage": str(payload.get("lastSyncMessage") or ""),
         "enabled": payload.get("enabled") is not False,
+        "managed": bool(payload.get("managed")),
+        "provider": str(payload.get("provider") or ""),
         "createdAt": now,
         "updatedAt": now,
     }
@@ -1340,6 +1383,8 @@ def normalize_bot_protection_config(value, enabled_value=None) -> dict:
     dynamic = dynamic if isinstance(dynamic, dict) else {}
     anti_replay = source.get("antiReplay") or source.get("anti_replay")
     anti_replay = anti_replay if isinstance(anti_replay, dict) else {}
+    verified = source.get("verifiedSearchBots") or source.get("verified_search_bots")
+    verified = verified if isinstance(verified, dict) else {}
 
     dynamic_html = normalize_bool(dynamic.get("html") if "html" in dynamic else source.get("htmlDynamicEncryption"), False)
     dynamic_js = normalize_bool(dynamic.get("js") if "js" in dynamic else source.get("jsDynamicEncryption"), False)
@@ -1364,6 +1409,11 @@ def normalize_bot_protection_config(value, enabled_value=None) -> dict:
     return {
         "enabled": enabled,
         "antiBotChallenge": anti_bot,
+        "verifiedSearchBots": {
+            "enabled": normalize_bool(verified.get("enabled"), True),
+            "bypassChallenge": normalize_bool(verified.get("bypassChallenge") if "bypassChallenge" in verified else verified.get("bypass_challenge"), True),
+            "bypassRateLimit": normalize_bool(verified.get("bypassRateLimit") if "bypassRateLimit" in verified else verified.get("bypass_rate_limit"), True),
+        },
         "loginChallenge": login_challenge,
         "rateChallenge": rate_challenge,
         "dynamicProtection": {
