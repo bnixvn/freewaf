@@ -11,6 +11,7 @@ import {
   LockKeyhole,
   ListFilter,
   LogOut,
+  Menu,
   Network,
   Plus,
   QrCode,
@@ -352,6 +353,20 @@ export default function App() {
   const [logPage, setLogPage] = useState(1);
   const [logPageSize, setLogPageSize] = useState(50);
   const [logResult, setLogResult] = useState({ logs: [], total: 0, page: 1, pages: 1, domains: [] });
+  const [navOpen, setNavOpen] = useState(false);
+
+  useEffect(() => {
+    if (!navOpen) return undefined;
+    const onKey = (event) => {
+      if (event.key === 'Escape') setNavOpen(false);
+    };
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.body.style.overflow = '';
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [navOpen]);
 
   useEffect(() => {
     loadAuth();
@@ -1145,32 +1160,58 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
+    <div className={`app-shell ${navOpen ? 'nav-open' : ''}`}>
+      <button
+        className="nav-scrim"
+        type="button"
+        aria-label="Close navigation"
+        tabIndex={navOpen ? 0 : -1}
+        onClick={() => setNavOpen(false)}
+      />
+      <aside className="sidebar" aria-hidden={false}>
         <div className="brand">
           <span className="brand-mark"><Shield size={22} /></span>
           <span>
             <strong>FreeWAF</strong>
             <small>Reverse proxy WAF</small>
           </span>
+          <button
+            type="button"
+            className="nav-close"
+            aria-label="Close navigation"
+            onClick={() => setNavOpen(false)}
+          >
+            <X size={18} />
+          </button>
         </div>
         <nav className="nav">
-          <NavButton active={activeView === 'dashboard'} icon={<Activity />} label="Dashboard" onClick={() => setActiveView('dashboard')} />
-          <NavButton active={activeView === 'sites'} icon={<Server />} label="Sites" onClick={() => setActiveView('sites')} />
-          <NavButton active={activeView === 'rules'} icon={<ShieldCheck />} label="Rules" onClick={() => setActiveView('rules')} />
-          <NavButton active={activeView === 'access'} icon={<ListFilter />} label="Access" onClick={() => setActiveView('access')} />
-          <NavButton active={activeView === 'ipGroups'} icon={<Network />} label="IP Groups" onClick={() => setActiveView('ipGroups')} />
-          <NavButton active={activeView === 'certificates'} icon={<KeyRound />} label="Certs" onClick={() => setActiveView('certificates')} />
-          <NavButton active={activeView === 'logs'} icon={<ListFilter />} label="Logs" onClick={() => setActiveView('logs')} />
-          <NavButton active={activeView === 'settings'} icon={<Settings />} label="Settings" onClick={() => setActiveView('settings')} />
+          <NavButton active={activeView === 'dashboard'} icon={<Activity />} label="Dashboard" onClick={() => { setActiveView('dashboard'); setNavOpen(false); }} />
+          <NavButton active={activeView === 'sites'} icon={<Server />} label="Sites" onClick={() => { setActiveView('sites'); setNavOpen(false); }} />
+          <NavButton active={activeView === 'rules'} icon={<ShieldCheck />} label="Rules" onClick={() => { setActiveView('rules'); setNavOpen(false); }} />
+          <NavButton active={activeView === 'access'} icon={<ListFilter />} label="Access" onClick={() => { setActiveView('access'); setNavOpen(false); }} />
+          <NavButton active={activeView === 'ipGroups'} icon={<Network />} label="IP Groups" onClick={() => { setActiveView('ipGroups'); setNavOpen(false); }} />
+          <NavButton active={activeView === 'certificates'} icon={<KeyRound />} label="Certs" onClick={() => { setActiveView('certificates'); setNavOpen(false); }} />
+          <NavButton active={activeView === 'logs'} icon={<ListFilter />} label="Logs" onClick={() => { setActiveView('logs'); setNavOpen(false); }} />
+          <NavButton active={activeView === 'settings'} icon={<Settings />} label="Settings" onClick={() => { setActiveView('settings'); setNavOpen(false); }} />
         </nav>
       </aside>
 
       <main className="main">
         <header className="topbar">
-          <div>
-            <p className="eyebrow">Protected traffic</p>
-            <h1>{viewTitles[activeView]}</h1>
+          <div className="topbar-title">
+            <button
+              type="button"
+              className="nav-toggle"
+              aria-label="Open navigation"
+              aria-expanded={navOpen}
+              onClick={() => setNavOpen(true)}
+            >
+              <Menu size={20} />
+            </button>
+            <div className="topbar-heading">
+              <p className="eyebrow">Protected traffic</p>
+              <h1>{viewTitles[activeView]}</h1>
+            </div>
           </div>
           <div className="toolbar">
             <button className="icon-button" onClick={refreshCurrentView} title="Refresh" disabled={loading || logsLoading}>
