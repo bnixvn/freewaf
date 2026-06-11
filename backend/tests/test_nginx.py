@@ -311,6 +311,35 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("ssl_certificate_key nginx/certs/demo.key;", config)
         self.assertIn("return 301 https://$host:443$request_uri;", config)
 
+    def test_uploaded_certificate_paths_use_configured_absolute_cert_directory(self):
+        state = make_state(
+            certificates=[
+                {
+                    "id": "cert-demo",
+                    "name": "Demo cert",
+                    "certFile": "nginx/certs/demo.crt",
+                    "keyFile": "nginx/certs/demo.key",
+                }
+            ],
+            sites=[
+                {
+                    "id": "site-demo",
+                    "name": "Demo",
+                    "hostnames": ["demo.example.test"],
+                    "origin": "http://127.0.0.1:9090",
+                    "ports": ["443_ssl"],
+                    "tls": {"enabled": True, "certificateId": "cert-demo"},
+                    "enabled": True,
+                }
+            ],
+        )
+
+        with mock.patch.dict(os.environ, {"NGINX_CERT_DIR": "/opt/freewaf/nginx/certs"}, clear=False):
+            config = generate_nginx_config(state)
+
+        self.assertIn("ssl_certificate /opt/freewaf/nginx/certs/demo.crt;", config)
+        self.assertIn("ssl_certificate_key /opt/freewaf/nginx/certs/demo.key;", config)
+
     def test_force_https_redirect_server_enforces_waf_before_redirect(self):
         state = make_state(
             settings=make_settings(proxy={"forceHttps": True}),

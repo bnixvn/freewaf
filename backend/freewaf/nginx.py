@@ -700,8 +700,8 @@ def render_proxy_server(
     if is_ssl and certificate:
         lines.extend(
             [
-                f"    ssl_certificate {nginx_path(certificate['certFile'])};",
-                f"    ssl_certificate_key {nginx_path(certificate['keyFile'])};",
+                f"    ssl_certificate {certificate_file_path(certificate['certFile'])};",
+                f"    ssl_certificate_key {certificate_file_path(certificate['keyFile'])};",
                 "    ssl_protocols TLSv1.2 TLSv1.3;",
                 "    ssl_session_cache shared:SSL:10m;",
                 "    error_page 497 =302 https://$host:$server_port$request_uri;",
@@ -2326,6 +2326,17 @@ def exact_any_regex(values: list[str]) -> str:
 
 def nginx_path(value: str) -> str:
     return str(value).replace("\\", "/").replace(";", "").replace("{", "").replace("}", "")
+
+
+def certificate_file_path(value: str) -> str:
+    raw = nginx_path(value)
+    path = Path(raw)
+    if path.is_absolute():
+        return raw
+    if raw.startswith("nginx/certs/"):
+        configured = Path(os.environ.get("NGINX_CERT_DIR", "./nginx/certs"))
+        return nginx_path(str(configured / path.name))
+    return raw
 
 
 def nginx_value(value: str) -> str:
