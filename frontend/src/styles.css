@@ -2387,6 +2387,22 @@ td {
   .challenge-settings-layout {
     grid-template-columns: 1fr;
   }
+
+  .chart {
+    grid-template-columns: repeat(24, minmax(0, 1fr));
+    overflow-x: hidden;
+  }
+
+  .panel,
+  .table-panel,
+  .dashboard-traffic-panel,
+  .dashboard-qps-panel,
+  .dashboard-status-panel,
+  .dashboard-blocking-panel,
+  .dashboard-insight-band {
+    min-width: 0;
+    overflow-x: hidden;
+  }
 }
 
 @media (max-width: 768px) {
@@ -2537,9 +2553,10 @@ td {
   }
 
   .chart {
-    grid-template-columns: repeat(24, minmax(22px, 1fr));
-    gap: 3px;
-    padding-bottom: 6px;
+    grid-template-columns: repeat(24, minmax(0, 1fr));
+    gap: 2px;
+    padding-bottom: 4px;
+    overflow-x: hidden;
     -webkit-overflow-scrolling: touch;
   }
 
@@ -2549,6 +2566,30 @@ td {
 
   .chart .bar-value {
     font-size: 9px;
+  }
+
+  .chart .bar {
+    border-radius: 2px 2px 0 0;
+  }
+
+  .panel,
+  .table-panel,
+  .dashboard-traffic-panel,
+  .dashboard-qps-panel,
+  .dashboard-status-panel,
+  .dashboard-blocking-panel,
+  .dashboard-insight-band {
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  .qps-bars {
+    gap: 2px;
+  }
+
+  .request-status-chart {
+    height: 130px;
   }
 
   .traffic-pills {
