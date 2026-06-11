@@ -611,6 +611,8 @@ def normalize_panel_settings(value) -> dict:
         "httpsEnabled": normalize_bool(source.get("httpsEnabled") if "httpsEnabled" in source else source.get("https_enabled"), False),
         "certificateId": str(source.get("certificateId") or source.get("certificate_id") or ""),
         "publicUrl": normalize_panel_url(source.get("publicUrl") or source.get("public_url") or ""),
+        "faviconUrl": normalize_optional_https_url(source.get("faviconUrl") or source.get("favicon_url") or ""),
+        "logoUrl": normalize_optional_https_url(source.get("logoUrl") or source.get("logo_url") or ""),
         "sessionHours": min(max(session_hours, 1), 168),
     }
 
@@ -1660,10 +1662,35 @@ def normalize_panel_url(value) -> str:
     item = str(value or "").strip().replace("\x00", "")
     if not item:
         return ""
+    # Accept either a bare domain (e.g. "waf.example.com") or a full URL.
+    # If a scheme is present, validate it; otherwise treat the value as a hostname/domain.
+    if "://" in item:
+        parsed = urlparse(item)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise StoreError(400, "Panel URL must be a valid http or https URL")
+        host = parsed.netloc
+    else:
+        host = item.rstrip("/")
+    # Strip optional port and path remnants for validation, then keep the user's normalized value.
+    bare = host.split("/", 1)[0]
+    hostname = bare.split(":", 1)[0]
+    if not hostname or any(ch.isspace() for ch in hostname):
+        raise StoreError(400, "Panel domain must be a valid hostname")
+    if not all(ch.isalnum() or ch in "-._" for ch in hostname):
+        raise StoreError(400, "Panel domain must be a valid hostname")
+    return host.rstrip("/")
+
+
+def normalize_optional_https_url(value, *, max_length: int = 1024) -> str:
+    item = str(value or "").strip().replace("\x00", "")
+    if not item:
+        return ""
+    if item.startswith("data:"):
+        return item[:max_length]
     parsed = urlparse(item)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise StoreError(400, "Panel URL must be a valid http or https URL")
-    return item.rstrip("/")
+        raise StoreError(400, "URL must be a valid http or https URL")
+    return item[:max_length]
 
 
 def normalize_optional_http_url(value) -> str:

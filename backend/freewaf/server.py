@@ -32,7 +32,7 @@ from .nginx import (
     write_nginx_config,
 )
 from .defaults import challenge_secret, utc_now
-from .store import Store, StoreError, build_stats, country_for_ip, normalize_ip_items, resolve_data_file
+from .store import Store, StoreError, build_stats, country_for_ip, match_log_site, normalize_ip_items, resolve_data_file
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -161,8 +161,10 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 page = max(1, parse_int((query.get("page") or ["1"])[0], 1))
                 offset = max(0, parse_int((query.get("offset") or [str((page - 1) * page_size)])[0], (page - 1) * page_size))
                 domain = str((query.get("domain") or [""])[0]).strip()
+                site_id = str((query.get("siteId") or query.get("site_id") or [""])[0]).strip()
+                verdict = str((query.get("verdict") or [""])[0]).strip()
                 search = str((query.get("search") or [""])[0]).strip()
-                self.send_json(200, combined_logs_page(store, page_size, offset, domain, search))
+                self.send_json(200, combined_logs_page(store, page_size, offset, domain, search, site_id, verdict))
                 return
 
             if parsed.path == "/api/nginx/render":
@@ -892,12 +894,16 @@ def combined_stats_logs(store: Store) -> list[dict]:
     return sorted(logs, key=lambda entry: entry.get("at") or "", reverse=True)[:limit]
 
 
-def combined_logs_page(store: Store, limit: int, offset: int = 0, domain: str = "", search: str = "") -> dict:
+def combined_logs_page(store: Store, limit: int, offset: int = 0, domain: str = "", search: str = "", site_id: str = "", verdict: str = "") -> dict:
     scan_limit = log_scan_limit(offset + limit)
+    state = store.get_state()
+    sites = state.get("sites", []) or []
+    site_by_id = {str(site.get("id") or ""): site for site in sites if site.get("id")}
     logs = [*parse_nginx_logs(ROOT_DIR, scan_limit), *store.get_logs(scan_limit)]
     logs = sorted(logs, key=lambda entry: entry.get("at") or "", reverse=True)
     domains = sorted({log_domain(entry) for entry in logs if log_domain(entry)})
-    filtered = [entry for entry in logs if log_matches(entry, domain, search)]
+    site_options = [{"id": str(site.get("id") or ""), "name": str(site.get("name") or "")} for site in sites if site.get("id")]
+    filtered = [entry for entry in logs if log_matches(entry, domain, search, site_id, verdict, sites, site_by_id)]
     total = len(filtered)
     pages = max(1, (total + limit - 1) // limit) if limit else 1
     if total and offset >= total:
@@ -915,8 +921,11 @@ def combined_logs_page(store: Store, limit: int, offset: int = 0, domain: str = 
         "page": page,
         "pages": pages,
         "domain": domain,
+        "siteId": site_id,
+        "verdict": verdict,
         "search": search,
         "domains": domains,
+        "siteOptions": site_options,
         "scanLimit": scan_limit,
     }
 
@@ -948,9 +957,32 @@ def log_domain(entry: dict) -> str:
     return str(entry.get("host") or entry.get("siteName") or "").strip()
 
 
-def log_matches(entry: dict, domain: str = "", search: str = "") -> bool:
+def log_matches(
+    entry: dict,
+    domain: str = "",
+    search: str = "",
+    site_id: str = "",
+    verdict: str = "",
+    sites: list[dict] | None = None,
+    site_by_id: dict[str, dict] | None = None,
+) -> bool:
     normalized_domain = domain.strip().lower()
     if normalized_domain and log_domain(entry).lower() != normalized_domain:
+        return False
+
+    normalized_site = site_id.strip()
+    if normalized_site:
+        entry_site_id = str(entry.get("siteId") or "").strip()
+        if entry_site_id != normalized_site:
+            # Fall back to host-based site matching for nginx-parsed entries that lack siteId.
+            matched = None
+            if sites is not None:
+                matched = match_log_site(entry, sites, site_by_id or {})
+            if not matched or str(matched.get("id") or "") != normalized_site:
+                return False
+
+    normalized_verdict = verdict.strip().lower()
+    if normalized_verdict and str(entry.get("verdict") or "").strip().lower() != normalized_verdict:
         return False
 
     needle = search.strip().lower()

@@ -97,6 +97,16 @@ button:disabled {
   border-radius: 8px;
   background: #dff7ef;
   color: var(--teal);
+  overflow: hidden;
+}
+
+.brand-logo {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
 }
 
 .brand strong {
@@ -1215,6 +1225,10 @@ td {
 
 .domain-select {
   min-width: 220px;
+}
+
+.verdict-select {
+  min-width: 160px;
 }
 
 .page-size-select {
@@ -2619,6 +2633,7 @@ td {
 
   .log-filter-controls .search,
   .log-filter-controls .domain-select,
+  .log-filter-controls .verdict-select,
   .log-filter-controls .page-size-select {
     width: 100%;
     min-width: 0;

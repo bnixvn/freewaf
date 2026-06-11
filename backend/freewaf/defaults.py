@@ -12,6 +12,8 @@ DEFAULT_SETTINGS = {
         "httpsEnabled": False,
         "certificateId": "",
         "publicUrl": "",
+        "faviconUrl": "",
+        "logoUrl": "",
         "sessionHours": 12,
     },
     "rateLimit": {

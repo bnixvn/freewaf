@@ -270,6 +270,7 @@ class LogPaginationTests(unittest.TestCase):
         ]
         store = mock.Mock()
         store.get_logs.return_value = []
+        store.get_state.return_value = {"sites": []}
 
         with mock.patch.dict(os.environ, {"LOG_PAGE_SCAN_LIMIT": "4", "LOG_PAGE_SCAN_MAX": "10"}):
             with mock.patch("freewaf.server.parse_nginx_logs", return_value=nginx_logs):
@@ -280,6 +281,55 @@ class LogPaginationTests(unittest.TestCase):
         self.assertEqual(page["pages"], 2)
         self.assertEqual([entry["id"] for entry in page["logs"]], ["4"])
         self.assertEqual(page["domains"], ["api.example.test", "www.example.test"])
+
+    def test_combined_logs_page_filters_by_site_id_and_verdict(self):
+        nginx_logs = [
+            {"id": "1", "at": "2026-06-10T10:04:00+00:00", "siteId": "site-a", "host": "a.example.test", "siteName": "a", "verdict": "allow"},
+            {"id": "2", "at": "2026-06-10T10:03:00+00:00", "siteId": "site-b", "host": "b.example.test", "siteName": "b", "verdict": "block"},
+            {"id": "3", "at": "2026-06-10T10:02:00+00:00", "siteId": "site-a", "host": "a.example.test", "siteName": "a", "verdict": "block"},
+            {"id": "4", "at": "2026-06-10T10:01:00+00:00", "siteId": "site-a", "host": "a.example.test", "siteName": "a", "verdict": "challenge"},
+        ]
+        store = mock.Mock()
+        store.get_logs.return_value = []
+        store.get_state.return_value = {
+            "sites": [
+                {"id": "site-a", "name": "Site A", "hostnames": ["a.example.test"]},
+                {"id": "site-b", "name": "Site B", "hostnames": ["b.example.test"]},
+            ]
+        }
+
+        with mock.patch.dict(os.environ, {"LOG_PAGE_SCAN_LIMIT": "4", "LOG_PAGE_SCAN_MAX": "10"}):
+            with mock.patch("freewaf.server.parse_nginx_logs", return_value=nginx_logs):
+                page = combined_logs_page(store, limit=10, offset=0, site_id="site-a", verdict="block")
+
+        self.assertEqual(page["total"], 1)
+        self.assertEqual([entry["id"] for entry in page["logs"]], ["3"])
+        self.assertEqual(page["siteId"], "site-a")
+        self.assertEqual(page["verdict"], "block")
+        self.assertEqual(
+            page["siteOptions"],
+            [{"id": "site-a", "name": "Site A"}, {"id": "site-b", "name": "Site B"}],
+        )
+
+    def test_combined_logs_page_matches_site_by_host_when_site_id_missing(self):
+        nginx_logs = [
+            {"id": "1", "at": "2026-06-10T10:02:00+00:00", "siteId": None, "host": "a.example.test", "siteName": "a", "verdict": "allow"},
+            {"id": "2", "at": "2026-06-10T10:01:00+00:00", "siteId": None, "host": "other.example.test", "siteName": "other", "verdict": "allow"},
+        ]
+        store = mock.Mock()
+        store.get_logs.return_value = []
+        store.get_state.return_value = {
+            "sites": [
+                {"id": "site-a", "name": "Site A", "hostnames": ["a.example.test"]},
+            ]
+        }
+
+        with mock.patch.dict(os.environ, {"LOG_PAGE_SCAN_LIMIT": "4", "LOG_PAGE_SCAN_MAX": "10"}):
+            with mock.patch("freewaf.server.parse_nginx_logs", return_value=nginx_logs):
+                page = combined_logs_page(store, limit=10, offset=0, site_id="site-a")
+
+        self.assertEqual(page["total"], 1)
+        self.assertEqual([entry["id"] for entry in page["logs"]], ["1"])
 
 
 if __name__ == "__main__":

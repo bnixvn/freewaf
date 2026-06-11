@@ -349,10 +349,11 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [pendingActions, setPendingActions] = useState({});
   const [logsLoading, setLogsLoading] = useState(false);
-  const [logDomain, setLogDomain] = useState('');
+  const [logSiteId, setLogSiteId] = useState('');
+  const [logVerdict, setLogVerdict] = useState('');
   const [logPage, setLogPage] = useState(1);
   const [logPageSize, setLogPageSize] = useState(50);
-  const [logResult, setLogResult] = useState({ logs: [], total: 0, page: 1, pages: 1, domains: [] });
+  const [logResult, setLogResult] = useState({ logs: [], total: 0, page: 1, pages: 1, domains: [], siteOptions: [] });
   const [navOpen, setNavOpen] = useState(false);
 
   useEffect(() => {
@@ -371,6 +372,26 @@ export default function App() {
   useEffect(() => {
     loadAuth();
   }, []);
+
+  // Apply admin panel branding (favicon + page title) when settings change.
+  useEffect(() => {
+    const faviconUrl = data?.settings?.panel?.faviconUrl || '';
+    let link = document.querySelector('link[rel~="icon"]');
+    if (!faviconUrl) {
+      if (link && link.dataset.dynamic === 'freewaf') {
+        link.parentNode.removeChild(link);
+      }
+      return undefined;
+    }
+    if (!link) {
+      link = document.createElement('link');
+      link.rel = 'icon';
+      document.head.appendChild(link);
+    }
+    link.dataset.dynamic = 'freewaf';
+    link.href = faviconUrl;
+    return undefined;
+  }, [data?.settings?.panel?.faviconUrl]);
 
   useEffect(() => {
     if (!auth.authenticated || auth.loading || !['dashboard', 'sites'].includes(activeView)) {
@@ -396,7 +417,7 @@ export default function App() {
       window.clearTimeout(loadTimer);
       window.clearInterval(refreshTimer);
     };
-  }, [auth.authenticated, auth.loading, activeView, filter, logDomain, logPage, logPageSize]);
+  }, [auth.authenticated, auth.loading, activeView, filter, logSiteId, logVerdict, logPage, logPageSize]);
 
   async function loadAuth() {
     setLoading(true);
@@ -439,13 +460,15 @@ export default function App() {
   async function loadLogs(overrides = {}, announce = false, manageLoading = true) {
     const nextPage = Number(overrides.page || logPage || 1);
     const nextPageSize = Number(overrides.pageSize || logPageSize || 50);
-    const nextDomain = overrides.domain ?? logDomain;
+    const nextSiteId = overrides.siteId ?? logSiteId;
+    const nextVerdict = overrides.verdict ?? logVerdict;
     const nextSearch = overrides.search ?? filter;
     const params = new URLSearchParams({
       page: String(nextPage),
       pageSize: String(nextPageSize)
     });
-    if (nextDomain) params.set('domain', nextDomain);
+    if (nextSiteId) params.set('siteId', nextSiteId);
+    if (nextVerdict) params.set('verdict', nextVerdict);
     if (nextSearch.trim()) params.set('search', nextSearch.trim());
 
     if (manageLoading) setLogsLoading(true);
@@ -1128,8 +1151,10 @@ export default function App() {
       pendingActions,
       logsLoading,
       logResult,
-      logDomain,
-      setLogDomain,
+      logSiteId,
+      setLogSiteId,
+      logVerdict,
+      setLogVerdict,
       logPage,
       setLogPage,
       logPageSize,
@@ -1145,7 +1170,7 @@ export default function App() {
     if (activeView === 'logs') return <LogsView {...props} />;
     if (activeView === 'settings') return <SettingsView {...props} />;
     return <DashboardView {...props} />;
-  }, [activeView, data, filter, auth, pendingActions, logsLoading, logResult, logDomain, logPage, logPageSize]);
+  }, [activeView, data, filter, auth, pendingActions, logsLoading, logResult, logSiteId, logVerdict, logPage, logPageSize]);
 
   if (auth.loading) {
     return <LoadingPanel />;
@@ -1170,7 +1195,11 @@ export default function App() {
       />
       <aside className="sidebar" aria-hidden={false}>
         <div className="brand">
-          <span className="brand-mark"><Shield size={22} /></span>
+          <span className="brand-mark">
+            {data?.settings?.panel?.logoUrl
+              ? <img src={data.settings.panel.logoUrl} alt="" className="brand-logo" />
+              : <Shield size={22} />}
+          </span>
           <span>
             <strong>FreeWAF</strong>
             <small>Reverse proxy WAF</small>
@@ -1895,8 +1924,10 @@ function LogsView({
   clearLogs,
   logsLoading,
   logResult,
-  logDomain,
-  setLogDomain,
+  logSiteId,
+  setLogSiteId,
+  logVerdict,
+  setLogVerdict,
   logPage,
   setLogPage,
   logPageSize,
@@ -1909,10 +1940,24 @@ function LogsView({
   const pageSize = Number(logResult.pageSize || logPageSize || 50);
   const firstRow = total ? ((page - 1) * pageSize) + 1 : 0;
   const lastRow = total ? Math.min(total, (page - 1) * pageSize + logs.length) : 0;
-  const domainOptions = Array.from(new Set([
-    ...(logResult.domains || []),
-    ...data.sites.flatMap((site) => site.hostnames || [])
-  ].filter(Boolean))).sort();
+  const siteOptions = (() => {
+    const seen = new Map();
+    for (const option of logResult.siteOptions || []) {
+      const id = String(option?.id || '');
+      if (id && !seen.has(id)) seen.set(id, option.name || id);
+    }
+    for (const site of data.sites || []) {
+      const id = String(site?.id || '');
+      if (id && !seen.has(id)) seen.set(id, site.name || id);
+    }
+    return Array.from(seen.entries()).map(([id, name]) => ({ id, name }));
+  })();
+  const verdictOptions = [
+    { value: 'allow', label: 'Allow' },
+    { value: 'block', label: 'Block' },
+    { value: 'challenge', label: 'Challenge' },
+    { value: 'monitor', label: 'Monitor' }
+  ];
 
   return (
     <section className="table-panel">
@@ -1925,14 +1970,25 @@ function LogsView({
         <div className="log-filter-controls">
           <select
             className="search domain-select"
-            value={logDomain}
+            value={logSiteId}
             onChange={(event) => {
-              setLogDomain(event.target.value);
+              setLogSiteId(event.target.value);
               setLogPage(1);
             }}
           >
-            <option value="">All domains</option>
-            {domainOptions.map((domain) => <option key={domain} value={domain}>{domain}</option>)}
+            <option value="">All apps</option>
+            {siteOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
+          </select>
+          <select
+            className="search verdict-select"
+            value={logVerdict}
+            onChange={(event) => {
+              setLogVerdict(event.target.value);
+              setLogPage(1);
+            }}
+          >
+            <option value="">All verdicts</option>
+            {verdictOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
           <input
             className="search"
@@ -2017,6 +2073,8 @@ function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaul
     httpsEnabled: String(panel.httpsEnabled ?? false),
     certificateId: panel.certificateId || '',
     publicUrl: panel.publicUrl || '',
+    faviconUrl: panel.faviconUrl || '',
+    logoUrl: panel.logoUrl || '',
     sessionHours: panel.sessionHours || 12
   }));
   const [applicationForm, setApplicationForm] = useState(() => applicationDefaultsFormFromSettings(applicationDefaults));
@@ -2027,9 +2085,11 @@ function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaul
       httpsEnabled: String(panel.httpsEnabled ?? false),
       certificateId: panel.certificateId || '',
       publicUrl: panel.publicUrl || '',
+      faviconUrl: panel.faviconUrl || '',
+      logoUrl: panel.logoUrl || '',
       sessionHours: panel.sessionHours || 12
     });
-  }, [panel.httpsEnabled, panel.certificateId, panel.publicUrl, panel.sessionHours]);
+  }, [panel.httpsEnabled, panel.certificateId, panel.publicUrl, panel.faviconUrl, panel.logoUrl, panel.sessionHours]);
 
   useEffect(() => {
     setApplicationForm(applicationDefaultsFormFromSettings(applicationDefaults));
@@ -2061,6 +2121,8 @@ function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaul
       httpsEnabled: boolValue(panelForm.httpsEnabled),
       certificateId: panelForm.certificateId,
       publicUrl: panelForm.publicUrl,
+      faviconUrl: panelForm.faviconUrl,
+      logoUrl: panelForm.logoUrl,
       sessionHours: Number(panelForm.sessionHours || 12)
     }));
   }
@@ -2098,7 +2160,9 @@ function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaul
             onChange={(value) => updatePanel('certificateId', value)}
             options={[{ value: '', label: 'No certificate' }, ...data.certificates.map((certificate) => ({ value: certificate.id, label: certificate.name || certificate.id }))]}
           />
-          <TextField label="Panel URL" value={panelForm.publicUrl} onChange={(value) => updatePanel('publicUrl', value)} placeholder="https://waf.example.com:7001" full />
+          <TextField label="Panel domain" value={panelForm.publicUrl} onChange={(value) => updatePanel('publicUrl', value)} placeholder="waf.example.com" full />
+          <TextField label="Favicon URL" value={panelForm.faviconUrl} onChange={(value) => updatePanel('faviconUrl', value)} placeholder="https://cdn.example.com/favicon.ico" full />
+          <TextField label="Logo URL" value={panelForm.logoUrl} onChange={(value) => updatePanel('logoUrl', value)} placeholder="https://cdn.example.com/logo.svg" full />
           <TextField label="Session Hours" value={panelForm.sessionHours} onChange={(value) => updatePanel('sessionHours', value)} />
           <div className="settings-actions full">
             <LoadingButton pending={pendingAction === 'panel'} pendingText="Saving..." className="tool-button primary">
