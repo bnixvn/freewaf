@@ -204,6 +204,19 @@ const temporaryBlockMinuteOptions = [10, 30, 60].map((minutes) => ({
   label: `${minutes} minutes`
 }));
 
+const verifiedAiBotOptions = [
+  { value: 'openai_search', label: 'OpenAI Search', note: 'OAI-SearchBot' },
+  { value: 'openai_user', label: 'ChatGPT User', note: 'User fetch' },
+  { value: 'openai_gptbot', label: 'GPTBot', note: 'Training crawler' },
+  { value: 'anthropic_search', label: 'Claude Search', note: 'Claude-SearchBot' },
+  { value: 'anthropic_user', label: 'Claude User', note: 'User fetch' },
+  { value: 'anthropic_claudebot', label: 'ClaudeBot', note: 'Training crawler' },
+  { value: 'perplexity_bot', label: 'PerplexityBot', note: 'Crawler' },
+  { value: 'perplexity_user', label: 'Perplexity User', note: 'User fetch' }
+];
+
+const verifiedAiBotIds = new Set(verifiedAiBotOptions.map((option) => option.value));
+
 const siteFeatureLabels = {
   httpFlood: 'HTTP FLOOD',
   botProtection: 'BOT PROTECT',
@@ -2582,9 +2595,22 @@ function HttpFloodModal({ site, settings, onClose, onSave }) {
 function BotProtectModal({ site, onClose, onSave }) {
   const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState(() => botProtectFormFromSite(site));
+  const selectedAiProviders = new Set(normalizeVerifiedAiProviders(form.verifiedAIProviders));
 
   function update(name, value) {
     setForm((current) => ({ ...current, [name]: value }));
+  }
+
+  function toggleAiProvider(providerId, checked) {
+    setForm((current) => {
+      const next = new Set(normalizeVerifiedAiProviders(current.verifiedAIProviders));
+      if (checked) {
+        next.add(providerId);
+      } else {
+        next.delete(providerId);
+      }
+      return { ...current, verifiedAIProviders: Array.from(next) };
+    });
   }
 
   async function submit(event) {
@@ -2626,6 +2652,37 @@ function BotProtectModal({ site, onClose, onSave }) {
             label="Bypass rate limits"
             checked={boolValue(form.verifiedBypassRateLimit)}
             onChange={(checked) => update('verifiedBypassRateLimit', String(checked))}
+          />
+        </div>
+
+        <div className="bot-option-panel">
+          <div className="bot-control-row">
+            <span className="flood-accent" />
+            <strong>Verified AI Bots</strong>
+            <Switch checked={boolValue(form.verifiedAIBots)} onChange={(checked) => update('verifiedAIBots', String(checked))} />
+            <Info size={16} />
+            <span className="muted">Allow selected AI crawlers only when IP and User-Agent are both verified for this application.</span>
+          </div>
+          <div className="bot-provider-grid">
+            {verifiedAiBotOptions.map((option) => (
+              <BotOptionCheckbox
+                key={option.value}
+                label={option.label}
+                note={option.note}
+                checked={selectedAiProviders.has(option.value)}
+                onChange={(checked) => toggleAiProvider(option.value, checked)}
+              />
+            ))}
+          </div>
+          <BotOptionCheckbox
+            label="Bypass browser challenge"
+            checked={boolValue(form.verifiedAIBypassChallenge)}
+            onChange={(checked) => update('verifiedAIBypassChallenge', String(checked))}
+          />
+          <BotOptionCheckbox
+            label="Bypass rate limits"
+            checked={boolValue(form.verifiedAIBypassRateLimit)}
+            onChange={(checked) => update('verifiedAIBypassRateLimit', String(checked))}
           />
         </div>
 
@@ -3809,6 +3866,11 @@ function listFromText(value, splitter) {
   return String(value || '').split(splitter).map((item) => item.trim()).filter(Boolean);
 }
 
+function normalizeVerifiedAiProviders(value) {
+  const source = Array.isArray(value) ? value : listFromText(value, /[\s,]+/);
+  return Array.from(new Set(source.filter((item) => verifiedAiBotIds.has(item))));
+}
+
 function boolValue(value) {
   return value === true || value === 'true';
 }
@@ -4269,6 +4331,10 @@ function botProtectFormFromSite(site) {
     verifiedSearchBots: String(config.verifiedSearchBots.enabled),
     verifiedBypassChallenge: String(config.verifiedSearchBots.bypassChallenge),
     verifiedBypassRateLimit: String(config.verifiedSearchBots.bypassRateLimit),
+    verifiedAIBots: String(config.verifiedAIBots.enabled),
+    verifiedAIProviders: config.verifiedAIBots.allowedProviders,
+    verifiedAIBypassChallenge: String(config.verifiedAIBots.bypassChallenge),
+    verifiedAIBypassRateLimit: String(config.verifiedAIBots.bypassRateLimit),
     loginChallenge: String(config.loginChallenge.enabled),
     loginPathPatterns: textFromList(config.loginChallenge.pathPatterns),
     rateChallenge: String(config.rateChallenge.enabled),
@@ -4292,6 +4358,7 @@ function botProtectPayload(form) {
   const dynamicWatermark = boolValue(form.dynamicWatermark);
   const antiReplay = boolValue(form.antiReplay);
   const dynamicEnabled = dynamicHtml || dynamicJs || dynamicWatermark;
+  const verifiedAIProviders = normalizeVerifiedAiProviders(form.verifiedAIProviders);
   const challengeCount = positiveInt(form.rateChallengeCount, defaultBotRateChallenge.challengeCount);
   const blockCount = Math.max(challengeCount + 1, positiveInt(form.rateBlockCount, defaultBotRateChallenge.blockCount));
   const blockMinutes = temporaryBlockMinutes(form.rateBlockMinutes);
@@ -4302,6 +4369,12 @@ function botProtectPayload(form) {
       enabled: antiBotChallenge && boolValue(form.verifiedSearchBots),
       bypassChallenge: boolValue(form.verifiedBypassChallenge),
       bypassRateLimit: boolValue(form.verifiedBypassRateLimit)
+    },
+    verifiedAIBots: {
+      enabled: antiBotChallenge && boolValue(form.verifiedAIBots) && verifiedAIProviders.length > 0,
+      allowedProviders: verifiedAIProviders,
+      bypassChallenge: boolValue(form.verifiedAIBypassChallenge),
+      bypassRateLimit: boolValue(form.verifiedAIBypassRateLimit)
     },
     loginChallenge: {
       enabled: loginChallenge,
@@ -4333,6 +4406,7 @@ function botProtectPayloadFromConfig(config, enabledFallback = true) {
   const login = source.loginChallenge || {};
   const rate = source.rateChallenge || {};
   const verified = source.verifiedSearchBots || {};
+  const verifiedAI = source.verifiedAIBots || {};
   const antiBotChallenge = source.antiBotChallenge ?? enabledFallback;
   const loginPatterns = Array.isArray(login.pathPatterns) ? login.pathPatterns : defaultBotLoginPathPatterns;
   const loginEnabled = Boolean(antiBotChallenge) && Boolean(login.enabled ?? true) && loginPatterns.length > 0;
@@ -4359,6 +4433,12 @@ function botProtectPayloadFromConfig(config, enabledFallback = true) {
       enabled: Boolean(antiBotChallenge) && Boolean(verified.enabled ?? true),
       bypassChallenge: Boolean(verified.bypassChallenge ?? true),
       bypassRateLimit: Boolean(verified.bypassRateLimit ?? true)
+    },
+    verifiedAIBots: {
+      enabled: Boolean(antiBotChallenge) && Boolean(verifiedAI.enabled ?? false),
+      allowedProviders: normalizeVerifiedAiProviders(verifiedAI.allowedProviders),
+      bypassChallenge: Boolean(verifiedAI.bypassChallenge ?? true),
+      bypassRateLimit: Boolean(verifiedAI.bypassRateLimit ?? true)
     },
     loginChallenge: {
       enabled: loginEnabled,

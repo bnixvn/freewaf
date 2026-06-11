@@ -11,7 +11,13 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .defaults import DEFAULT_BOT_LOGIN_PATH_PATTERNS, DEFAULT_BOT_RATE_CHALLENGE, VERIFIED_BOT_PROVIDERS, challenge_secret
+from .defaults import (
+    DEFAULT_BOT_LOGIN_PATH_PATTERNS,
+    DEFAULT_BOT_RATE_CHALLENGE,
+    VERIFIED_AI_BOT_PROVIDERS,
+    VERIFIED_BOT_PROVIDERS,
+    challenge_secret,
+)
 
 
 NATIVE_TARGETS = {"all", "url", "headers", "method", "ip"}
@@ -315,37 +321,76 @@ def render_bot_detection_maps() -> list[str]:
 
 
 def render_verified_bot_maps(state: dict, sites: list[dict]) -> list[str]:
-    if not any(site_verified_search_bots(site).get("enabled") for site in sites):
+    uses_search = any(site_verified_search_bots(site).get("enabled") for site in sites)
+    uses_ai = any(site_verified_ai_bots(site).get("enabled") for site in sites)
+    if not uses_search and not uses_ai:
         return []
 
     groups = {group.get("id"): group for group in state.get("ipGroups", []) if group.get("enabled")}
     blocks = []
-    provider_vars = []
-    for provider_name, provider in VERIFIED_BOT_PROVIDERS.items():
-        ip_var = f"sfl_verified_{provider_name}_ip"
-        verified_var = f"sfl_verified_{provider_name}_bot"
-        ip_ref = f"${ip_var}"
-        provider_vars.append(f"${verified_var}")
-        blocks.append(render_geo_map(ip_var, ip_group_items(groups.get(provider["id"]))))
-        blocks.extend(
-            [
-                f'map "{ip_ref}:$http_user_agent" ${verified_var} {{',
-                "    default 0;",
-                f"    ~*^1:.*{provider['userAgentPattern']} 1;",
-                "}",
-            ]
-        )
+    if uses_search:
+        provider_vars = []
+        for provider_name, provider in VERIFIED_BOT_PROVIDERS.items():
+            verified_var = verified_provider_bot_var(provider_name)
+            provider_vars.append(f"${verified_var}")
+            blocks.extend(render_verified_provider_map(groups, provider_name, provider))
 
-    blocks.extend(
-        [
-            f'map "{"|".join(provider_vars)}" $sfl_verified_search_bot {{',
+        blocks.extend(render_verified_combined_map("sfl_verified_search_bot", provider_vars))
+
+    if uses_ai:
+        for provider_name, provider in VERIFIED_AI_BOT_PROVIDERS.items():
+            blocks.extend(render_verified_provider_map(groups, provider_name, provider, prefix="ai_"))
+
+        for site in sites:
+            config = site_verified_ai_bots(site)
+            if not config.get("enabled"):
+                continue
+            provider_vars = [
+                f"${verified_provider_bot_var(provider_name, prefix='ai_')}"
+                for provider_name in config.get("allowedProviders", [])
+                if provider_name in VERIFIED_AI_BOT_PROVIDERS
+            ]
+            blocks.extend(render_verified_combined_map(verified_ai_site_var(site), provider_vars))
+
+    return blocks
+
+
+def render_verified_provider_map(groups: dict[str, dict], provider_name: str, provider: dict, prefix: str = "") -> list[str]:
+    ip_var = verified_provider_ip_var(provider_name, prefix)
+    verified_var = verified_provider_bot_var(provider_name, prefix)
+    return [
+        render_geo_map(ip_var, ip_group_items(groups.get(provider["id"]))),
+        f'map "${ip_var}:$http_user_agent" ${verified_var} {{',
+        "    default 0;",
+        f"    ~*^1:.*{provider['userAgentPattern']} 1;",
+        "}",
+        "",
+    ]
+
+
+def render_verified_combined_map(output_var: str, provider_vars: list[str]) -> list[str]:
+    if not provider_vars:
+        return [
+            f"map $request_uri ${output_var} {{",
             "    default 0;",
-            "    ~1 1;",
             "}",
             "",
         ]
-    )
-    return blocks
+    return [
+        f'map "{"|".join(provider_vars)}" ${output_var} {{',
+        "    default 0;",
+        "    ~1 1;",
+        "}",
+        "",
+    ]
+
+
+def verified_provider_ip_var(provider_name: str, prefix: str = "") -> str:
+    return f"sfl_verified_{prefix}{safe_identifier(provider_name).lower()}_ip"
+
+
+def verified_provider_bot_var(provider_name: str, prefix: str = "") -> str:
+    return f"sfl_verified_{prefix}{safe_identifier(provider_name).lower()}_bot"
 
 
 def render_challenge_maps() -> list[str]:
@@ -367,11 +412,11 @@ def render_global_rate_limit_zones(rate_limit: dict, verified_bot_bypass: bool =
     if verified_bot_bypass:
         lines.extend(
             [
-                "map $sfl_verified_search_bot $sfl_global_rate_key {",
+                "map $sfl_verified_rate_bypass $sfl_global_rate_key {",
                 "    default $binary_remote_addr;",
                 '    1 "";',
                 "}",
-                "map $sfl_verified_search_bot $sfl_global_rate_fingerprint_key {",
+                "map $sfl_verified_rate_bypass $sfl_global_rate_fingerprint_key {",
                 '    default "$remote_addr|$request_method|$http_user_agent";',
                 '    1 "";',
                 "}",
@@ -394,11 +439,11 @@ def render_bot_limit_zones(sites: list[dict]) -> list[str]:
         if not protection.get("antiReplay"):
             continue
         key = '"$binary_remote_addr|$request_method|$request_uri|$http_user_agent"'
-        if site_verified_search_bots(site).get("bypassRateLimit"):
+        if site_verified_rate_bypass(site):
             key_name = bot_replay_key_name(site)
             zones.extend(
                 [
-                    f'map "$sfl_verified_search_bot:$remote_addr:$request_method:$request_uri:$http_user_agent" ${key_name} {{',
+                    f'map "$sfl_verified_rate_bypass:$remote_addr:$request_method:$request_uri:$http_user_agent" ${key_name} {{',
                     '    ~^1: "";',
                     '    default "$remote_addr|$request_method|$request_uri|$http_user_agent";',
                     "}",
@@ -572,8 +617,10 @@ def render_redirect_server(site: dict, state: dict, server_name: str, port: int,
         "    set $sfl_challenge 0;",
         "    set $sfl_verdict allow;",
         "    set $sfl_reason \"Allowed\";",
+        "    set $sfl_verified_rate_bypass 0;",
         "",
         *render_challenge_validation(site),
+        *render_verified_rate_bypass_setters(site),
         "",
         *render_log_directives(site, proxy),
         "    error_page 460 = @freewaf_block;",
@@ -637,8 +684,10 @@ def render_proxy_server(
         "    set $sfl_challenge 0;",
         "    set $sfl_verdict allow;",
         "    set $sfl_reason \"Allowed\";",
+        "    set $sfl_verified_rate_bypass 0;",
         "",
         *render_challenge_validation(site),
+        *render_verified_rate_bypass_setters(site),
         "",
         *render_log_directives(site, proxy),
         "    error_page 460 = @freewaf_block;",
@@ -839,6 +888,27 @@ def render_challenge_validation(site: dict) -> list[str]:
         "        set $sfl_challenge_passed 1;",
         "    }",
     ]
+
+
+def render_verified_rate_bypass_setters(site: dict) -> list[str]:
+    lines = []
+    if site_verified_search_bots(site).get("bypassRateLimit"):
+        lines.extend(
+            [
+                "    if ($sfl_verified_search_bot = 1) {",
+                "        set $sfl_verified_rate_bypass 1;",
+                "    }",
+            ]
+        )
+    if site_verified_ai_bots(site).get("bypassRateLimit"):
+        lines.extend(
+            [
+                f"    if (${verified_ai_site_var(site)} = 1) {{",
+                "        set $sfl_verified_rate_bypass 1;",
+                "    }",
+            ]
+        )
+    return lines
 
 
 def application_type(site: dict) -> str:
@@ -1222,16 +1292,27 @@ def render_verified_bot_modsecurity_skip_rules(
     first_rule_id: int,
     require_rate_bypass: bool = False,
 ) -> list[str]:
-    config = site_verified_search_bots(site)
-    if not config.get("enabled"):
+    providers = {}
+    if site_verified_search_bots(site).get("bypassRateLimit"):
+        providers.update(VERIFIED_BOT_PROVIDERS)
+    ai_config = site_verified_ai_bots(site)
+    if ai_config.get("bypassRateLimit"):
+        providers.update(
+            {
+                provider_name: VERIFIED_AI_BOT_PROVIDERS[provider_name]
+                for provider_name in ai_config.get("allowedProviders", [])
+                if provider_name in VERIFIED_AI_BOT_PROVIDERS
+            }
+        )
+    if not providers:
         return []
-    if require_rate_bypass and not config.get("bypassRateLimit"):
+    if require_rate_bypass and not site_verified_rate_bypass(site):
         return []
 
     groups = {group.get("id"): group for group in state.get("ipGroups", []) if group.get("enabled")}
     rules = []
     rule_id = first_rule_id
-    for provider in VERIFIED_BOT_PROVIDERS.values():
+    for provider in providers.values():
         items = ip_group_items(groups.get(provider["id"]))
         if not items:
             continue
@@ -1453,16 +1534,16 @@ def render_acl_limit_zones(sites: list[dict]) -> list[str]:
 
 def render_acl_limit_key_maps(site: dict, limit: dict) -> list[str]:
     challenge = acl_limit_action(limit) == "challenge_v1"
-    verified_bypass = site_verified_search_bots(site).get("bypassRateLimit")
+    verified_bypass = site_verified_rate_bypass(site)
     if challenge and verified_bypass:
         return [
-            f'map "$sfl_verified_search_bot:$cookie_freewaf_challenge" ${acl_key_name(site)} {{',
+            f'map "$sfl_verified_rate_bypass:$cookie_freewaf_challenge" ${acl_key_name(site)} {{',
             "    default $binary_remote_addr;",
             '    ~^1: "";',
             '    "0:passed" "";',
             "}",
             "",
-            f'map "$sfl_verified_search_bot:$cookie_freewaf_challenge" ${acl_fingerprint_key_name(site)} {{',
+            f'map "$sfl_verified_rate_bypass:$cookie_freewaf_challenge" ${acl_fingerprint_key_name(site)} {{',
             '    default "$remote_addr|$request_method|$http_user_agent";',
             '    ~^1: "";',
             '    "0:passed" "";',
@@ -1484,12 +1565,12 @@ def render_acl_limit_key_maps(site: dict, limit: dict) -> list[str]:
         ]
     if verified_bypass:
         return [
-            f"map $sfl_verified_search_bot ${acl_key_name(site)} {{",
+            f"map $sfl_verified_rate_bypass ${acl_key_name(site)} {{",
             "    default $binary_remote_addr;",
             '    1 "";',
             "}",
             "",
-            f"map $sfl_verified_search_bot ${acl_fingerprint_key_name(site)} {{",
+            f"map $sfl_verified_rate_bypass ${acl_fingerprint_key_name(site)} {{",
             '    default "$remote_addr|$request_method|$http_user_agent";',
             '    1 "";',
             "}",
@@ -1546,7 +1627,7 @@ def acl_fingerprint_limit_key(site: dict, limit: dict) -> str:
 
 
 def acl_limit_uses_mapped_key(site: dict, limit: dict) -> bool:
-    return acl_limit_action(limit) == "challenge_v1" or bool(site_verified_search_bots(site).get("bypassRateLimit"))
+    return acl_limit_action(limit) == "challenge_v1" or site_verified_rate_bypass(site)
 
 
 def acl_limit_action(limit: dict | None) -> str:
@@ -1609,6 +1690,7 @@ def site_bot_protection(site: dict) -> dict:
     dynamic = source.get("dynamicProtection") if isinstance(source.get("dynamicProtection"), dict) else {}
     anti_replay = source.get("antiReplay") if isinstance(source.get("antiReplay"), dict) else {}
     verified = source.get("verifiedSearchBots") if isinstance(source.get("verifiedSearchBots"), dict) else {}
+    verified_ai = source.get("verifiedAIBots") if isinstance(source.get("verifiedAIBots"), dict) else {}
     enabled = features["botProtection"] and source.get("enabled") is not False
     anti_bot = enabled and source.get("antiBotChallenge") is not False
     login = source.get("loginChallenge") if isinstance(source.get("loginChallenge"), dict) else {}
@@ -1627,6 +1709,16 @@ def site_bot_protection(site: dict) -> dict:
             "enabled": anti_bot and verified.get("enabled") is not False,
             "bypassChallenge": verified.get("bypassChallenge") is not False,
             "bypassRateLimit": verified.get("bypassRateLimit") is not False,
+        },
+        "verifiedAIBots": {
+            "enabled": anti_bot and bool(verified_ai.get("enabled")),
+            "allowedProviders": [
+                provider_name
+                for provider_name in (verified_ai.get("allowedProviders") or [])
+                if provider_name in VERIFIED_AI_BOT_PROVIDERS
+            ],
+            "bypassChallenge": verified_ai.get("bypassChallenge") is not False,
+            "bypassRateLimit": verified_ai.get("bypassRateLimit") is not False,
         },
         "loginChallenge": {
             "enabled": anti_bot and login.get("enabled") is not False and bool(login_patterns),
@@ -1664,8 +1756,29 @@ def site_verified_search_bots(site: dict) -> dict:
     }
 
 
+def site_verified_ai_bots(site: dict) -> dict:
+    protection = site_bot_protection(site)
+    config = protection.get("verifiedAIBots") if isinstance(protection.get("verifiedAIBots"), dict) else {}
+    allowed_providers = [item for item in config.get("allowedProviders", []) if item in VERIFIED_AI_BOT_PROVIDERS]
+    enabled = bool(config.get("enabled") and allowed_providers)
+    return {
+        "enabled": enabled,
+        "allowedProviders": allowed_providers,
+        "bypassChallenge": bool(enabled and config.get("bypassChallenge")),
+        "bypassRateLimit": bool(enabled and config.get("bypassRateLimit")),
+    }
+
+
+def site_verified_rate_bypass(site: dict) -> bool:
+    return bool(site_verified_search_bots(site).get("bypassRateLimit") or site_verified_ai_bots(site).get("bypassRateLimit"))
+
+
 def any_verified_bot_rate_bypass(sites: list[dict]) -> bool:
-    return any(site_verified_search_bots(site).get("bypassRateLimit") for site in sites)
+    return any(site_verified_rate_bypass(site) for site in sites)
+
+
+def verified_ai_site_var(site: dict) -> str:
+    return f"sfl_verified_ai_bot_{safe_identifier(site.get('id') or site.get('name') or 'site').lower()}"
 
 
 def bot_replay_zone_name(site: dict) -> str:
@@ -1725,6 +1838,15 @@ def render_bot_protection(site: dict) -> list[str]:
                     "    }",
                 ]
                 if site_verified_search_bots(site).get("bypassChallenge")
+                else []
+            ),
+            *(
+                [
+                    f"    if (${verified_ai_site_var(site)} = 1) {{",
+                    "        set $sfl_bot_challenge 0;",
+                    "    }",
+                ]
+                if site_verified_ai_bots(site).get("bypassChallenge")
                 else []
             ),
             "    if ($sfl_allow = 1) {",
@@ -1790,6 +1912,15 @@ def render_under_attack_protection(site: dict) -> list[str]:
                 "    }",
             ]
             if site_verified_search_bots(site).get("bypassChallenge")
+            else []
+        ),
+        *(
+            [
+                f"    if (${verified_ai_site_var(site)} = 1) {{",
+                "        set $sfl_under_attack_challenge 0;",
+                "    }",
+            ]
+            if site_verified_ai_bots(site).get("bypassChallenge")
             else []
         ),
         "    if ($sfl_allow = 1) {",

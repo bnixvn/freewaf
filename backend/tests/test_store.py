@@ -9,24 +9,26 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from freewaf.defaults import BUILTIN_RULES, VERIFIED_BOT_PROVIDERS
+from freewaf.defaults import BUILTIN_RULES, VERIFIED_AI_BOT_PROVIDERS, managed_verified_bot_providers
 from freewaf.store import Store, StoreError, build_stats, country_for_ip, normalize_state
 
 
 class StoreTests(unittest.TestCase):
-    def test_verified_search_bot_ip_groups_are_managed(self):
+    def test_verified_bot_ip_groups_are_managed(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "state.json")
             store.init()
             groups = {group["id"]: group for group in store.get_state()["ipGroups"]}
 
-            for provider_name, provider in VERIFIED_BOT_PROVIDERS.items():
+            for provider_name, provider in managed_verified_bot_providers().items():
                 group = groups[provider["id"]]
                 self.assertEqual(group["name"], provider["name"])
-                self.assertEqual(group["referenceUrl"], provider["referenceUrl"])
+                self.assertEqual(group["referenceUrl"], provider.get("referenceUrl", ""))
                 self.assertEqual(group["provider"], provider_name)
                 self.assertTrue(group["managed"])
                 self.assertTrue(group["enabled"])
+                if provider.get("items"):
+                    self.assertEqual(group["items"], provider["items"])
 
                 updated = store.upsert_ip_group(
                     {
@@ -37,7 +39,7 @@ class StoreTests(unittest.TestCase):
                     provider["id"],
                 )
                 self.assertEqual(updated["name"], provider["name"])
-                self.assertEqual(updated["referenceUrl"], provider["referenceUrl"])
+                self.assertEqual(updated["referenceUrl"], provider.get("referenceUrl", ""))
                 self.assertEqual(updated["provider"], provider_name)
                 self.assertTrue(updated["managed"])
 
@@ -384,6 +386,38 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(protection["rateChallenge"]["challengeCount"], 300)
         self.assertEqual(protection["rateChallenge"]["blockCount"], 700)
         self.assertEqual(protection["rateChallenge"]["blockMinutes"], 30)
+
+    def test_verified_ai_bot_options_are_normalized_per_site(self):
+        valid_provider = next(iter(VERIFIED_AI_BOT_PROVIDERS))
+        state = normalize_state(
+            {
+                "sites": [
+                    {
+                        "id": "site-demo",
+                        "name": "Demo",
+                        "hostnames": ["example.test"],
+                        "origin": "http://127.0.0.1:9090",
+                        "features": {"botProtection": True},
+                        "botProtection": {
+                            "antiBotChallenge": True,
+                            "verifiedAIBots": {
+                                "enabled": True,
+                                "allowedProviders": [valid_provider, "not-a-provider"],
+                                "bypassChallenge": True,
+                                "bypassRateLimit": False,
+                            },
+                        },
+                    }
+                ],
+                "rules": [],
+            }
+        )
+
+        config = state["sites"][0]["botProtection"]["verifiedAIBots"]
+        self.assertTrue(config["enabled"])
+        self.assertEqual(config["allowedProviders"], [valid_provider])
+        self.assertTrue(config["bypassChallenge"])
+        self.assertFalse(config["bypassRateLimit"])
 
     def test_challenge_page_and_under_attack_are_normalized(self):
         state = normalize_state(

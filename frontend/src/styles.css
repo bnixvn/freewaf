@@ -2148,6 +2148,12 @@ td {
   gap: 12px;
 }
 
+.bot-provider-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 10px 14px;
+}
+
 .bot-option-checkbox {
   display: flex;
   align-items: center;
@@ -2348,6 +2354,7 @@ td {
   .access-top-grid,
   .condition-row,
   .bot-threshold-grid,
+  .bot-provider-grid,
   .flood-edit-grid {
     grid-template-columns: 1fr;
   }

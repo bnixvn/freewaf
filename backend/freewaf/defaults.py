@@ -95,6 +95,73 @@ VERIFIED_BOT_PROVIDERS = {
 }
 
 
+VERIFIED_AI_BOT_PROVIDERS = {
+    "openai_search": {
+        "id": "ipgroup-verified-openai-searchbot",
+        "name": "Verified OpenAI SearchBot",
+        "description": "Official OAI-SearchBot CIDR ranges. Managed and synced daily by FreeWAF.",
+        "referenceUrl": "https://openai.com/searchbot.json",
+        "userAgentPattern": r"(?:OAI-SearchBot)",
+    },
+    "openai_user": {
+        "id": "ipgroup-verified-chatgpt-user",
+        "name": "Verified ChatGPT User",
+        "description": "Official ChatGPT-User CIDR ranges. Managed and synced daily by FreeWAF.",
+        "referenceUrl": "https://openai.com/chatgpt-user.json",
+        "userAgentPattern": r"(?:ChatGPT-User)",
+    },
+    "openai_gptbot": {
+        "id": "ipgroup-verified-gptbot",
+        "name": "Verified GPTBot",
+        "description": "Official GPTBot CIDR ranges. Managed and synced daily by FreeWAF.",
+        "referenceUrl": "https://openai.com/gptbot.json",
+        "userAgentPattern": r"(?:GPTBot)",
+    },
+    "anthropic_search": {
+        "id": "ipgroup-verified-claude-searchbot",
+        "name": "Verified Claude SearchBot",
+        "description": "Official Anthropic outbound crawler range for Claude-SearchBot. Managed by FreeWAF.",
+        "referenceUrl": "",
+        "items": ["160.79.104.0/21"],
+        "userAgentPattern": r"(?:Claude-SearchBot)",
+    },
+    "anthropic_user": {
+        "id": "ipgroup-verified-claude-user",
+        "name": "Verified Claude User",
+        "description": "Official Anthropic outbound user-fetch range for Claude-User. Managed by FreeWAF.",
+        "referenceUrl": "",
+        "items": ["160.79.104.0/21"],
+        "userAgentPattern": r"(?:Claude-User)",
+    },
+    "anthropic_claudebot": {
+        "id": "ipgroup-verified-claudebot",
+        "name": "Verified ClaudeBot",
+        "description": "Official Anthropic outbound crawler range for ClaudeBot. Managed by FreeWAF.",
+        "referenceUrl": "",
+        "items": ["160.79.104.0/21"],
+        "userAgentPattern": r"(?:ClaudeBot)",
+    },
+    "perplexity_bot": {
+        "id": "ipgroup-verified-perplexitybot",
+        "name": "Verified PerplexityBot",
+        "description": "Official PerplexityBot CIDR ranges. Managed and synced daily by FreeWAF.",
+        "referenceUrl": "https://www.perplexity.com/perplexitybot.json",
+        "userAgentPattern": r"(?:PerplexityBot)",
+    },
+    "perplexity_user": {
+        "id": "ipgroup-verified-perplexity-user",
+        "name": "Verified Perplexity User",
+        "description": "Official Perplexity user-fetch CIDR ranges. Managed and synced daily by FreeWAF.",
+        "referenceUrl": "https://www.perplexity.com/perplexity-user.json",
+        "userAgentPattern": r"(?:Perplexity-User)",
+    },
+}
+
+
+def managed_verified_bot_providers() -> dict:
+    return {**VERIFIED_BOT_PROVIDERS, **VERIFIED_AI_BOT_PROVIDERS}
+
+
 def challenge_secret() -> str:
     return os.environ.get("FREEWAF_CHALLENGE_SECRET", "").strip() or "freewaf-development-challenge-secret"
 
@@ -386,6 +453,12 @@ def create_default_state(now: str | None = None) -> dict:
                         "bypassChallenge": True,
                         "bypassRateLimit": True,
                     },
+                    "verifiedAIBots": {
+                        "enabled": False,
+                        "allowedProviders": [],
+                        "bypassChallenge": True,
+                        "bypassRateLimit": True,
+                    },
                     "loginChallenge": {
                         "enabled": True,
                         "pathPatterns": deepcopy(DEFAULT_BOT_LOGIN_PATH_PATTERNS),
@@ -441,7 +514,7 @@ def create_default_state(now: str | None = None) -> dict:
                     "name": provider["name"],
                     "description": provider["description"],
                     "referenceUrl": provider["referenceUrl"],
-                    "items": [],
+                    "items": deepcopy(provider.get("items", [])),
                     "lastSyncedAt": "",
                     "lastSyncStatus": "",
                     "lastSyncMessage": "",
@@ -451,7 +524,7 @@ def create_default_state(now: str | None = None) -> dict:
                     "createdAt": timestamp,
                     "updatedAt": timestamp,
                 }
-                for provider_name, provider in VERIFIED_BOT_PROVIDERS.items()
+                for provider_name, provider in managed_verified_bot_providers().items()
             ],
         ],
         "accessRules": [],

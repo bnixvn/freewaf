@@ -26,8 +26,10 @@ from .defaults import (
     DEFAULT_BOT_LOGIN_PATH_PATTERNS,
     DEFAULT_BOT_RATE_CHALLENGE,
     DEFAULT_SETTINGS,
+    VERIFIED_AI_BOT_PROVIDERS,
     VERIFIED_BOT_PROVIDERS,
     create_default_state,
+    managed_verified_bot_providers,
     utc_now,
 )
 
@@ -145,13 +147,13 @@ class Store:
             changed = True
 
         existing_groups = {group["id"]: group for group in self.state["ipGroups"]}
-        for provider_name, provider in VERIFIED_BOT_PROVIDERS.items():
+        for provider_name, provider in managed_verified_bot_providers().items():
             stored = existing_groups.get(provider["id"])
             managed = {
                 "id": provider["id"],
                 "name": provider["name"],
                 "description": provider["description"],
-                "referenceUrl": provider["referenceUrl"],
+                "referenceUrl": provider.get("referenceUrl", ""),
                 "managed": True,
                 "provider": provider_name,
                 "enabled": True,
@@ -160,12 +162,16 @@ class Store:
             }
             if stored:
                 updated = {**stored, **managed}
+                if provider.get("items") and not stored.get("items") and not stored.get("itemsFile"):
+                    updated["items"] = list(provider["items"])
                 if updated != stored:
                     stored.clear()
                     stored.update(updated)
                     changed = True
             else:
-                self.state["ipGroups"].append({**managed, "items": [], "lastSyncedAt": "", "lastSyncStatus": "", "lastSyncMessage": ""})
+                self.state["ipGroups"].append(
+                    {**managed, "items": list(provider.get("items", [])), "lastSyncedAt": "", "lastSyncStatus": "", "lastSyncMessage": ""}
+                )
                 changed = True
 
         for index, group in enumerate(self.state["ipGroups"]):
@@ -300,17 +306,19 @@ class Store:
             index = find_index(groups, target_id) if target_id else -1
             existing = groups[index] if index >= 0 else None
             if existing and existing.get("managed"):
-                provider = VERIFIED_BOT_PROVIDERS.get(str(existing.get("provider") or ""))
+                provider = managed_verified_bot_providers().get(str(existing.get("provider") or ""))
                 if provider:
                     payload = {
                         **payload,
                         "name": provider["name"],
                         "description": provider["description"],
-                        "referenceUrl": provider["referenceUrl"],
+                        "referenceUrl": provider.get("referenceUrl", ""),
                         "managed": True,
                         "provider": existing.get("provider"),
                         "enabled": True,
                     }
+                    if provider.get("items"):
+                        payload["items"] = list(provider["items"])
             has_items = "items" in payload or "content" in payload
             group = normalize_ip_group_input(payload, target_id, now)
             if existing and not has_items:
@@ -1385,6 +1393,8 @@ def normalize_bot_protection_config(value, enabled_value=None) -> dict:
     anti_replay = anti_replay if isinstance(anti_replay, dict) else {}
     verified = source.get("verifiedSearchBots") or source.get("verified_search_bots")
     verified = verified if isinstance(verified, dict) else {}
+    verified_ai = source.get("verifiedAIBots") or source.get("verified_ai_bots")
+    verified_ai = verified_ai if isinstance(verified_ai, dict) else {}
 
     dynamic_html = normalize_bool(dynamic.get("html") if "html" in dynamic else source.get("htmlDynamicEncryption"), False)
     dynamic_js = normalize_bool(dynamic.get("js") if "js" in dynamic else source.get("jsDynamicEncryption"), False)
@@ -1413,6 +1423,20 @@ def normalize_bot_protection_config(value, enabled_value=None) -> dict:
             "enabled": normalize_bool(verified.get("enabled"), True),
             "bypassChallenge": normalize_bool(verified.get("bypassChallenge") if "bypassChallenge" in verified else verified.get("bypass_challenge"), True),
             "bypassRateLimit": normalize_bool(verified.get("bypassRateLimit") if "bypassRateLimit" in verified else verified.get("bypass_rate_limit"), True),
+        },
+        "verifiedAIBots": {
+            "enabled": normalize_bool(verified_ai.get("enabled"), False),
+            "allowedProviders": normalize_verified_ai_provider_ids(
+                verified_ai.get("allowedProviders") or verified_ai.get("allowed_providers")
+            ),
+            "bypassChallenge": normalize_bool(
+                verified_ai.get("bypassChallenge") if "bypassChallenge" in verified_ai else verified_ai.get("bypass_challenge"),
+                True,
+            ),
+            "bypassRateLimit": normalize_bool(
+                verified_ai.get("bypassRateLimit") if "bypassRateLimit" in verified_ai else verified_ai.get("bypass_rate_limit"),
+                True,
+            ),
         },
         "loginChallenge": login_challenge,
         "rateChallenge": rate_challenge,
@@ -1679,6 +1703,11 @@ def normalize_string_list(values, uppercase: bool = False) -> list[str]:
 
 def normalize_id_list(values) -> list[str]:
     return [item for item in normalize_string_list(values) if re.match(r"^[A-Za-z0-9_.:-]+$", item)]
+
+
+def normalize_verified_ai_provider_ids(values) -> list[str]:
+    allowed = set(VERIFIED_AI_BOT_PROVIDERS)
+    return [item for item in normalize_id_list(values) if item in allowed]
 
 
 def normalize_username(value) -> str:

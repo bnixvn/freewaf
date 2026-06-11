@@ -10,7 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from freewaf.defaults import BUILTIN_RULES, DEFAULT_SETTINGS, VERIFIED_BOT_PROVIDERS
+from freewaf.defaults import BUILTIN_RULES, DEFAULT_SETTINGS, VERIFIED_AI_BOT_PROVIDERS, VERIFIED_BOT_PROVIDERS
 from freewaf.nginx import generate_nginx_config, parse_nginx_logs, write_nginx_config
 
 
@@ -815,12 +815,77 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("geo $sfl_verified_bing_ip", config)
         self.assertIn("40.77.167.0/24 1;", config)
         self.assertIn('map "$sfl_verified_google_bot|$sfl_verified_bing_bot" $sfl_verified_search_bot {', config)
-        self.assertIn("map $sfl_verified_search_bot $sfl_global_rate_key", config)
+        self.assertIn("map $sfl_verified_rate_bypass $sfl_global_rate_key", config)
+        self.assertIn("set $sfl_verified_rate_bypass 1;", config)
         self.assertIn("limit_req_zone $sfl_global_rate_key zone=freewaf_rate:10m", config)
         self.assertIn("if ($sfl_verified_search_bot = 1)", config)
         self.assertIn("set $sfl_under_attack_challenge 0;", config)
         self.assertIn('SecRule REMOTE_ADDR "@ipMatch 66.249.64.0/27"', config)
         self.assertIn("skipAfter:FREEWAF_BOT_RATE_DONE_SITE_DEMO", config)
+
+    def test_verified_ai_bots_are_site_scoped_and_off_by_default(self):
+        openai = VERIFIED_AI_BOT_PROVIDERS["openai_user"]
+        anthropic = VERIFIED_AI_BOT_PROVIDERS["anthropic_user"]
+        state = make_state(
+            ipGroups=[
+                {"id": openai["id"], "name": openai["name"], "items": ["104.210.139.192/28"], "enabled": True},
+                {"id": anthropic["id"], "name": anthropic["name"], "items": ["160.79.104.0/21"], "enabled": True},
+            ],
+            sites=[
+                {
+                    "id": "site-demo",
+                    "name": "Demo",
+                    "hostnames": ["localhost"],
+                    "origin": "http://127.0.0.1:9090",
+                    "listen": 8080,
+                    "mode": "block",
+                    "enabled": True,
+                    "features": {"httpFlood": True, "botProtection": True},
+                    "underAttack": {"enabled": True},
+                    "botProtection": {
+                        "antiBotChallenge": True,
+                        "verifiedSearchBots": {"enabled": False},
+                        "verifiedAIBots": {
+                            "enabled": True,
+                            "allowedProviders": ["openai_user", "anthropic_user"],
+                            "bypassChallenge": True,
+                            "bypassRateLimit": True,
+                        },
+                        "rateChallenge": {
+                            "enabled": True,
+                            "windowSeconds": 10,
+                            "challengeCount": 300,
+                            "blockCount": 700,
+                            "blockMinutes": 30,
+                        },
+                    },
+                }
+            ],
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "NGINX_HAS_MODSECURITY": "true",
+                "NGINX_MODSECURITY_BASE_RULES_FILE": "/etc/freewaf/modsecurity/base.conf",
+            },
+            clear=False,
+        ):
+            config = generate_nginx_config(state)
+
+        self.assertIn("geo $sfl_verified_ai_openai_user_ip", config)
+        self.assertIn("104.210.139.192/28 1;", config)
+        self.assertIn('map "$sfl_verified_ai_openai_user_ip:$http_user_agent" $sfl_verified_ai_openai_user_bot {', config)
+        self.assertIn("ChatGPT-User", config)
+        self.assertIn("geo $sfl_verified_ai_anthropic_user_ip", config)
+        self.assertIn("160.79.104.0/21 1;", config)
+        self.assertIn('map "$sfl_verified_ai_openai_user_bot|$sfl_verified_ai_anthropic_user_bot" $sfl_verified_ai_bot_site_demo {', config)
+        self.assertIn("if ($sfl_verified_ai_bot_site_demo = 1)", config)
+        self.assertIn("set $sfl_verified_rate_bypass 1;", config)
+        self.assertIn("map $sfl_verified_rate_bypass $sfl_global_rate_key", config)
+        self.assertIn('SecRule REMOTE_ADDR "@ipMatch 104.210.139.192/28"', config)
+        self.assertIn("(?i:(?:ChatGPT-User))", config)
+        self.assertNotIn("$sfl_verified_search_bot = 1", config)
 
     def test_http_flood_emits_temporary_block_cooldown_rules(self):
         state = make_state(
