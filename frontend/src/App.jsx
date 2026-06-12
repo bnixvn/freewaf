@@ -1435,112 +1435,328 @@ function DashboardView({ data }) {
   const stats = { ...emptyStats, ...(data?.stats || {}) };
   const topRule = stats.topRules[0]?.name || 'None';
   const timeline = stats.timeline || [];
+  const sites = data?.sites || [];
   const protectedTotal = Number(stats.protected ?? (Number(stats.blocked || 0) + Number(stats.challenged || 0)));
   const challengedTotal = Number(stats.challenged || 0);
   const blockedTotal = Number(stats.blocked || 0);
+  const allowedTotal = Number(stats.allowed || 0);
   const botTypes = stats.botTypes || [];
   const countries = stats.topCountries || [];
   const blockedCountries = stats.blockedCountries || countries.filter((country) => Number(country.blocked || 0) > 0);
+  const statusRows = stats.statusGroups || [];
+  const siteRows = (stats.siteStats || [])
+    .filter((item) => Number(item.requests || 0) > 0)
+    .sort((a, b) => Number(b.requests || 0) - Number(a.requests || 0))
+    .slice(0, 8);
   const qpsTimeline = stats.qpsTimeline || [];
   const qpsValue = Number(stats.qps ?? qpsTimeline[qpsTimeline.length - 1]?.qps ?? 0);
   const requestsMax = Math.max(0, ...timeline.map((point) => Number(point.total || 0)));
   const blockedMax = Math.max(0, ...timeline.map((point) => Number(point.blocked || 0)));
+  const siteLabel = sites.length === 1
+    ? (sites[0].hostnames?.[0] || sites[0].name || 'All applications')
+    : `${sites.length || 'All'} applications`;
   const trafficWindow = timeline.reduce((totals, point) => ({
     total: totals.total + Number(point.total || 0),
     protected: totals.protected + Number(point.protected ?? (Number(point.blocked || 0) + Number(point.challenged || 0))),
     challenged: totals.challenged + Number(point.challenged || 0),
     blocked: totals.blocked + Number(point.blocked || 0)
   }), { total: 0, protected: 0, challenged: 0, blocked: 0 });
+  const kpiGroups = [
+    {
+      wide: true,
+      items: [
+        { label: 'Requests', value: formatCompact(stats.total), note: 'Analyzed request events', icon: <Activity size={14} /> },
+        { label: 'Protected', value: formatCompact(protectedTotal), note: `${stats.protectedRate ?? 0}% challenge or block`, icon: <ShieldCheck size={14} /> },
+        { label: 'Challenges', value: formatCompact(challengedTotal), note: `${formatCompact(blockedTotal)} hard blocks`, icon: <ShieldAlert size={14} /> },
+        { label: 'Allowed', value: formatCompact(allowedTotal), note: 'Passed to origin', icon: <Server size={14} /> }
+      ]
+    },
+    {
+      items: [
+        { label: 'Blocked Requests', value: formatCompact(blockedTotal), note: `${stats.blockRate ?? 0}% hard block rate`, icon: <ShieldAlert size={14} /> },
+        { label: 'Bot Types', value: formatCompact(stats.botTypeCount), note: `${formatCompact(stats.botRequestTotal)} bot-like requests`, icon: <Network size={14} /> }
+      ]
+    },
+    {
+      items: [
+        { label: 'Countries', value: formatCompact(stats.countryCount), note: `${formatCompact(stats.protectedCountryCount)} protected`, icon: <Globe2 size={14} /> },
+        { label: 'Blocked Countries', value: formatCompact(stats.blockedCountryCount), note: 'Countries with hard blocks', icon: <Info size={14} /> }
+      ]
+    }
+  ];
 
   return (
-    <>
-      <div className="metric-grid">
-        <Metric label="Requests" value={formatCompact(stats.total)} note="Analyzed request events" />
-        <Metric label="Protected" value={formatCompact(protectedTotal)} note={`${stats.protectedRate ?? stats.blockRate}% challenge or block rate`} />
-        <Metric label="Challenges" value={formatCompact(challengedTotal)} note={`${formatCompact(blockedTotal)} hard blocks`} />
-        <Metric label="Bot Types" value={formatCompact(stats.botTypeCount)} note={`${formatCompact(stats.botRequestTotal)} bot-like requests`} />
-        <Metric label="Blocked Requests" value={formatCompact(blockedTotal)} note={`${stats.blockRate ?? 0}% hard block rate`} />
+    <div className="sfl-dashboard">
+      <section className="sfl-dashboard-bar">
+        <div className="sfl-tabs" aria-label="Dashboard sections">
+          <span className="sfl-tab active">Traffic Analysis</span>
+          <span className="sfl-tab">Security Posture</span>
+          <span className="sfl-tab">Data Dashboard</span>
+        </div>
+        <div className="sfl-dashboard-controls">
+          <span className="sfl-select">{siteLabel}</span>
+          <span className="sfl-select">{stats.retentionDays ? `${stats.retentionDays} days` : '24 hours'}</span>
+        </div>
+      </section>
+
+      <div className="sfl-dashboard-layout">
+        <div className="sfl-dashboard-main">
+          <div className="sfl-kpi-grid">
+            {kpiGroups.map((group, index) => (
+              <DashboardKpiGroup key={index} items={group.items} wide={group.wide} />
+            ))}
+          </div>
+
+          <section className="panel sfl-traffic-panel">
+            <div className="panel-heading traffic-heading">
+              <h2>Traffic Window</h2>
+              <div className="traffic-pills">
+                <span className="pill">{formatCompact(trafficWindow.total)} requests</span>
+                <span className="pill">{formatCompact(trafficWindow.protected)} protected</span>
+                <span className="pill">{formatCompact(trafficWindow.challenged)} challenged</span>
+                <span className="pill">{formatCompact(trafficWindow.blocked)} blocked</span>
+                <span className="pill">5 minute buckets</span>
+              </div>
+            </div>
+            <Timeline points={timeline} compact />
+          </section>
+
+          <section className="panel sfl-geo-panel">
+            <div className="sfl-panel-heading">
+              <h2>Geo Location</h2>
+              <div className="sfl-segmented">
+                <span className="active">3D</span>
+                <span>2D</span>
+                <span className="active">Requests</span>
+                <span>Blocked</span>
+              </div>
+            </div>
+            <div className="sfl-geo-content">
+              <GeoGlobe countries={countries} />
+              <SafeLineRankList
+                rows={countries}
+                maxValue={Math.max(1, ...countries.map((item) => Number(item.count || 0)))}
+                label={(item) => countryDisplayName(item)}
+                value={(item) => Number(item.count || 0)}
+                detail={(item) => `${formatCompact(item.protected)} protected`}
+                empty="No country data available."
+              />
+            </div>
+          </section>
+        </div>
+
+        <aside className="sfl-dashboard-rail">
+          <section className="panel traffic-widget sfl-qps-panel">
+            <div className="traffic-widget-heading">
+              <div className="traffic-title-row">
+                <h2>Query Per Second</h2>
+                <span className="qps-badge"><BarChart3 size={14} /> {formatQps(qpsValue)}</span>
+              </div>
+              <RefreshCw size={17} className="traffic-refresh-icon" />
+            </div>
+            <QpsBars points={qpsTimeline} />
+          </section>
+
+          <section className="panel traffic-widget sfl-status-panel">
+            <div className="traffic-widget-heading">
+              <h2>Requests Status</h2>
+              <span className="traffic-max">Max <strong>{formatCompact(requestsMax)}</strong></span>
+            </div>
+            <RequestsStatusChart points={timeline} />
+          </section>
+
+          <section className="panel traffic-widget sfl-status-panel">
+            <div className="traffic-widget-heading">
+              <h2>Blocking Status</h2>
+              <span className="traffic-max">Max <strong>{formatCompact(blockedMax)}</strong></span>
+            </div>
+            <RequestsStatusChart points={timeline} valueKey="blocked" tone="blocking" />
+          </section>
+        </aside>
       </div>
-      <div className="dashboard-grid">
-        <section className="panel dashboard-traffic-panel">
-          <div className="panel-heading traffic-heading">
-            <h2>Traffic Window</h2>
-            <div className="traffic-pills">
-              <span className="pill">{formatCompact(trafficWindow.total)} requests</span>
-              <span className="pill">{formatCompact(trafficWindow.protected)} protected</span>
-              <span className="pill">{formatCompact(trafficWindow.challenged)} challenged</span>
-              <span className="pill">{formatCompact(trafficWindow.blocked)} blocked</span>
-              <span className="pill">5 minute buckets</span>
+
+      <div className="sfl-donut-grid">
+        <DonutInsight
+          title="User Clients"
+          rows={botTypes}
+          empty="No bot-like traffic detected."
+          value={(item) => Number(item.count || 0)}
+          label={(item) => item.name}
+        />
+        <DonutInsight
+          title="Response Status"
+          rows={statusRows}
+          empty="No status data available."
+          value={(item) => Number(item.count || 0)}
+          label={(item) => item.name}
+        />
+      </div>
+
+      <div className="sfl-detail-grid">
+        <SlimRankPanel
+          title="Popular Application"
+          rows={siteRows}
+          empty="No application traffic yet."
+          maxValue={Math.max(1, ...siteRows.map((item) => Number(item.requests || 0)))}
+          label={(item) => item.name}
+          value={(item) => Number(item.requests || 0)}
+          tone="blue"
+        />
+        <SlimRankPanel
+          title="Countries With Blocks"
+          rows={blockedCountries}
+          empty="No countries with hard blocks."
+          maxValue={Math.max(1, ...blockedCountries.map((item) => Number(item.blocked || 0)))}
+          label={(item) => countryDisplayName(item)}
+          value={(item) => Number(item.blocked || 0)}
+          tone="red"
+        />
+        <SlimRankPanel
+          title="Protection Signals"
+          rows={stats.topRules || []}
+          empty="No matched protection signals."
+          maxValue={Math.max(1, ...(stats.topRules || []).map((item) => Number(item.count || 0)))}
+          label={(item) => item.name || topRule}
+          value={(item) => Number(item.count || 0)}
+          tone="teal"
+        />
+        <SlimRankPanel
+          title="Top Bot Types"
+          rows={botTypes}
+          empty="No bot-like traffic detected."
+          maxValue={Math.max(1, ...botTypes.map((item) => Number(item.count || 0)))}
+          label={(item) => item.name}
+          value={(item) => Number(item.count || 0)}
+          tone="yellow"
+        />
+      </div>
+    </div>
+  );
+}
+
+function DashboardKpiGroup({ items, wide = false }) {
+  return (
+    <section className={`sfl-kpi-group ${wide ? 'wide' : ''}`}>
+      {items.map((item) => (
+        <div className="sfl-kpi-item" key={item.label}>
+          <div className="sfl-kpi-label">
+            <span>{item.label}</span>
+            <span className="sfl-kpi-icon">{item.icon}</span>
+          </div>
+          <strong>{item.value}</strong>
+          <small>{item.note}</small>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function GeoGlobe({ countries = [] }) {
+  const primary = countries[0] ? countryDisplayName(countries[0]) : 'No traffic';
+  const secondary = countries[1] ? countryDisplayName(countries[1]) : 'Waiting for data';
+  return (
+    <div className="sfl-globe-wrap" aria-label="Traffic geography">
+      <div className="sfl-globe">
+        <span className="sfl-globe-land land-a" />
+        <span className="sfl-globe-land land-b" />
+        <span className="sfl-globe-land land-c" />
+        <span className="sfl-globe-path path-a" />
+        <span className="sfl-globe-path path-b" />
+        <span className="sfl-globe-point point-a" />
+        <span className="sfl-globe-point point-b" />
+        <span className="sfl-globe-point point-c" />
+      </div>
+      <div className="sfl-globe-caption">
+        <strong>{primary}</strong>
+        <span>{secondary}</span>
+      </div>
+    </div>
+  );
+}
+
+function SafeLineRankList({ rows = [], maxValue = 1, label, value, detail, empty }) {
+  if (!rows.length) return <p className="muted">{empty}</p>;
+  return (
+    <div className="sfl-rank-list">
+      {rows.slice(0, 8).map((item) => {
+        const amount = Number(value(item) || 0);
+        const width = Math.max(3, Math.round((amount / maxValue) * 100));
+        return (
+          <div className="sfl-rank-row" key={`${item.code || ''}-${item.name}`}>
+            <div className="sfl-rank-top">
+              <span>{label(item)}</span>
+              <strong>{formatCompact(amount)}</strong>
+            </div>
+            <div className="sfl-rank-bar"><span style={{ width: `${width}%` }} /></div>
+            <small>{detail(item)}</small>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function DonutInsight({ title, rows = [], empty, value, label }) {
+  const topRows = rows.slice(0, 8);
+  const total = topRows.reduce((sum, item) => sum + Number(value(item) || 0), 0);
+  return (
+    <section className="panel sfl-donut-panel">
+      <div className="sfl-panel-heading">
+        <h2>{title}</h2>
+        <span className="sfl-more">More</span>
+      </div>
+      {topRows.length ? (
+        <div className="sfl-donut-content">
+          <div className="sfl-donut" style={{ background: donutGradient(topRows, value) }}>
+            <div>
+              <strong>{formatCompact(total)}</strong>
+              <span>Total</span>
             </div>
           </div>
-          <Timeline points={timeline} compact />
-        </section>
-        <section className="panel traffic-widget dashboard-qps-panel">
-          <div className="traffic-widget-heading">
-            <div className="traffic-title-row">
-              <h2>Query Per Second</h2>
-              <span className="qps-badge"><BarChart3 size={14} /> {formatQps(qpsValue)}</span>
-            </div>
-            <RefreshCw size={17} className="traffic-refresh-icon" />
+          <div className="sfl-legend">
+            {topRows.map((item, index) => (
+              <div className="sfl-legend-row" key={`${label(item)}-${index}`}>
+                <span className="sfl-dot" style={{ background: chartColor(index) }} />
+                <span>{label(item)}</span>
+                <strong>{formatCompact(value(item))}</strong>
+              </div>
+            ))}
           </div>
-          <QpsBars points={qpsTimeline} />
-        </section>
-        <section className="dashboard-insight-band">
-          <CompactInsightColumn
-            title="Top 10 Bot Types"
-            pill={`${formatCompact(stats.botChallengeTotal)} challenged`}
-            rows={botTypes}
-            empty="No bot-like traffic detected."
-            maxValue={Math.max(1, ...botTypes.map((item) => Number(item.count || 0)))}
-            barValue={(item) => Number(item.count || 0)}
-            valueLabel={(item) => `${formatCompact(item.count)} requests`}
-            detailLabel={(item) => `${formatCompact(item.challenged)} challenged / ${formatCompact(item.blocked)} blocked`}
-          />
-          <CompactInsightColumn
-            title="Top 10 Country Requests"
-            pill={`${formatCompact(stats.countryCount)} seen`}
-            rows={countries}
-            empty="No country data available."
-            maxValue={Math.max(1, ...countries.map((item) => Number(item.count || 0)))}
-            label={(item) => countryDisplayName(item)}
-            barValue={(item) => Number(item.count || 0)}
-            valueLabel={(item) => `${formatCompact(item.count)} requests`}
-            detailLabel={(item) => `${formatCompact(item.protected)} protected`}
-            footer={stats.geoAttribution?.available ? (
-              <a className="attribution-link" href={stats.geoAttribution.url} target="_blank" rel="noreferrer">
-                IP geolocation by {stats.geoAttribution.provider}
-              </a>
-            ) : null}
-          />
-          <CompactInsightColumn
-            title="Top 10 Countries With Blocks"
-            pill={`${formatCompact(stats.blockedCountryCount)}`}
-            rows={blockedCountries}
-            empty="No countries with hard blocks."
-            maxValue={Math.max(1, ...blockedCountries.map((item) => Number(item.blocked || 0)))}
-            label={(item) => countryDisplayName(item)}
-            barValue={(item) => Number(item.blocked || 0)}
-            valueLabel={(item) => `${formatCompact(item.blocked)} blocked`}
-            detailLabel={(item) => `${formatCompact(item.challenged)} challenged`}
-            footer={<div className="insight-note">Top signal: {topRule}</div>}
-          />
-        </section>
-        <section className="panel traffic-widget dashboard-status-panel">
-          <div className="traffic-widget-heading">
-            <h2>Requests Status</h2>
-            <span className="traffic-max">Max <strong>{formatCompact(requestsMax)}</strong></span>
-          </div>
-          <RequestsStatusChart points={timeline} />
-        </section>
-        <section className="panel traffic-widget dashboard-blocking-panel">
-          <div className="traffic-widget-heading">
-            <h2>Blocking Status</h2>
-            <span className="traffic-max">Max <strong>{formatCompact(blockedMax)}</strong></span>
-          </div>
-          <RequestsStatusChart points={timeline} valueKey="blocked" tone="blocking" />
-        </section>
+        </div>
+      ) : (
+        <p className="muted">{empty}</p>
+      )}
+    </section>
+  );
+}
+
+function SlimRankPanel({ title, rows = [], empty, maxValue = 1, label, value, tone = 'teal' }) {
+  return (
+    <section className={`panel sfl-slim-panel ${tone}`}>
+      <div className="sfl-panel-heading">
+        <h2>{title}</h2>
+        <span className="sfl-more">More</span>
       </div>
-    </>
+      {rows.length ? (
+        <div className="sfl-slim-list">
+          {rows.slice(0, 6).map((item, index) => {
+            const amount = Number(value(item) || 0);
+            const width = Math.max(2, Math.round((amount / maxValue) * 100));
+            return (
+              <div className="sfl-slim-row" key={`${label(item)}-${index}`}>
+                <div>
+                  <span>{label(item)}</span>
+                  <strong>{formatCompact(amount)}</strong>
+                </div>
+                <i style={{ width: `${width}%` }} />
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="muted">{empty}</p>
+      )}
+    </section>
   );
 }
 
@@ -4657,6 +4873,25 @@ function formatCompact(value) {
     if (number >= base) return `${(number / base).toFixed(1)}${suffix}`;
   }
   return String(number);
+}
+
+function chartColor(index) {
+  const colors = ['#18c2c2', '#7edadd', '#4d8df7', '#ff5570', '#f8c64f', '#69d38f', '#8a7cf6', '#ff9f68'];
+  return colors[index % colors.length];
+}
+
+function donutGradient(rows, value) {
+  const total = rows.reduce((sum, item) => sum + Number(value(item) || 0), 0);
+  if (!total) return 'conic-gradient(#e7eef2 0 360deg)';
+  let cursor = 0;
+  const stops = rows.map((item, index) => {
+    const amount = Number(value(item) || 0);
+    const start = cursor;
+    const end = cursor + (amount / total) * 360;
+    cursor = end;
+    return `${chartColor(index)} ${start.toFixed(1)}deg ${end.toFixed(1)}deg`;
+  });
+  return `conic-gradient(${stops.join(', ')})`;
 }
 
 function formatQps(value) {
