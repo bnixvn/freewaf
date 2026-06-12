@@ -1413,6 +1413,7 @@ def render_bot_rate_modsecurity_rules(site: dict, state: dict | None = None, ind
     marker = f"FREEWAF_BOT_RATE_DONE_{safe_identifier(site.get('id') or site.get('name') or 'site').upper()}"
     base = modsecurity_rule_id_base(site)
     rules = [
+        *render_access_allow_modsecurity_skip_rules(state or {}, site, marker, base + 100),
         *render_verified_bot_modsecurity_skip_rules(state or {}, site, marker, base + 120, require_rate_bypass=True),
         (
             f'SecAction "id:{base + 1},phase:1,nolog,pass,'
@@ -1510,6 +1511,7 @@ def render_http_flood_modsecurity_rules(site: dict, state: dict | None = None, i
     base = modsecurity_rule_id_base(site) + 200
     marker = f"FREEWAF_HTTP_FLOOD_DONE_{safe_identifier(site.get('id') or site.get('name') or 'site').upper()}"
     rules = [
+        *render_access_allow_modsecurity_skip_rules(state or {}, site, marker, base + 60),
         *render_verified_bot_modsecurity_skip_rules(state or {}, site, marker, base + 80, require_rate_bypass=True),
         (
             f'SecAction "id:{base + 1},phase:1,nolog,pass,initcol:ip=%{{REMOTE_ADDR}},'
@@ -1577,6 +1579,83 @@ def render_verified_bot_modsecurity_skip_rules(
                 )
             )
             rule_id += 1
+    return rules
+
+
+def collect_site_access_allow_ips(state: dict, site: dict) -> list[str]:
+    """Aggregate IP/CIDR items from access rules that unconditionally allow this site.
+
+    Only rules whose conditions consist solely of ``source_ip`` matchers (cidr / in_ip_group)
+    are eligible — otherwise the IP alone is not a sufficient reason to bypass the
+    ModSecurity bot-rate / http-flood challenge at phase:1.
+    """
+    if not state or not site:
+        return []
+    groups = {group.get("id"): group for group in state.get("ipGroups", []) if group.get("enabled")}
+    site_id = site.get("id")
+    site_name = site.get("name")
+    result: list[str] = []
+    for rule in state.get("accessRules", []) or []:
+        if not isinstance(rule, dict):
+            continue
+        if rule.get("enabled") is False:
+            continue
+        if rule.get("action") != "allow":
+            continue
+        if rule.get("continueDetect"):
+            continue
+        scope = rule.get("siteId")
+        if scope not in (None, "*", "all", site_id, site_name):
+            continue
+
+        condition_groups = rule.get("conditionGroups") if isinstance(rule.get("conditionGroups"), list) else None
+        if condition_groups:
+            rule_items: list[str] = []
+            ip_only = True
+            for group in condition_groups:
+                conditions = group.get("conditions") if isinstance(group, dict) else None
+                if not conditions:
+                    continue
+                for condition in conditions:
+                    if not isinstance(condition, dict):
+                        continue
+                    target = str(condition.get("target") or "")
+                    operator = str(condition.get("operator") or "")
+                    if target != "source_ip" or operator in {"not_cidr", "not_in_ip_group"}:
+                        ip_only = False
+                        break
+                    rule_items.extend(collect_condition_ip_items(condition, groups))
+                if not ip_only:
+                    break
+            if ip_only and rule_items:
+                result.extend(rule_items)
+        else:
+            legacy = collect_access_ips(rule, groups)
+            if legacy:
+                result.extend(legacy)
+
+    cleaned = [item.strip() for item in result if isinstance(item, str) and item.strip()]
+    return list(dict.fromkeys(cleaned))
+
+
+def render_access_allow_modsecurity_skip_rules(
+    state: dict | None,
+    site: dict,
+    marker: str,
+    first_rule_id: int,
+) -> list[str]:
+    """Skip ModSecurity rate rules for IPs explicitly allow-listed by access rules."""
+    items = collect_site_access_allow_ips(state or {}, site)
+    if not items:
+        return []
+    rules: list[str] = []
+    rule_id = first_rule_id
+    for chunk in chunks(items, 80):
+        rules.append(
+            f'SecRule REMOTE_ADDR "@ipMatch {",".join(chunk)}" '
+            f'"id:{rule_id},phase:1,nolog,pass,skipAfter:{marker}"'
+        )
+        rule_id += 1
     return rules
 
 

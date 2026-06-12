@@ -1218,6 +1218,140 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertNotIn("Auth feature is enabled", config)
         self.assertNotIn("auth_basic", config)
 
+    def _modsec_rate_state(self, access_rules: list[dict]) -> dict:
+        return make_state(
+            sites=[
+                {
+                    "id": "site-demo",
+                    "name": "Demo",
+                    "hostnames": ["localhost"],
+                    "origin": "http://127.0.0.1:9090",
+                    "listen": 8080,
+                    "mode": "block",
+                    "enabled": True,
+                    "features": {"httpFlood": True, "botProtection": True},
+                    "botProtection": {
+                        "antiBotChallenge": True,
+                        "rateChallenge": {
+                            "enabled": True,
+                            "windowSeconds": 10,
+                            "challengeCount": 30,
+                            "blockCount": 60,
+                            "blockMinutes": 10,
+                        },
+                    },
+                    "acl": {
+                        "enabled": True,
+                        "rateLimitMode": "custom",
+                        "accessLimit": {
+                            "enabled": True,
+                            "period": 10,
+                            "count": 200,
+                            "blockCount": 500,
+                            "action": "challenge_v1",
+                            "blockMin": 60,
+                        },
+                    },
+                }
+            ],
+            accessRules=access_rules,
+        )
+
+    def test_access_allow_ip_skips_modsecurity_bot_rate_and_http_flood(self):
+        state = self._modsec_rate_state(
+            access_rules=[
+                {
+                    "id": "allow-office",
+                    "name": "Allow office",
+                    "enabled": True,
+                    "siteId": "*",
+                    "action": "allow",
+                    "conditionGroups": [
+                        {
+                            "conditions": [
+                                {"target": "source_ip", "operator": "cidr", "content": "203.0.113.7"},
+                            ]
+                        }
+                    ],
+                }
+            ]
+        )
+
+        with mock.patch.dict(os.environ, {"NGINX_HAS_MODSECURITY": "true"}, clear=False):
+            config = generate_nginx_config(state)
+
+        self.assertIn('@ipMatch 203.0.113.7', config)
+        self.assertRegex(config, r"@ipMatch 203\.0\.113\.7\".*skipAfter:FREEWAF_BOT_RATE_DONE_SITE_DEMO")
+        self.assertRegex(config, r"@ipMatch 203\.0\.113\.7\".*skipAfter:FREEWAF_HTTP_FLOOD_DONE_SITE_DEMO")
+
+    def test_access_allow_legacy_ips_skip_modsecurity_rate_rules(self):
+        state = self._modsec_rate_state(
+            access_rules=[
+                {
+                    "id": "allow-cdn",
+                    "name": "Allow CDN",
+                    "enabled": True,
+                    "siteId": "site-demo",
+                    "action": "allow",
+                    "ips": ["198.51.100.5", "198.51.100.6"],
+                }
+            ]
+        )
+
+        with mock.patch.dict(os.environ, {"NGINX_HAS_MODSECURITY": "true"}, clear=False):
+            config = generate_nginx_config(state)
+
+        self.assertIn("198.51.100.5", config)
+        self.assertIn("198.51.100.6", config)
+        self.assertRegex(config, r"skipAfter:FREEWAF_BOT_RATE_DONE_SITE_DEMO")
+        self.assertRegex(config, r"skipAfter:FREEWAF_HTTP_FLOOD_DONE_SITE_DEMO")
+
+    def test_access_allow_with_non_ip_condition_does_not_emit_modsec_skip(self):
+        state = self._modsec_rate_state(
+            access_rules=[
+                {
+                    "id": "allow-path",
+                    "name": "Allow path",
+                    "enabled": True,
+                    "siteId": "*",
+                    "action": "allow",
+                    "conditionGroups": [
+                        {
+                            "conditions": [
+                                {"target": "source_ip", "operator": "cidr", "content": "203.0.113.9"},
+                                {"target": "url", "operator": "contains", "content": "/health"},
+                            ]
+                        }
+                    ],
+                }
+            ]
+        )
+
+        with mock.patch.dict(os.environ, {"NGINX_HAS_MODSECURITY": "true"}, clear=False):
+            config = generate_nginx_config(state)
+
+        self.assertNotRegex(config, r"@ipMatch 203\.0\.113\.9\".*skipAfter:FREEWAF_BOT_RATE_DONE_SITE_DEMO")
+
+    def test_access_allow_continue_detect_does_not_skip_modsec(self):
+        state = self._modsec_rate_state(
+            access_rules=[
+                {
+                    "id": "allow-cd",
+                    "name": "Allow continue",
+                    "enabled": True,
+                    "continueDetect": True,
+                    "siteId": "*",
+                    "action": "allow",
+                    "ips": ["198.51.100.42"],
+                }
+            ]
+        )
+
+        with mock.patch.dict(os.environ, {"NGINX_HAS_MODSECURITY": "true"}, clear=False):
+            config = generate_nginx_config(state)
+
+        self.assertNotRegex(config, r"@ipMatch 198\.51\.100\.42\".*skipAfter:FREEWAF_BOT_RATE_DONE_SITE_DEMO")
+
 
 if __name__ == "__main__":
     unittest.main()
