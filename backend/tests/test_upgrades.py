@@ -300,6 +300,48 @@ class NginxLogTailCacheTests(unittest.TestCase):
                 log_file.write_text("", encoding="utf-8")
                 self.assertEqual(parse_nginx_logs(root, 100), [])
 
+    def test_high_volume_logs_are_not_capped_below_caller_limit(self):
+        # Regression: an earlier cap of 5000 entries silently truncated the
+        # cache even when callers asked for more, so dashboard stat counters
+        # appeared frozen once traffic crossed the cap.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log_file = root / "freewaf_access.log"
+            with mock.patch.dict(
+                os.environ,
+                {"NGINX_ACCESS_LOG": str(log_file), "NGINX_SITE_LOG_DIR": str(root / "sites")},
+                clear=False,
+            ):
+                with nginx_module._LOG_TAIL_LOCK:
+                    nginx_module._LOG_TAIL_CACHE.clear()
+
+                total = 8000
+                with log_file.open("w", encoding="utf-8") as handle:
+                    for index in range(total):
+                        handle.write(
+                            json.dumps(
+                                {
+                                    "time": f"2026-06-12T00:{index // 60 % 60:02d}:{index % 60:02d}+00:00",
+                                    "remote_addr": "203.0.113.1",
+                                    "host": "demo.test",
+                                    "method": "GET",
+                                    "uri": f"/{index}",
+                                    "status": 200 if index % 2 else 403,
+                                    "request_time": 0.01,
+                                    "verdict": "allow" if index % 2 else "block",
+                                    "reason": "Allowed" if index % 2 else "Blocked",
+                                    "user_agent": "ua",
+                                    "referer": "",
+                                }
+                            )
+                            + "\n"
+                        )
+
+                entries = parse_nginx_logs(root, 7000)
+                self.assertEqual(len(entries), 7000)
+                blocked = sum(1 for entry in entries if entry["verdict"] == "block")
+                self.assertGreater(blocked, 3000)
+
 
 if __name__ == "__main__":
     unittest.main()

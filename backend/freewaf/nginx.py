@@ -371,8 +371,29 @@ def nginx_cert_dir(root_dir: Path) -> Path:
 
 _LOG_TAIL_CACHE: dict[str, dict] = {}
 _LOG_TAIL_LOCK = threading.Lock()
-_LOG_TAIL_MAX_ENTRIES = 5000
-_LOG_TAIL_MAX_BYTES = 16 * 1024 * 1024  # 16 MiB cold-read cap on first scan
+# Floor below which the cache must keep at least this many entries even when the
+# caller asks for fewer, so subsequent stat calls with a larger limit do not get
+# truncated. Hard ceiling guards memory; both are env-overridable for operators
+# running very high-traffic edges.
+_LOG_TAIL_MIN_ENTRIES = 5000
+
+
+def _log_tail_max_entries() -> int:
+    raw = os.environ.get("FREEWAF_LOG_TAIL_MAX_ENTRIES", "").strip()
+    try:
+        value = int(raw) if raw else 250_000
+    except ValueError:
+        value = 250_000
+    return max(_LOG_TAIL_MIN_ENTRIES, value)
+
+
+def _log_tail_max_bytes() -> int:
+    raw = os.environ.get("FREEWAF_LOG_TAIL_MAX_BYTES", "").strip()
+    try:
+        value = int(raw) if raw else 64 * 1024 * 1024  # 64 MiB cold-read cap on first scan
+    except ValueError:
+        value = 64 * 1024 * 1024
+    return max(1024 * 1024, value)
 
 
 def _log_file_signature(log_file: Path) -> tuple:
@@ -426,8 +447,12 @@ def _read_log_tail(log_file: Path, limit: int) -> list[dict]:
     if not signature:
         return []
     inode, size, _mtime = signature
-    cap = max(int(limit) * 2, _LOG_TAIL_MAX_ENTRIES // 2)
-    cap = min(cap, _LOG_TAIL_MAX_ENTRIES)
+    hard_max = _log_tail_max_entries()
+    # Always keep at least the caller's requested window in cache, otherwise
+    # subsequent stat calls (which scan up to STATS_LOG_SCAN_LIMIT) would see
+    # truncated counters under sustained traffic.
+    cap = max(int(limit), _LOG_TAIL_MIN_ENTRIES)
+    cap = min(cap, hard_max)
 
     with _LOG_TAIL_LOCK:
         cached = _LOG_TAIL_CACHE.get(key)
@@ -443,9 +468,9 @@ def _read_log_tail(log_file: Path, limit: int) -> list[dict]:
     sequence = 0 if rotated else cached_seq
     partial = b"" if rotated else cached_partial
 
-    if rotated and size > _LOG_TAIL_MAX_BYTES:
+    if rotated and size > _log_tail_max_bytes():
         # Skip ahead to the last chunk; we only need the tail anyway.
-        start_offset = size - _LOG_TAIL_MAX_BYTES
+        start_offset = size - _log_tail_max_bytes()
 
     if size > start_offset:
         try:
