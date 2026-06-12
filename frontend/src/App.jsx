@@ -1474,28 +1474,15 @@ function DashboardView({ data, dashboardSiteId, setDashboardSiteId, dashboardPer
   const blockedMax = Math.max(0, ...timeline.map((point) => Number(point.blocked || 0)));
   const selectedSite = sites.find((site) => String(site.id || '') === String(dashboardSiteId || ''));
   const selectedSiteLabel = selectedSite?.name || selectedSite?.hostnames?.[0] || 'All applications';
-  const kpiGroups = [
-    {
-      wide: true,
-      items: [
-        { label: 'Requests', value: formatCompact(stats.total), note: 'Analyzed request events', icon: <Activity size={14} /> },
-        { label: 'Protected', value: formatCompact(protectedTotal), note: `${stats.protectedRate ?? 0}% challenge or block`, icon: <ShieldCheck size={14} /> },
-        { label: 'Challenges', value: formatCompact(challengedTotal), note: `${formatCompact(blockedTotal)} hard blocks`, icon: <ShieldAlert size={14} /> },
-        { label: 'Allowed', value: formatCompact(allowedTotal), note: 'Passed to origin', icon: <Server size={14} /> }
-      ]
-    },
-    {
-      items: [
-        { label: 'Blocked Requests', value: formatCompact(blockedTotal), note: `${stats.blockRate ?? 0}% hard block rate`, icon: <ShieldAlert size={14} /> },
-        { label: 'Bot Types', value: formatCompact(stats.botTypeCount), note: `${formatCompact(stats.botRequestTotal)} bot-like requests`, icon: <Network size={14} /> }
-      ]
-    },
-    {
-      items: [
-        { label: 'Countries', value: formatCompact(stats.countryCount), note: `${formatCompact(stats.protectedCountryCount)} protected`, icon: <Globe2 size={14} /> },
-        { label: 'Blocked Countries', value: formatCompact(stats.blockedCountryCount), note: 'Countries with hard blocks', icon: <Info size={14} /> }
-      ]
-    }
+  const kpiItems = [
+    { label: 'Requests', value: formatCompact(stats.total), note: 'Analyzed request events', icon: <Activity size={14} /> },
+    { label: 'Protected', value: formatCompact(protectedTotal), note: `${stats.protectedRate ?? 0}% challenge or block`, icon: <ShieldCheck size={14} /> },
+    { label: 'Challenges', value: formatCompact(challengedTotal), note: `${formatCompact(blockedTotal)} hard blocks`, icon: <ShieldAlert size={14} /> },
+    { label: 'Allowed', value: formatCompact(allowedTotal), note: 'Passed to origin', icon: <Server size={14} /> },
+    { label: 'Blocked Requests', value: formatCompact(blockedTotal), note: `${stats.blockRate ?? 0}% hard block rate`, icon: <ShieldAlert size={14} /> },
+    { label: 'Bot Types', value: formatCompact(stats.botTypeCount), note: `${formatCompact(stats.botRequestTotal)} bot-like requests`, icon: <Network size={14} /> },
+    { label: 'Countries', value: formatCompact(stats.countryCount), note: `${formatCompact(stats.protectedCountryCount)} protected`, icon: <Globe2 size={14} /> },
+    { label: 'Blocked Countries', value: formatCompact(stats.blockedCountryCount), note: 'Countries with hard blocks', icon: <Info size={14} /> }
   ];
 
   return (
@@ -1525,14 +1512,12 @@ function DashboardView({ data, dashboardSiteId, setDashboardSiteId, dashboardPer
         </div>
       </section>
 
+      <div className="sfl-kpi-grid">
+        <DashboardKpiGroup items={kpiItems} wide />
+      </div>
+
       <div className="sfl-dashboard-layout">
         <div className="sfl-dashboard-main">
-          <div className="sfl-kpi-grid">
-            {kpiGroups.map((group, index) => (
-              <DashboardKpiGroup key={index} items={group.items} wide={group.wide} />
-            ))}
-          </div>
-
           <section className="panel sfl-geo-panel">
             <div className="sfl-panel-heading">
               <h2>Geo Location</h2>
