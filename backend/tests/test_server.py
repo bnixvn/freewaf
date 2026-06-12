@@ -323,6 +323,51 @@ class CertificateServerTests(unittest.TestCase):
         self.assertEqual(prepared["keyFile"], str(expected_live / "privkey.pem").replace("\\", "/"))
         self.assertEqual(prepared["status"], "ready")
 
+    def test_cloudflare_certificate_payload_writes_credentials_and_uses_dns_challenge(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            credentials_dir = Path(temp_dir) / "credentials"
+            live_dir = Path(temp_dir) / "live"
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "CERTBOT_CREDENTIALS_DIR": str(credentials_dir),
+                    "CERTBOT_LIVE_DIR": str(live_dir),
+                },
+            ):
+                with mock.patch(
+                    "freewaf.server.run_certbot_cloudflare",
+                    return_value={
+                        "ok": True,
+                        "stdout": (
+                            "Successfully received certificate.\n"
+                            f"Certificate is saved at: {live_dir}/cert-wild/fullchain.pem\n"
+                            f"Key is saved at:         {live_dir}/cert-wild/privkey.pem\n"
+                        ),
+                        "stderr": "",
+                    },
+                ) as run_certbot:
+                    prepared = prepare_certificate_payload(
+                        {
+                            "id": "cert-wild",
+                            "name": "",
+                            "source": "cloudflare",
+                            "domains": ["example.test", "*.example.test"],
+                            "email": "ops@example.test",
+                            "cloudflareApiToken": "cf-secret-token",
+                            "cloudflarePropagationSeconds": 45,
+                        }
+                    )
+
+            credentials_file = credentials_dir / "cert-wild-cloudflare.ini"
+            run_certbot.assert_called_once_with(["example.test", "*.example.test"], "ops@example.test", credentials_file, 45, "cert-wild")
+            self.assertEqual(credentials_file.read_text(encoding="utf-8"), "dns_cloudflare_api_token = cf-secret-token\n")
+            self.assertNotIn("cloudflareApiToken", prepared)
+            self.assertEqual(prepared["source"], "cloudflare")
+            self.assertEqual(prepared["name"], "example.test")
+            self.assertEqual(prepared["cloudflarePropagationSeconds"], 45)
+            self.assertEqual(prepared["certFile"], str(live_dir / "cert-wild" / "fullchain.pem").replace("\\", "/"))
+            self.assertEqual(prepared["keyFile"], str(live_dir / "cert-wild" / "privkey.pem").replace("\\", "/"))
+
     def test_signed_challenge_nonce_and_edge_token_are_bound_to_context(self):
         context = {
             "siteId": "site-demo",

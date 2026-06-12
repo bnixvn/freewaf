@@ -800,7 +800,7 @@ def normalize_stored_certificate(certificate: dict) -> dict:
     last_message = str(certificate.get("lastMessage") or "")
     cert_file = normalize_file_reference(certificate.get("certFile") or certificate.get("cert_file") or "")
     key_file = normalize_file_reference(certificate.get("keyFile") or certificate.get("key_file") or "")
-    if source == "certbot":
+    if source in {"certbot", "cloudflare"}:
         parsed_cert_file, parsed_key_file = parse_certbot_paths(last_message)
         cert_file = parsed_cert_file or cert_file
         key_file = parsed_key_file or key_file
@@ -817,6 +817,8 @@ def normalize_stored_certificate(certificate: dict) -> dict:
         "lastMessage": last_message,
         "certFile": cert_file,
         "keyFile": key_file,
+        "cloudflareCredentialsFile": normalize_file_reference(certificate.get("cloudflareCredentialsFile") or certificate.get("cloudflare_credentials_file") or ""),
+        "cloudflarePropagationSeconds": normalize_positive_int(certificate.get("cloudflarePropagationSeconds") or certificate.get("cloudflare_propagation_seconds"), 60),
         "createdAt": certificate.get("createdAt") or now,
         "updatedAt": certificate.get("updatedAt") or now,
     }
@@ -965,7 +967,7 @@ def normalize_certificate_input(payload: dict, certificate_id: str | None, now: 
         raise StoreError(400, "Certificate name is required")
     if not cert_file or not key_file:
         raise StoreError(400, "Certificate and key files are required")
-    if source == "certbot":
+    if source in {"certbot", "cloudflare"}:
         if not domains:
             raise StoreError(400, "At least one domain is required for certbot certificates")
         if "@" not in email:
@@ -983,6 +985,8 @@ def normalize_certificate_input(payload: dict, certificate_id: str | None, now: 
         "lastMessage": str(payload.get("lastMessage") or ""),
         "certFile": cert_file,
         "keyFile": key_file,
+        "cloudflareCredentialsFile": normalize_file_reference(payload.get("cloudflareCredentialsFile") or payload.get("cloudflare_credentials_file") or ""),
+        "cloudflarePropagationSeconds": normalize_positive_int(payload.get("cloudflarePropagationSeconds") or payload.get("cloudflare_propagation_seconds"), 60),
         "createdAt": now,
         "updatedAt": now,
     }
@@ -1561,7 +1565,7 @@ def normalize_file_reference(value) -> str:
 
 def normalize_certificate_source(value) -> str:
     source = str(value or "upload").lower()
-    return source if source in {"upload", "certbot"} else "upload"
+    return source if source in {"upload", "certbot", "cloudflare"} else "upload"
 
 
 def normalize_domain_list(values) -> list[str]:

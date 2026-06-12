@@ -187,6 +187,33 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(certificate["renewBeforeDays"], 30)
         self.assertTrue(certificate["autoRenew"])
 
+    def test_cloudflare_certificate_state_is_normalized(self):
+        state = normalize_state(
+            {
+                "sites": [],
+                "rules": [],
+                "certificates": [
+                    {
+                        "id": "cloudflare-demo",
+                        "name": "example.test wildcard",
+                        "source": "cloudflare",
+                        "domains": ["example.test", "*.example.test"],
+                        "email": "admin@example.test",
+                        "cloudflareCredentialsFile": "/etc/freewaf/certbot/cloudflare-demo.ini",
+                        "cloudflarePropagationSeconds": 45,
+                        "certFile": "/etc/letsencrypt/live/cloudflare-demo/fullchain.pem",
+                        "keyFile": "/etc/letsencrypt/live/cloudflare-demo/privkey.pem",
+                    }
+                ],
+            }
+        )
+
+        certificate = state["certificates"][0]
+        self.assertEqual(certificate["source"], "cloudflare")
+        self.assertEqual(certificate["domains"], ["example.test", "*.example.test"])
+        self.assertEqual(certificate["cloudflareCredentialsFile"], "/etc/freewaf/certbot/cloudflare-demo.ini")
+        self.assertEqual(certificate["cloudflarePropagationSeconds"], 45)
+
     def test_certbot_certificate_paths_are_recovered_from_last_message(self):
         state = normalize_state(
             {

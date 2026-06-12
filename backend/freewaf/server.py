@@ -225,6 +225,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 state["stats"] = combined_stats(store, state, site_id=site_id, retention_days=period_days)
                 state["runtime"] = runtime_payload(state, admin_port, demo_origin_port, demo_enabled)
                 state["users"] = [public_user(user) for user in state.get("users", [])]
+                state["certificates"] = [public_certificate(certificate) for certificate in state.get("certificates", [])]
                 self.send_json(200, state)
                 return
 
@@ -358,7 +359,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     saved = store.upsert_certificate(prepare_certificate_payload(payload))
                     apply_nginx_or_raise(store)
                     self.record_audit(action="certificates.create", target="certificates", target_id=saved.get("id", ""), status=201, payload=payload)
-                    self.send_json(201, saved)
+                    self.send_json(201, public_certificate(saved))
                     return
                 if self.path == "/api/ip-groups":
                     saved = store.upsert_ip_group(payload)
@@ -513,7 +514,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     saved = store.upsert_certificate(prepare_certificate_payload(payload, item_id), item_id)
                     apply_nginx_or_raise(store)
                     self.record_audit(action=f"certificates.{action_verb}", target="certificates", target_id=item_id, status=200, payload=payload)
-                    self.send_json(200, saved)
+                    self.send_json(200, public_certificate(saved))
                     return
 
                 if resource == "ip-groups":
@@ -884,6 +885,15 @@ def public_user(user: dict | None, include_totp_secret: bool = False) -> dict | 
     if include_totp_secret and user.get("totpSecret"):
         payload["totpSetupSecret"] = user["totpSecret"]
         payload["totpSetupUri"] = totp_setup_uri(user)
+    return payload
+
+
+def public_certificate(certificate: dict) -> dict:
+    payload = dict(certificate)
+    payload.pop("cloudflareApiToken", None)
+    payload.pop("cloudflareCredentialsFile", None)
+    if certificate.get("source") == "cloudflare":
+        payload["cloudflareConfigured"] = bool(certificate.get("cloudflareCredentialsFile"))
     return payload
 
 
@@ -1686,6 +1696,8 @@ def ip_group_sync_check_seconds() -> int:
 def prepare_certificate_payload(payload: dict, certificate_id: str | None = None) -> dict:
     prepared = dict(payload)
     source = str(prepared.get("source") or "upload").lower()
+    if source == "cloudflare":
+        return prepare_cloudflare_certificate_payload(prepared, certificate_id)
     if source == "certbot":
         return prepare_certbot_certificate_payload(prepared, certificate_id)
 
@@ -1709,6 +1721,59 @@ def prepare_certificate_payload(payload: dict, certificate_id: str | None = None
         prepared["certFile"] = relative_to_root(cert_file)
         prepared["keyFile"] = relative_to_root(key_file)
 
+    return prepared
+
+
+def prepare_cloudflare_certificate_payload(payload: dict, certificate_id: str | None = None) -> dict:
+    domains = normalize_payload_list(payload.get("domains"))
+    email = str(payload.get("email") or "").strip()
+    if not domains:
+        raise StoreError(400, "Domain is required")
+    if "@" not in email:
+        raise StoreError(400, "Email address is required")
+
+    cert_id = certificate_id or str(payload.get("id") or f"cloudflare-{uuid.uuid4().hex[:8]}")
+    cert_name = safe_file_stem(cert_id)
+    api_token = str(payload.get("cloudflareApiToken") or "").strip()
+    current_credentials_file = resolve_reference(payload.get("cloudflareCredentialsFile"))
+    previous_credentials = None
+    if api_token and current_credentials_file and current_credentials_file.exists():
+        previous_credentials = current_credentials_file.read_text(encoding="utf-8")
+    credentials_file = write_cloudflare_credentials(
+        cert_id,
+        api_token,
+        payload.get("cloudflareCredentialsFile"),
+    )
+    propagation_seconds = clamp(parse_int(payload.get("cloudflarePropagationSeconds"), cloudflare_propagation_seconds()), 10, 600)
+    try:
+        result = run_certbot_cloudflare(domains, email, credentials_file, propagation_seconds, cert_name)
+    except StoreError:
+        if api_token:
+            if previous_credentials is not None:
+                credentials_file.write_text(previous_credentials, encoding="utf-8")
+                credentials_file.chmod(0o600)
+            else:
+                credentials_file.unlink(missing_ok=True)
+        raise
+    cert_file, key_file = certbot_paths_from_result(result, cert_name)
+
+    prepared = {
+        **payload,
+        "id": cert_id,
+        "name": str(payload.get("name") or domains[0].removeprefix("*.") or domains[0]),
+        "source": "cloudflare",
+        "domains": domains,
+        "email": email,
+        "autoRenew": payload.get("autoRenew") is not False,
+        "renewBeforeDays": int(payload.get("renewBeforeDays") or 30),
+        "cloudflareCredentialsFile": relative_to_root(credentials_file),
+        "cloudflarePropagationSeconds": propagation_seconds,
+        "certFile": cert_file,
+        "keyFile": key_file,
+        "status": "ready" if result["ok"] else "failed",
+        "lastMessage": result["stdout"] or result["stderr"],
+    }
+    prepared.pop("cloudflareApiToken", None)
     return prepared
 
 
@@ -1739,6 +1804,30 @@ def prepare_certbot_certificate_payload(payload: dict, certificate_id: str | Non
         "status": "ready" if result["ok"] else "failed",
         "lastMessage": result["stdout"] or result["stderr"],
     }
+
+
+def write_cloudflare_credentials(cert_id: str, api_token: str, current_file: str | None = None) -> Path:
+    if current_file and not api_token:
+        path = resolve_reference(str(current_file))
+        if path and path.exists():
+            return path
+    if not api_token:
+        raise StoreError(400, "Cloudflare API token is required")
+
+    credentials_dir = certbot_credentials_dir()
+    credentials_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        credentials_dir.chmod(0o700)
+    except OSError:
+        pass
+
+    path = credentials_dir / f"{safe_file_stem(cert_id)}-cloudflare.ini"
+    path.write_text(f"dns_cloudflare_api_token = {api_token}\n", encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError as error:
+        raise StoreError(500, f"Cannot protect Cloudflare credentials file: {error}") from error
+    return path
 
 
 def certbot_paths_from_result(result: dict, primary_domain: str) -> tuple[str, str]:
@@ -1786,9 +1875,52 @@ def run_certbot(domains: list[str], email: str) -> dict:
     }
 
 
+def run_certbot_cloudflare(domains: list[str], email: str, credentials_file: Path, propagation_seconds: int, cert_name: str) -> dict:
+    certbot = os.environ.get("CERTBOT_CMD", "certbot")
+    command = [
+        certbot,
+        "certonly",
+        "--non-interactive",
+        "--agree-tos",
+        "--email",
+        email,
+        "--keep-until-expiring",
+        "--expand",
+        "--cert-name",
+        cert_name,
+        "--dns-cloudflare",
+        "--dns-cloudflare-credentials",
+        str(credentials_file),
+        "--dns-cloudflare-propagation-seconds",
+        str(propagation_seconds),
+    ]
+
+    for domain in domains:
+        command.extend(["-d", domain])
+
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=300, check=False)
+    except FileNotFoundError:
+        raise StoreError(500, f"Certbot command not found: {certbot}") from None
+    except subprocess.TimeoutExpired:
+        raise StoreError(500, "Certbot Cloudflare command timed out") from None
+
+    if completed.returncode != 0:
+        message = completed.stderr or completed.stdout or "Certbot Cloudflare failed"
+        raise StoreError(500, message.strip())
+
+    return {
+        "ok": True,
+        "stdout": completed.stdout.strip(),
+        "stderr": completed.stderr.strip(),
+    }
+
+
 def remove_certificate_files(certificate: dict) -> None:
-    if certificate.get("source") == "certbot":
+    if certificate.get("source") in {"certbot", "cloudflare"}:
         remove_certbot_certificate(certificate)
+        if certificate.get("source") == "cloudflare":
+            remove_cloudflare_credentials(certificate)
         return
     for key in ("certFile", "keyFile"):
         path = resolve_reference(certificate.get(key))
@@ -1817,6 +1949,20 @@ def remove_certbot_certificate(certificate: dict) -> None:
         if not certbot_files_exist(certificate) and re.search(r"not found|could not find|no certificate", message, re.IGNORECASE):
             return
         raise StoreError(500, f"Certbot delete failed: {message}")
+
+
+def remove_cloudflare_credentials(certificate: dict) -> None:
+    path = resolve_reference(certificate.get("cloudflareCredentialsFile"))
+    if not path:
+        return
+    allowed_root = certbot_credentials_dir().resolve(strict=False)
+    resolved = path.resolve(strict=False)
+    if not is_relative_to(resolved, allowed_root):
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as error:
+        raise StoreError(500, f"Cannot delete Cloudflare credentials file {path}: {error}") from error
 
 
 def certbot_certificate_name(certificate: dict) -> str:
@@ -1855,6 +2001,15 @@ def normalize_payload_list(values) -> list[str]:
 def certificate_dir() -> Path:
     configured = Path(os.environ.get("NGINX_CERT_DIR", "./nginx/certs"))
     return configured if configured.is_absolute() else ROOT_DIR / configured
+
+
+def certbot_credentials_dir() -> Path:
+    configured = Path(os.environ.get("CERTBOT_CREDENTIALS_DIR", "./data/certbot"))
+    return configured if configured.is_absolute() else ROOT_DIR / configured
+
+
+def cloudflare_propagation_seconds() -> int:
+    return clamp(parse_int(os.environ.get("CERTBOT_CLOUDFLARE_PROPAGATION_SECONDS"), 60), 10, 600)
 
 
 def resolve_reference(value: str | None) -> Path | None:
@@ -1898,6 +2053,8 @@ def runtime_payload(state: dict, admin_port: int, demo_origin_port: int, demo_en
             "webroot": os.environ.get("CERTBOT_WEBROOT", "/var/www/html"),
             "liveDir": os.environ.get("CERTBOT_LIVE_DIR", "/etc/letsencrypt/live"),
             "renewBeforeDays": 30,
+            "cloudflareCredentialsDir": str(certbot_credentials_dir()),
+            "cloudflarePropagationSeconds": cloudflare_propagation_seconds(),
         },
         "ipGroupSync": {
             "enabled": os.environ.get("IP_GROUP_AUTO_SYNC", "true").lower() != "false",
@@ -1967,8 +2124,10 @@ _AUDIT_REDACT_KEYS = {
     "totp_code",
     "secret",
     "token",
+    "apitoken",
     "apikey",
     "api_key",
+    "cloudflareapitoken",
     "key",
     "privatekey",
     "private_key",

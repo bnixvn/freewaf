@@ -67,7 +67,8 @@ apt_install_base() {
     python3-venv \
     rsync \
     certbot \
-    python3-certbot-nginx
+    python3-certbot-nginx \
+    python3-certbot-dns-cloudflare
 }
 
 node_major() {
@@ -294,6 +295,8 @@ CERTBOT_CMD=/usr/bin/certbot
 CERTBOT_AUTH_METHOD=nginx
 CERTBOT_WEBROOT=/var/www/html
 CERTBOT_LIVE_DIR=/etc/letsencrypt/live
+CERTBOT_CREDENTIALS_DIR=/etc/freewaf/certbot
+CERTBOT_CLOUDFLARE_PROPAGATION_SECONDS=60
 IP_GROUP_AUTO_SYNC=true
 IP_GROUP_SYNC_INTERVAL_SECONDS=86400
 IP_GROUP_SYNC_CHECK_SECONDS=3600

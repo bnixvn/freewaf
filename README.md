@@ -135,6 +135,7 @@ sudo systemctl reload nginx
 3. Go to `Certs` and add an SSL certificate:
    - Paste cert: paste the certificate chain PEM and private key PEM.
    - Get free cert: request a Let's Encrypt certificate through certbot.
+   - Cloudflare DNS: request a Let's Encrypt DNS-01 certificate, including wildcard names such as `*.example.com`.
 4. Go to `Applications` and click `Add Application`.
 5. Enter the domain, HTTP/HTTPS listening ports, certificate, application type, and upstream.
 6. Go to `Access` to create allow/deny rules.
@@ -182,10 +183,11 @@ By default, upstream SNI uses `$host`. If your origin requires a different SNI n
 
 ## Certificates
 
-The `Certs` page supports two certificate sources:
+The `Certs` page supports three certificate sources:
 
 - Paste cert: paste the certificate chain PEM and private key PEM. The backend writes them under `nginx/certs`.
 - Get free cert: enter a domain and email address; the backend calls certbot using HTTP-01.
+- Cloudflare DNS: enter domains, email, and a Cloudflare API token with zone DNS edit permission. The backend stores the token in a protected certbot credentials file and calls certbot using DNS-01, which supports wildcard certificates.
 
 For certbot, the default certificate paths are:
 
@@ -307,6 +309,8 @@ CERTBOT_CMD=/usr/bin/certbot
 CERTBOT_AUTH_METHOD=nginx
 CERTBOT_WEBROOT=/var/www/html
 CERTBOT_LIVE_DIR=/etc/letsencrypt/live
+CERTBOT_CREDENTIALS_DIR=/etc/freewaf/certbot
+CERTBOT_CLOUDFLARE_PROPAGATION_SECONDS=60
 IP_GROUP_AUTO_SYNC=true
 IP_GROUP_SYNC_INTERVAL_SECONDS=86400
 IP_GROUP_SYNC_CHECK_SECONDS=3600

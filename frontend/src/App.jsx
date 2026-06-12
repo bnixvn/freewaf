@@ -273,12 +273,20 @@ const defaultCertificate = {
   source: 'certbot',
   domains: '',
   email: '',
+  cloudflareApiToken: '',
+  cloudflarePropagationSeconds: 60,
   certificate: '',
   privateKey: '',
   certFile: '',
   keyFile: '',
   autoRenew: true,
   renewBeforeDays: 30
+};
+
+const certificateSourceLabels = {
+  upload: 'Upload',
+  certbot: 'HTTP-01',
+  cloudflare: 'Cloudflare'
 };
 
 const defaultIpGroup = {
@@ -889,7 +897,7 @@ export default function App() {
       const id = payload.id;
       delete payload.id;
       await api(id ? `/api/certificates/${id}` : '/api/certificates', {
-        method: id ? 'PUT' : 'POST',
+        method: id ? 'PATCH' : 'POST',
         body: payload
       });
       setModal(null);
@@ -2162,7 +2170,7 @@ function CertificatesView({ data, setModal, deleteCertificate }) {
             {data.certificates.length ? data.certificates.map((certificate) => (
               <tr key={certificate.id}>
                 <td><strong>{certificate.name}</strong><br /><span className="muted">{certificate.status || 'ready'}</span></td>
-                <td><span className={`status ${certificate.source === 'certbot' ? 'allow' : 'low'}`}>{certificate.source || 'upload'}</span></td>
+                <td><span className={`status ${certificate.source === 'certbot' || certificate.source === 'cloudflare' ? 'allow' : 'low'}`}>{certificateSourceLabels[certificate.source] || 'Upload'}</span></td>
                 <td className="path-cell">{inlineList(certificate.domains || [])}</td>
                 <td className="path-cell"><span className="code">{certificate.certFile}</span></td>
                 <td className="path-cell"><span className="code">{certificate.keyFile}</span></td>
@@ -3552,6 +3560,10 @@ function CertificateModal({ certificate, onClose, onSave }) {
       window.alert('Paste both certificate and private key PEM.');
       return;
     }
+    if (form.source === 'cloudflare' && certificate?.source !== 'cloudflare' && !String(form.cloudflareApiToken || '').trim()) {
+      window.alert('Enter a Cloudflare API token.');
+      return;
+    }
     setSubmitting(true);
     try {
       await onSave({
@@ -3564,6 +3576,8 @@ function CertificateModal({ certificate, onClose, onSave }) {
     }
   }
 
+  const issuing = form.source === 'certbot' || form.source === 'cloudflare';
+
   return (
     <Modal title={certificate ? 'Edit Cert' : 'Add Cert'} onClose={onClose} className="certificate-modal">
       <form onSubmit={submit} className="cert-form">
@@ -3575,6 +3589,10 @@ function CertificateModal({ certificate, onClose, onSave }) {
           <button type="button" className={`cert-source-choice ${form.source === 'certbot' ? 'active' : ''}`} onClick={() => update('source', 'certbot')}>
             <span className="radio-dot" />
             Get free cert
+          </button>
+          <button type="button" className={`cert-source-choice ${form.source === 'cloudflare' ? 'active' : ''}`} onClick={() => update('source', 'cloudflare')}>
+            <span className="radio-dot" />
+            Cloudflare DNS
           </button>
         </div>
 
@@ -3617,16 +3635,45 @@ function CertificateModal({ certificate, onClose, onSave }) {
               <span>Email Address <b>*</b></span>
               <input type="email" value={form.email} onChange={(event) => update('email', event.target.value)} placeholder="admin@example.com" required />
             </label>
-            <div className="notice full">
-              Online required, follows Let's Encrypt HTTP-01 method. Automatically renew 30 days before expiration.
-            </div>
+            {form.source === 'cloudflare' ? (
+              <>
+                <label className="field cert-text-field full">
+                  <span>Cloudflare API Token {certificate?.source === 'cloudflare' ? '' : <b>*</b>}</span>
+                  <input
+                    type="password"
+                    value={form.cloudflareApiToken || ''}
+                    onChange={(event) => update('cloudflareApiToken', event.target.value)}
+                    placeholder={certificate?.source === 'cloudflare' ? 'Leave empty to reuse saved token' : 'Token with Zone DNS Edit'}
+                    autoComplete="off"
+                    required={certificate?.source !== 'cloudflare'}
+                  />
+                </label>
+                <label className="field cert-text-field full">
+                  <span>DNS Propagation Seconds</span>
+                  <input
+                    type="number"
+                    min="10"
+                    max="600"
+                    value={form.cloudflarePropagationSeconds || 60}
+                    onChange={(event) => update('cloudflarePropagationSeconds', event.target.value)}
+                  />
+                </label>
+                <div className="notice full">
+                  Uses Let's Encrypt DNS-01 for wildcard certificates. Token is stored in a protected certbot credentials file.
+                </div>
+              </>
+            ) : (
+              <div className="notice full">
+                Online required, follows Let's Encrypt HTTP-01 method. Automatically renew 30 days before expiration.
+              </div>
+            )}
           </>
         )}
         <div className="modal-footer cert-footer">
           <button type="button" className="tool-button cert-cancel" onClick={onClose} disabled={submitting}>Cancel</button>
           <button className="tool-button primary cert-submit" disabled={submitting}>
             {submitting && <Loader2 size={17} className="spin" />}
-            {submitting ? (form.source === 'certbot' ? 'Issuing...' : 'Saving...') : 'Submit'}
+            {submitting ? (issuing ? 'Issuing...' : 'Saving...') : 'Submit'}
           </button>
         </div>
       </form>
