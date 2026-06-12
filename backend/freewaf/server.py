@@ -28,11 +28,22 @@ from .nginx import (
     nginx_runtime,
     parse_nginx_logs,
     run_nginx_command,
+    scan_nginx_log_entries,
     site_ports,
     write_nginx_config,
 )
 from .defaults import challenge_secret, utc_now
-from .store import Store, StoreError, build_stats, country_for_ip, match_log_site, normalize_ip_items, resolve_data_file
+from .store import (
+    Store,
+    StoreError,
+    build_stats,
+    build_stats_from_summary,
+    classify_bot_type,
+    country_for_ip,
+    match_log_site,
+    normalize_ip_items,
+    resolve_data_file,
+)
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -40,6 +51,9 @@ FRONTEND_DIST = ROOT_DIR / "frontend" / "dist"
 LOGIN_THROTTLE_WINDOW_SECONDS = 300
 LOGIN_THROTTLE_IP_LIMIT = 5
 LOGIN_THROTTLE_USER_LIMIT = 10
+STATS_AGGREGATE_BUCKET_MS = 5 * 60 * 1000
+STATS_AGGREGATE_LOCK = threading.RLock()
+STATS_AGGREGATE_CACHE = {"files": {}, "countryCache": {}}
 
 
 def main() -> None:
@@ -196,7 +210,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 limit = parse_int((query.get("logLimit") or ["200"])[0], 200)
                 logs = combined_logs(store, clamp(limit, 1, 1000))
                 state["logs"] = logs
-                state["stats"] = build_stats({**state, "logs": combined_stats_logs(store)})
+                state["stats"] = combined_stats(store, state)
                 state["runtime"] = runtime_payload(state, admin_port, demo_origin_port, demo_enabled)
                 state["users"] = [public_user(user) for user in state.get("users", [])]
                 self.send_json(200, state)
@@ -204,7 +218,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
 
             if parsed.path == "/api/stats":
                 state = store.get_state()
-                self.send_json(200, build_stats({**state, "logs": combined_stats_logs(store)}))
+                self.send_json(200, combined_stats(store, state))
                 return
 
             if parsed.path == "/api/logs":
@@ -434,6 +448,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 if self.path in {"/api/logs", "/api/stats"}:
                     store.clear_logs()
                     clear_nginx_logs(ROOT_DIR)
+                    clear_stats_aggregate_cache()
                     self.record_audit(action="logs.clear", target="logs", status=204)
                     self.send_empty(204)
                     return
@@ -1111,6 +1126,182 @@ def combined_stats_logs(store: Store) -> list[dict]:
     return sorted(logs, key=lambda entry: entry.get("at") or "", reverse=True)[:limit]
 
 
+def combined_stats(store: Store, state: dict | None = None) -> dict:
+    source_state = state or store.get_state()
+    recent_logs = combined_stats_logs(store)
+    summary = nginx_stats_summary()
+    if (summary.get("total") or 0) > 0:
+        return build_stats_from_summary(source_state, summary, recent_logs)
+    return build_stats({**source_state, "logs": recent_logs})
+
+
+def nginx_stats_summary() -> dict:
+    retention_days = stats_retention_days()
+    now_ms = int(time.time() * 1000)
+    retention_start_ms = now_ms - retention_days * 24 * 60 * 60 * 1000
+    cache_name = f"stats:{retention_days}"
+
+    with STATS_AGGREGATE_LOCK:
+        STATS_AGGREGATE_CACHE["retentionDays"] = retention_days
+
+        def on_reset(path: str) -> None:
+            STATS_AGGREGATE_CACHE["files"].pop(path, None)
+
+        def on_entry(path: str, entry: dict) -> None:
+            aggregate_stats_entry(STATS_AGGREGATE_CACHE, path, entry, retention_start_ms)
+
+        scan_nginx_log_entries(ROOT_DIR, cache_name, on_entry, on_reset)
+        prune_stats_aggregate(STATS_AGGREGATE_CACHE, retention_start_ms)
+        return collapse_stats_aggregate(STATS_AGGREGATE_CACHE, retention_start_ms)
+
+
+def clear_stats_aggregate_cache() -> None:
+    with STATS_AGGREGATE_LOCK:
+        STATS_AGGREGATE_CACHE["files"] = {}
+        STATS_AGGREGATE_CACHE["countryCache"] = {}
+
+
+def aggregate_stats_entry(cache: dict, path: str, entry: dict, retention_start_ms: int) -> None:
+    at_ms = log_entry_timestamp_ms(entry)
+    if at_ms is None or at_ms < retention_start_ms:
+        return
+    bucket_at = at_ms - (at_ms % STATS_AGGREGATE_BUCKET_MS)
+    host = str(entry.get("host") or entry.get("siteName") or "").strip().lower()
+    file_summary = cache["files"].setdefault(path, {"buckets": {}})
+    bucket = file_summary["buckets"].setdefault(bucket_at, {"hosts": {}})
+    counts = bucket["hosts"].setdefault(host, new_stats_counts())
+    update_stats_counts(counts, entry, cache["countryCache"])
+
+
+def new_stats_counts() -> dict:
+    return {
+        "total": 0,
+        "blocked": 0,
+        "challenged": 0,
+        "monitored": 0,
+        "botTypes": {},
+        "countries": {},
+        "topRules": {},
+        "statusGroups": {},
+    }
+
+
+def update_stats_counts(counts: dict, entry: dict, country_cache: dict) -> None:
+    counts["total"] += 1
+    verdict = entry.get("verdict")
+    if verdict == "block":
+        counts["blocked"] += 1
+    elif verdict == "challenge":
+        counts["challenged"] += 1
+    elif verdict == "monitor":
+        counts["monitored"] += 1
+
+    bot_type = classify_bot_type(entry.get("userAgent") or entry.get("user_agent") or "")
+    if bot_type:
+        increment_named_stats(counts["botTypes"], bot_type, {"name": bot_type}, verdict)
+
+    ip = str(entry.get("ip") or entry.get("remote_addr") or "").strip()
+    if ip not in country_cache:
+        country_cache[ip] = country_for_ip(ip)
+    country = country_cache[ip]
+    country_key = f"{country['code']}\0{country['name']}"
+    increment_named_stats(counts["countries"], country_key, country, verdict)
+
+    for rule in entry.get("matchedRules", []):
+        name = rule.get("name") or rule.get("id")
+        if name:
+            counts["topRules"][name] = counts["topRules"].get(name, 0) + 1
+
+    group = aggregate_status_group(entry)
+    counts["statusGroups"][group] = counts["statusGroups"].get(group, 0) + 1
+
+
+def increment_named_stats(target: dict, key: str, base: dict, verdict: str) -> None:
+    item = target.setdefault(
+        key,
+        {
+            **base,
+            "count": 0,
+            "blocked": 0,
+            "challenged": 0,
+            "protected": 0,
+        },
+    )
+    item["count"] += 1
+    if verdict == "block":
+        item["blocked"] += 1
+        item["protected"] += 1
+    elif verdict == "challenge":
+        item["challenged"] += 1
+        item["protected"] += 1
+
+
+def prune_stats_aggregate(cache: dict, retention_start_ms: int) -> None:
+    for file_summary in list(cache["files"].values()):
+        buckets = file_summary.get("buckets") or {}
+        for bucket_at in [at for at in buckets if at + STATS_AGGREGATE_BUCKET_MS <= retention_start_ms]:
+            buckets.pop(bucket_at, None)
+
+    country_cache = cache.get("countryCache") or {}
+    if len(country_cache) > 200000:
+        country_cache.clear()
+
+
+def collapse_stats_aggregate(cache: dict, retention_start_ms: int) -> dict:
+    hosts: dict[str, dict] = {}
+    total = 0
+    for file_summary in cache.get("files", {}).values():
+        for bucket_at, bucket in (file_summary.get("buckets") or {}).items():
+            if bucket_at + STATS_AGGREGATE_BUCKET_MS <= retention_start_ms:
+                continue
+            for host, counts in (bucket.get("hosts") or {}).items():
+                target = hosts.setdefault(host, new_stats_counts())
+                merge_aggregate_counts(target, counts)
+                total += int(counts.get("total") or 0)
+    return {
+        "hosts": hosts,
+        "total": total,
+        "retentionDays": cache.get("retentionDays"),
+    }
+
+
+def merge_aggregate_counts(target: dict, source: dict) -> None:
+    target["total"] += int(source.get("total") or 0)
+    target["blocked"] += int(source.get("blocked") or 0)
+    target["challenged"] += int(source.get("challenged") or 0)
+    target["monitored"] += int(source.get("monitored") or 0)
+    merge_aggregate_named_stats(target["botTypes"], source.get("botTypes") or {})
+    merge_aggregate_named_stats(target["countries"], source.get("countries") or {})
+    merge_int_maps(target["topRules"], source.get("topRules") or {})
+    merge_int_maps(target["statusGroups"], source.get("statusGroups") or {})
+
+
+def merge_aggregate_named_stats(target: dict, source: dict) -> None:
+    for key, value in source.items():
+        item = target.setdefault(key, {**value, "count": 0, "blocked": 0, "challenged": 0, "protected": 0})
+        item["count"] += int(value.get("count") or 0)
+        item["blocked"] += int(value.get("blocked") or 0)
+        item["challenged"] += int(value.get("challenged") or 0)
+        item["protected"] += int(value.get("protected") or 0)
+
+
+def merge_int_maps(target: dict, source: dict) -> None:
+    for key, value in source.items():
+        target[key] = int(target.get(key) or 0) + int(value or 0)
+
+
+def log_entry_timestamp_ms(entry: dict) -> int | None:
+    try:
+        return int(datetime.fromisoformat(str(entry.get("at")).replace("Z", "+00:00")).timestamp() * 1000)
+    except (TypeError, ValueError):
+        return None
+
+
+def aggregate_status_group(entry: dict) -> str:
+    status = int(entry.get("upstreamStatus") or entry.get("statusCode") or 0)
+    return f"{status // 100}xx" if status else "n/a"
+
+
 def combined_logs_page(store: Store, limit: int, offset: int = 0, domain: str = "", search: str = "", site_id: str = "", verdict: str = "") -> dict:
     scan_limit = log_scan_limit(offset + limit)
     state = store.get_state()
@@ -1168,6 +1359,10 @@ def stats_scan_limit() -> int:
     default_limit = parse_int(os.environ.get("STATS_LOG_SCAN_LIMIT"), 50000)
     maximum = parse_int(os.environ.get("STATS_LOG_SCAN_MAX"), 250000)
     return clamp(default_limit, 1, max(1, maximum))
+
+
+def stats_retention_days() -> int:
+    return clamp(parse_int(os.environ.get("STATS_RETENTION_DAYS"), 7), 1, 31)
 
 
 def log_domain(entry: dict) -> str:

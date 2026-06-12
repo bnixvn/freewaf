@@ -1998,6 +1998,148 @@ def build_stats(state: dict) -> dict:
     }
 
 
+def build_stats_from_summary(state: dict, summary: dict, recent_logs: list[dict] | None = None) -> dict:
+    sites = state.get("sites") or []
+    site_by_id = {str(site.get("id")): site for site in sites if site.get("id")}
+    source_hosts = summary.get("hosts") if isinstance(summary.get("hosts"), dict) else {}
+    aggregate = empty_stats_counts()
+    source_total = 0
+    unmatched_total = 0
+    top_sites = Counter()
+    site_totals = {
+        str(site.get("id") or ""): {
+            "siteId": str(site.get("id") or ""),
+            "name": str(site.get("name") or "Untitled site"),
+            **empty_stats_counts(),
+        }
+        for site in sites
+        if site.get("id")
+    }
+
+    for host, counts in source_hosts.items():
+        if not isinstance(counts, dict):
+            continue
+        total = int(counts.get("total") or 0)
+        source_total += total
+        site = match_log_site({"host": host, "siteName": host}, sites, site_by_id) if sites else None
+        if sites and not site:
+            unmatched_total += total
+            continue
+
+        merge_stats_counts(aggregate, counts)
+        if site:
+            merge_stats_counts(site_totals[str(site["id"])], counts)
+            top_sites[site.get("name") or host or "Unmatched"] += total
+        else:
+            top_sites[str(host or "Unmatched")] += total
+
+    recent_source = recent_logs or []
+    if sites:
+        recent = [entry for entry in recent_source if match_log_site(entry, sites, site_by_id)]
+    else:
+        recent = recent_source
+
+    blocked = aggregate["blocked"]
+    challenged = aggregate["challenged"]
+    monitored = aggregate["monitored"]
+    protected = blocked + challenged
+    total = aggregate["total"]
+    countries = sorted(aggregate["countries"].values(), key=lambda item: item["count"], reverse=True)
+    real_countries = [item for item in countries if is_real_country_code(item["code"])]
+    blocked_countries = sorted(
+        [item for item in real_countries if item["blocked"] > 0],
+        key=lambda item: item["blocked"],
+        reverse=True,
+    )
+    bot_types = sorted(aggregate["botTypes"].values(), key=lambda item: item["count"], reverse=True)
+    timeline = build_timeline(recent)
+    qps_timeline = build_qps_timeline(recent)
+    site_stats = []
+    for item in site_totals.values():
+        site_total = item["total"]
+        site_protected = item["blocked"] + item["challenged"]
+        site_stats.append(
+            {
+                "siteId": item["siteId"],
+                "name": item["name"],
+                "requests": site_total,
+                "blocked": item["blocked"],
+                "challenged": item["challenged"],
+                "protected": site_protected,
+                "monitored": item["monitored"],
+                "allowed": max(site_total - site_protected - item["monitored"], 0),
+                "blockRate": round((item["blocked"] / site_total) * 100, 1) if site_total else 0,
+                "protectedRate": round((site_protected / site_total) * 100, 1) if site_total else 0,
+            }
+        )
+
+    return {
+        "total": total,
+        "scannedTotal": source_total,
+        "unmatchedTotal": unmatched_total,
+        "blocked": blocked,
+        "challenged": challenged,
+        "protected": protected,
+        "monitored": monitored,
+        "allowed": max(total - protected - monitored, 0),
+        "blockRate": round((blocked / total) * 100, 1) if total else 0,
+        "protectedRate": round((protected / total) * 100, 1) if total else 0,
+        "botTypes": bot_types[:10],
+        "botTypeCount": len(bot_types),
+        "botRequestTotal": sum(item["count"] for item in bot_types),
+        "botChallengeTotal": sum(item["challenged"] for item in bot_types),
+        "topCountries": countries[:10],
+        "blockedCountries": blocked_countries[:10],
+        "countryCount": len(real_countries),
+        "blockedCountryCount": len(blocked_countries),
+        "protectedCountryCount": sum(1 for item in real_countries if item["protected"] > 0),
+        "geoAttribution": geoip_attribution(),
+        "topRules": counter_items(aggregate["topRules"]),
+        "topSites": counter_items(top_sites),
+        "siteStats": site_stats,
+        "statusGroups": counter_items(aggregate["statusGroups"]),
+        "qps": qps_timeline[-1]["qps"] if qps_timeline else 0,
+        "qpsTimeline": qps_timeline,
+        "timeline": timeline,
+        "retentionDays": summary.get("retentionDays"),
+    }
+
+
+def empty_stats_counts() -> dict:
+    return {
+        "total": 0,
+        "blocked": 0,
+        "challenged": 0,
+        "monitored": 0,
+        "botTypes": {},
+        "countries": {},
+        "topRules": Counter(),
+        "statusGroups": Counter(),
+    }
+
+
+def merge_stats_counts(target: dict, source: dict) -> None:
+    target["total"] += int(source.get("total") or 0)
+    target["blocked"] += int(source.get("blocked") or 0)
+    target["challenged"] += int(source.get("challenged") or 0)
+    target["monitored"] += int(source.get("monitored") or 0)
+    merge_named_count_maps(target["botTypes"], source.get("botTypes") or {})
+    merge_named_count_maps(target["countries"], source.get("countries") or {})
+    target["topRules"].update(source.get("topRules") or {})
+    target["statusGroups"].update(source.get("statusGroups") or {})
+
+
+def merge_named_count_maps(target: dict, source: dict) -> None:
+    for key, value in source.items():
+        if not isinstance(value, dict):
+            continue
+        item = target.setdefault(key, {**value, "count": 0, "blocked": 0, "challenged": 0, "protected": 0})
+        item["count"] += int(value.get("count") or 0)
+        item["blocked"] += int(value.get("blocked") or 0)
+        item["challenged"] += int(value.get("challenged") or 0)
+        item["protected"] += int(value.get("protected") or 0)
+
+
 def summarize_site_stats(logs: list[dict], sites: list[dict]) -> list[dict]:
     totals = {
         str(site.get("id") or ""): {

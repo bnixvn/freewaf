@@ -371,6 +371,8 @@ def nginx_cert_dir(root_dir: Path) -> Path:
 
 _LOG_TAIL_CACHE: dict[str, dict] = {}
 _LOG_TAIL_LOCK = threading.Lock()
+_LOG_INCREMENTAL_SCAN_CACHE: dict[str, dict[str, dict]] = {}
+_LOG_INCREMENTAL_SCAN_LOCK = threading.Lock()
 # Floor below which the cache must keep enough entries for dashboard stats even
 # when the first caller asks for fewer, so a paginated log read cannot
 # accidentally cap later stat counters. Hard ceiling guards memory; both are
@@ -535,13 +537,8 @@ def _read_log_tail(log_file: Path, limit: int) -> list[dict]:
 
 
 def parse_nginx_logs(root_dir: Path, limit: int = 500) -> list[dict]:
-    log_files = [nginx_access_log_file(root_dir)]
-    site_log_dir = nginx_site_log_dir(root_dir)
-    if site_log_dir.exists():
-        log_files.extend(sorted(site_log_dir.glob("accesslog_*")))
-
     entries: list[dict] = []
-    for log_file in log_files:
+    for log_file in nginx_log_files(root_dir):
         if not log_file.exists() or not log_file.is_file():
             continue
         entries.extend(_read_log_tail(log_file, limit))
@@ -549,16 +546,97 @@ def parse_nginx_logs(root_dir: Path, limit: int = 500) -> list[dict]:
     return sorted(entries, key=lambda entry: entry.get("at") or "", reverse=True)[:limit]
 
 
-def clear_nginx_logs(root_dir: Path) -> None:
+def nginx_log_files(root_dir: Path) -> list[Path]:
     log_files = [nginx_access_log_file(root_dir)]
     site_log_dir = nginx_site_log_dir(root_dir)
     if site_log_dir.exists():
         log_files.extend(sorted(site_log_dir.glob("accesslog_*")))
-    for log_file in log_files:
+    return log_files
+
+
+def scan_nginx_log_entries(root_dir: Path, cache_name: str, on_entry, on_reset=None) -> None:
+    """Incrementally scan every FreeWAF access log and call ``on_entry``.
+
+    This is separate from the UI tail cache: dashboard counters need a
+    long-retention accumulator, while log tables only need recent rows.
+    """
+    chunk_size = 8 * 1024 * 1024
+    log_files = [path for path in nginx_log_files(root_dir) if path.exists() and path.is_file()]
+    active_keys = {str(path) for path in log_files}
+
+    with _LOG_INCREMENTAL_SCAN_LOCK:
+        cache = _LOG_INCREMENTAL_SCAN_CACHE.setdefault(cache_name, {})
+        for stale_key in [key for key in cache if key not in active_keys]:
+            cache.pop(stale_key, None)
+            if on_reset:
+                on_reset(stale_key)
+
+        for log_file in log_files:
+            key = str(log_file)
+            signature = _log_file_signature(log_file)
+            if not signature:
+                continue
+            inode, size, _mtime = signature
+            cached = cache.get(key) or {}
+            cached_inode = cached.get("inode")
+            cached_size = int(cached.get("size") or 0)
+            sequence = int(cached.get("seq") or 0)
+            partial = cached.get("partial") or b""
+            rotated = cached_inode != inode or size < cached_size
+            start_offset = 0 if rotated else cached_size
+            if rotated:
+                sequence = 0
+                partial = b""
+                if on_reset:
+                    on_reset(key)
+            if size <= start_offset:
+                cache[key] = {"inode": inode, "size": size, "seq": sequence, "partial": partial}
+                continue
+
+            try:
+                with log_file.open("rb") as handle:
+                    if start_offset:
+                        handle.seek(start_offset)
+                    while True:
+                        chunk = handle.read(chunk_size)
+                        if not chunk:
+                            break
+                        buffer = partial + chunk
+                        if not buffer.endswith(b"\n"):
+                            newline = buffer.rfind(b"\n")
+                            if newline >= 0:
+                                partial = buffer[newline + 1 :]
+                                buffer = buffer[: newline + 1]
+                            else:
+                                partial = buffer
+                                buffer = b""
+                        else:
+                            partial = b""
+
+                        for raw_line in buffer.splitlines():
+                            line = raw_line.decode("utf-8", errors="replace").strip()
+                            if not line:
+                                continue
+                            try:
+                                raw = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            sequence += 1
+                            on_entry(key, _convert_raw_log_entry(log_file, raw, sequence))
+            except OSError:
+                continue
+
+            cache[key] = {"inode": inode, "size": size, "seq": sequence, "partial": partial}
+
+
+def clear_nginx_logs(root_dir: Path) -> None:
+    for log_file in nginx_log_files(root_dir):
         if log_file.exists() and log_file.is_file():
             log_file.write_text("", encoding="utf-8")
     with _LOG_TAIL_LOCK:
         _LOG_TAIL_CACHE.clear()
+    with _LOG_INCREMENTAL_SCAN_LOCK:
+        _LOG_INCREMENTAL_SCAN_CACHE.clear()
 
 
 def render_access_maps(state: dict, access_rules: list[dict]) -> list[str]:

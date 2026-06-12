@@ -4645,8 +4645,17 @@ function applicationTypeLabel(value) {
 
 function formatCompact(value) {
   const number = Number(value || 0);
-  if (number >= 1000000) return `${(number / 1000000).toFixed(1)}m`;
-  if (number >= 1000) return `${(number / 1000).toFixed(1)}k`;
+  const units = [
+    [1000000000000000000, 'e'],
+    [1000000000000000, 'p'],
+    [1000000000000, 't'],
+    [1000000000, 'b'],
+    [1000000, 'm'],
+    [1000, 'k']
+  ];
+  for (const [base, suffix] of units) {
+    if (number >= base) return `${(number / base).toFixed(1)}${suffix}`;
+  }
   return String(number);
 }
 

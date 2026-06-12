@@ -5,15 +5,19 @@ import tempfile
 import threading
 import urllib.request
 import unittest
+from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from freewaf import nginx as nginx_module
+import freewaf.server as server_module
 from freewaf.server import (
     challenge_nonce,
     combined_logs_page,
+    combined_stats,
     combined_stats_logs,
     enrich_log_countries,
     make_admin_handler,
@@ -53,6 +57,85 @@ class CertificateServerTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+
+    def test_dashboard_stats_count_retention_window_beyond_scan_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log_file = root / "freewaf_access.log"
+            now = datetime.now(timezone.utc)
+            total = 1200
+            with log_file.open("w", encoding="utf-8") as handle:
+                for index in range(total):
+                    at = now - timedelta(seconds=total - index)
+                    handle.write(
+                        json.dumps(
+                            {
+                                "time": at.isoformat(),
+                                "remote_addr": f"203.0.113.{index % 200}",
+                                "host": "demo.test",
+                                "method": "GET",
+                                "uri": f"/{index}",
+                                "status": 403 if index % 3 == 0 else 200,
+                                "request_time": 0.01,
+                                "verdict": "block" if index % 3 == 0 else "allow",
+                                "reason": "Blocked" if index % 3 == 0 else "Allowed",
+                                "user_agent": "Googlebot/2.1" if index % 5 == 0 else "Mozilla/5.0",
+                                "referer": "",
+                            }
+                        )
+                        + "\n"
+                    )
+
+            store = mock.Mock()
+            store.get_logs.return_value = []
+            state = {"sites": [{"id": "site-demo", "name": "Demo", "hostnames": ["demo.test"]}]}
+            with mock.patch("freewaf.server.ROOT_DIR", root):
+                with mock.patch.dict(
+                    os.environ,
+                    {
+                        "NGINX_ACCESS_LOG": str(log_file),
+                        "NGINX_SITE_LOG_DIR": str(root / "sites"),
+                        "STATS_LOG_SCAN_LIMIT": "100",
+                        "STATS_LOG_SCAN_MAX": "100",
+                        "STATS_RETENTION_DAYS": "7",
+                    },
+                    clear=False,
+                ):
+                    with nginx_module._LOG_TAIL_LOCK:
+                        nginx_module._LOG_TAIL_CACHE.clear()
+                    with nginx_module._LOG_INCREMENTAL_SCAN_LOCK:
+                        nginx_module._LOG_INCREMENTAL_SCAN_CACHE.clear()
+                    server_module.clear_stats_aggregate_cache()
+
+                    stats = combined_stats(store, state)
+                    with log_file.open("a", encoding="utf-8") as handle:
+                        for index in range(3):
+                            at = now + timedelta(seconds=index + 1)
+                            handle.write(
+                                json.dumps(
+                                    {
+                                        "time": at.isoformat(),
+                                        "remote_addr": "203.0.113.250",
+                                        "host": "demo.test",
+                                        "method": "GET",
+                                        "uri": f"/new-{index}",
+                                        "status": 200,
+                                        "request_time": 0.01,
+                                        "verdict": "allow",
+                                        "reason": "Allowed",
+                                        "user_agent": "Mozilla/5.0",
+                                        "referer": "",
+                                    }
+                                )
+                                + "\n"
+                            )
+                    updated_stats = combined_stats(store, state)
+
+        self.assertEqual(stats["total"], total)
+        self.assertEqual(stats["blocked"], 400)
+        self.assertEqual(stats["botRequestTotal"], 240)
+        self.assertEqual(stats["siteStats"][0]["requests"], total)
+        self.assertEqual(updated_stats["total"], total + 3)
 
     def test_pasted_cert_payload_is_written_to_nginx_cert_dir(self):
         with tempfile.TemporaryDirectory() as temp_dir:
