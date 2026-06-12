@@ -707,10 +707,18 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
 
         def send_json(self, status: int, payload: dict, headers=None):
             body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+            header_items = response_headers(headers)
+            header_names = {str(key).lower() for key, _value in header_items}
             self.send_response(status)
             self.send_header("content-type", "application/json; charset=utf-8")
             self.send_header("content-length", str(len(body)))
-            for key, value in response_headers(headers):
+            if "cache-control" not in header_names:
+                self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            if "pragma" not in header_names:
+                self.send_header("Pragma", "no-cache")
+            if "expires" not in header_names:
+                self.send_header("Expires", "0")
+            for key, value in header_items:
                 self.send_header(key, value)
             self.end_headers()
             self.wfile.write(body)

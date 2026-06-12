@@ -342,6 +342,49 @@ class NginxLogTailCacheTests(unittest.TestCase):
                 blocked = sum(1 for entry in entries if entry["verdict"] == "block")
                 self.assertGreater(blocked, 3000)
 
+    def test_small_log_read_does_not_cap_later_stats_window(self):
+        # /api/state reads a small log window for the table before building the
+        # dashboard stats. The first read must not shrink the cache below the
+        # later stats scan window.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log_file = root / "freewaf_access.log"
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "NGINX_ACCESS_LOG": str(log_file),
+                    "NGINX_SITE_LOG_DIR": str(root / "sites"),
+                    "STATS_LOG_SCAN_LIMIT": "7000",
+                },
+                clear=False,
+            ):
+                with nginx_module._LOG_TAIL_LOCK:
+                    nginx_module._LOG_TAIL_CACHE.clear()
+
+                with log_file.open("w", encoding="utf-8") as handle:
+                    for index in range(8000):
+                        handle.write(
+                            json.dumps(
+                                {
+                                    "time": f"2026-06-12T00:{index // 60 % 60:02d}:{index % 60:02d}+00:00",
+                                    "remote_addr": "203.0.113.1",
+                                    "host": "demo.test",
+                                    "method": "GET",
+                                    "uri": f"/{index}",
+                                    "status": 200,
+                                    "request_time": 0.01,
+                                    "verdict": "allow",
+                                    "reason": "Allowed",
+                                    "user_agent": "ua",
+                                    "referer": "",
+                                }
+                            )
+                            + "\n"
+                        )
+
+                self.assertEqual(len(parse_nginx_logs(root, 1000)), 1000)
+                self.assertEqual(len(parse_nginx_logs(root, 7000)), 7000)
+
 
 if __name__ == "__main__":
     unittest.main()

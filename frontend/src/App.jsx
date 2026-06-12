@@ -3954,7 +3954,7 @@ function SelectField({ label, value, onChange, options, full = false }) {
 }
 
 async function api(path, options = {}) {
-  const init = { method: options.method || 'GET', headers: { ...(options.headers || {}) } };
+  const init = { method: options.method || 'GET', cache: 'no-store', headers: { ...(options.headers || {}) } };
   if (options.body !== undefined) {
     init.headers['content-type'] = 'application/json';
     init.body = JSON.stringify(options.body);

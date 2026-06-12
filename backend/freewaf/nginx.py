@@ -371,11 +371,22 @@ def nginx_cert_dir(root_dir: Path) -> Path:
 
 _LOG_TAIL_CACHE: dict[str, dict] = {}
 _LOG_TAIL_LOCK = threading.Lock()
-# Floor below which the cache must keep at least this many entries even when the
-# caller asks for fewer, so subsequent stat calls with a larger limit do not get
-# truncated. Hard ceiling guards memory; both are env-overridable for operators
-# running very high-traffic edges.
-_LOG_TAIL_MIN_ENTRIES = 5000
+# Floor below which the cache must keep enough entries for dashboard stats even
+# when the first caller asks for fewer, so a paginated log read cannot
+# accidentally cap later stat counters. Hard ceiling guards memory; both are
+# env-overridable for operators running very high-traffic edges.
+_LOG_TAIL_DEFAULT_MIN_ENTRIES = 50000
+
+
+def _log_tail_min_entries() -> int:
+    raw = os.environ.get("FREEWAF_LOG_TAIL_MIN_ENTRIES", "").strip()
+    if not raw:
+        raw = os.environ.get("STATS_LOG_SCAN_LIMIT", "").strip()
+    try:
+        value = int(raw) if raw else _LOG_TAIL_DEFAULT_MIN_ENTRIES
+    except ValueError:
+        value = _LOG_TAIL_DEFAULT_MIN_ENTRIES
+    return max(1, value)
 
 
 def _log_tail_max_entries() -> int:
@@ -384,7 +395,7 @@ def _log_tail_max_entries() -> int:
         value = int(raw) if raw else 250_000
     except ValueError:
         value = 250_000
-    return max(_LOG_TAIL_MIN_ENTRIES, value)
+    return max(_log_tail_min_entries(), value)
 
 
 def _log_tail_max_bytes() -> int:
@@ -451,7 +462,7 @@ def _read_log_tail(log_file: Path, limit: int) -> list[dict]:
     # Always keep at least the caller's requested window in cache, otherwise
     # subsequent stat calls (which scan up to STATS_LOG_SCAN_LIMIT) would see
     # truncated counters under sustained traffic.
-    cap = max(int(limit), _LOG_TAIL_MIN_ENTRIES)
+    cap = max(int(limit), _log_tail_min_entries())
     cap = min(cap, hard_max)
 
     with _LOG_TAIL_LOCK:

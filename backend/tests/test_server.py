@@ -2,7 +2,10 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import urllib.request
 import unittest
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -13,6 +16,7 @@ from freewaf.server import (
     combined_logs_page,
     combined_stats_logs,
     enrich_log_countries,
+    make_admin_handler,
     prepare_certificate_payload,
     prepare_certbot_certificate_payload,
     remove_certificate_files,
@@ -35,6 +39,21 @@ MIIB
 
 
 class CertificateServerTests(unittest.TestCase):
+    def test_api_json_responses_disable_cache(self):
+        handler_cls = make_admin_handler(mock.Mock(), 7001, 9090, False, False)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/api/health", timeout=5) as response:
+                self.assertEqual(response.headers["Cache-Control"], "no-store, no-cache, must-revalidate")
+                self.assertEqual(response.headers["Pragma"], "no-cache")
+                self.assertEqual(response.headers["Expires"], "0")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
     def test_pasted_cert_payload_is_written_to_nginx_cert_dir(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             with mock.patch.dict(os.environ, {"NGINX_CERT_DIR": str(Path(temp_dir) / "certs")}):
