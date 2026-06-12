@@ -393,15 +393,27 @@ export default function App() {
     return undefined;
   }, [data?.settings?.panel?.faviconUrl]);
 
+  // Auto-refresh /api/state for every view except `logs` (which has its own
+  // paginated endpoint). Pause while a modal is open or the tab is hidden
+  // so background polling does not fight with form edits or waste cycles.
   useEffect(() => {
-    if (!auth.authenticated || auth.loading || !['dashboard', 'sites'].includes(activeView)) {
+    if (!auth.authenticated || auth.loading || activeView === 'logs') {
       return undefined;
     }
-    const refreshTimer = window.setInterval(() => {
+    const tick = () => {
+      if (modal || document.hidden) return;
       loadState(false, false);
-    }, 10000);
-    return () => window.clearInterval(refreshTimer);
-  }, [auth.authenticated, auth.loading, activeView]);
+    };
+    const refreshTimer = window.setInterval(tick, 5000);
+    const onVisible = () => {
+      if (!document.hidden && !modal) loadState(false, false);
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearInterval(refreshTimer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [auth.authenticated, auth.loading, activeView, modal]);
 
   useEffect(() => {
     if (!auth.authenticated || auth.loading || activeView !== 'logs') {
@@ -411,13 +423,19 @@ export default function App() {
       loadLogs({}, false, true);
     }, 250);
     const refreshTimer = window.setInterval(() => {
+      if (modal || document.hidden) return;
       loadLogs({}, false, false);
-    }, 10000);
+    }, 5000);
+    const onVisible = () => {
+      if (!document.hidden && !modal) loadLogs({}, false, false);
+    };
+    document.addEventListener('visibilitychange', onVisible);
     return () => {
       window.clearTimeout(loadTimer);
       window.clearInterval(refreshTimer);
+      document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [auth.authenticated, auth.loading, activeView, filter, logSiteId, logVerdict, logPage, logPageSize]);
+  }, [auth.authenticated, auth.loading, activeView, filter, logSiteId, logVerdict, logPage, logPageSize, modal]);
 
   async function loadAuth() {
     setLoading(true);
