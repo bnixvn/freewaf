@@ -72,6 +72,29 @@ BOT_TYPE_PATTERNS = [
     ("Generic crawler", r"bot|crawler|spider|externalagent"),
 ]
 BOT_TYPE_REGEXES = [(name, re.compile(pattern, re.IGNORECASE)) for name, pattern in BOT_TYPE_PATTERNS]
+USER_CLIENT_OS_PATTERNS = [
+    ("Windows", r"windows nt|win64|win32"),
+    ("Android", r"android"),
+    ("iOS", r"iphone|ipad|ipod"),
+    ("macOS", r"mac os x|macintosh"),
+    ("Linux", r"linux|x11"),
+    ("BSD", r"freebsd|openbsd|netbsd"),
+]
+USER_CLIENT_OS_REGEXES = [(name, re.compile(pattern, re.IGNORECASE)) for name, pattern in USER_CLIENT_OS_PATTERNS]
+USER_CLIENT_BROWSER_PATTERNS = [
+    ("Microsoft Edge", r"\b(?:edg|edge|edga|edgios)/"),
+    ("Opera", r"\b(?:opr|opera)/"),
+    ("Samsung Internet", r"samsungbrowser/"),
+    ("Chrome", r"\b(?:chrome|crios|chromium)/"),
+    ("Firefox", r"\b(?:firefox|fxios)/"),
+    ("Googlebot", r"googlebot|adsbot-google|mediapartners-google"),
+    ("Bingbot", r"bingbot|msnbot"),
+    ("YandexBot", r"yandexbot"),
+    ("Baiduspider", r"baiduspider"),
+    ("HTTP Client", r"curl|wget|python-requests|python-urllib|aiohttp|httpx|go-http-client|java/|okhttp|apache-httpclient|node-fetch|axios|libwww-perl|perl|ruby"),
+    ("Crawler", r"bot|crawler|spider|externalagent"),
+]
+USER_CLIENT_BROWSER_REGEXES = [(name, re.compile(pattern, re.IGNORECASE)) for name, pattern in USER_CLIENT_BROWSER_PATTERNS]
 GEOIP_READER_LOCK = threading.Lock()
 GEOIP_READER = None
 GEOIP_READER_PATH = None
@@ -1933,15 +1956,26 @@ def normalize_access_action(value) -> str:
     return action if action in ACCESS_ACTIONS else "deny"
 
 
-def build_stats(state: dict) -> dict:
+def build_stats(state: dict, site_id: str = "") -> dict:
     source_logs = state.get("logs") or []
     sites = state.get("sites") or []
+    selected_site_id = str(site_id or "")
     if sites:
         site_by_id = {str(site.get("id")): site for site in sites if site.get("id")}
-        logs = [entry for entry in source_logs if match_log_site(entry, sites, site_by_id)]
+        logs = []
+        unmatched_total = 0
+        for entry in source_logs:
+            site = match_log_site(entry, sites, site_by_id)
+            if not site:
+                if not selected_site_id:
+                    unmatched_total += 1
+                continue
+            if selected_site_id and str(site.get("id") or "") != selected_site_id:
+                continue
+            logs.append(entry)
     else:
         logs = source_logs
-    unmatched_total = len(source_logs) - len(logs)
+        unmatched_total = 0
     blocked = sum(1 for entry in logs if entry.get("verdict") == "block")
     challenged = sum(1 for entry in logs if entry.get("verdict") == "challenge")
     monitored = sum(1 for entry in logs if entry.get("verdict") == "monitor")
@@ -1949,6 +1983,7 @@ def build_stats(state: dict) -> dict:
     total = len(logs)
 
     bot_types = summarize_bot_types(logs)
+    user_client_os, user_client_browsers = summarize_user_clients(logs)
     countries = summarize_countries(logs)
     real_countries = [item for item in countries if is_real_country_code(item["code"])]
     blocked_countries = sorted(
@@ -1982,6 +2017,9 @@ def build_stats(state: dict) -> dict:
         "botTypeCount": len(bot_types),
         "botRequestTotal": sum(item["count"] for item in bot_types),
         "botChallengeTotal": sum(item["challenged"] for item in bot_types),
+        "userClientOs": user_client_os[:10],
+        "userClientBrowsers": user_client_browsers[:10],
+        "userClientTotal": total,
         "topCountries": countries[:10],
         "blockedCountries": blocked_countries[:10],
         "countryCount": len(real_countries),
@@ -1998,9 +2036,10 @@ def build_stats(state: dict) -> dict:
     }
 
 
-def build_stats_from_summary(state: dict, summary: dict, recent_logs: list[dict] | None = None) -> dict:
+def build_stats_from_summary(state: dict, summary: dict, recent_logs: list[dict] | None = None, site_id: str = "") -> dict:
     sites = state.get("sites") or []
     site_by_id = {str(site.get("id")): site for site in sites if site.get("id")}
+    selected_site_id = str(site_id or "")
     source_hosts = summary.get("hosts") if isinstance(summary.get("hosts"), dict) else {}
     aggregate = empty_stats_counts()
     source_total = 0
@@ -2023,7 +2062,10 @@ def build_stats_from_summary(state: dict, summary: dict, recent_logs: list[dict]
         source_total += total
         site = match_log_site({"host": host, "siteName": host}, sites, site_by_id) if sites else None
         if sites and not site:
-            unmatched_total += total
+            if not selected_site_id:
+                unmatched_total += total
+            continue
+        if selected_site_id and site and str(site.get("id") or "") != selected_site_id:
             continue
 
         merge_stats_counts(aggregate, counts)
@@ -2035,7 +2077,14 @@ def build_stats_from_summary(state: dict, summary: dict, recent_logs: list[dict]
 
     recent_source = recent_logs or []
     if sites:
-        recent = [entry for entry in recent_source if match_log_site(entry, sites, site_by_id)]
+        recent = []
+        for entry in recent_source:
+            site = match_log_site(entry, sites, site_by_id)
+            if not site:
+                continue
+            if selected_site_id and str(site.get("id") or "") != selected_site_id:
+                continue
+            recent.append(entry)
     else:
         recent = recent_source
 
@@ -2052,6 +2101,8 @@ def build_stats_from_summary(state: dict, summary: dict, recent_logs: list[dict]
         reverse=True,
     )
     bot_types = sorted(aggregate["botTypes"].values(), key=lambda item: item["count"], reverse=True)
+    user_client_os = sorted(aggregate["userClientOs"].values(), key=lambda item: item["count"], reverse=True)
+    user_client_browsers = sorted(aggregate["userClientBrowsers"].values(), key=lambda item: item["count"], reverse=True)
     timeline = build_timeline(recent)
     qps_timeline = build_qps_timeline(recent)
     site_stats = []
@@ -2088,6 +2139,9 @@ def build_stats_from_summary(state: dict, summary: dict, recent_logs: list[dict]
         "botTypeCount": len(bot_types),
         "botRequestTotal": sum(item["count"] for item in bot_types),
         "botChallengeTotal": sum(item["challenged"] for item in bot_types),
+        "userClientOs": user_client_os[:10],
+        "userClientBrowsers": user_client_browsers[:10],
+        "userClientTotal": total,
         "topCountries": countries[:10],
         "blockedCountries": blocked_countries[:10],
         "countryCount": len(real_countries),
@@ -2112,6 +2166,8 @@ def empty_stats_counts() -> dict:
         "challenged": 0,
         "monitored": 0,
         "botTypes": {},
+        "userClientOs": {},
+        "userClientBrowsers": {},
         "countries": {},
         "topRules": Counter(),
         "statusGroups": Counter(),
@@ -2124,6 +2180,8 @@ def merge_stats_counts(target: dict, source: dict) -> None:
     target["challenged"] += int(source.get("challenged") or 0)
     target["monitored"] += int(source.get("monitored") or 0)
     merge_named_count_maps(target["botTypes"], source.get("botTypes") or {})
+    merge_named_count_maps(target["userClientOs"], source.get("userClientOs") or {})
+    merge_named_count_maps(target["userClientBrowsers"], source.get("userClientBrowsers") or {})
     merge_named_count_maps(target["countries"], source.get("countries") or {})
     target["topRules"].update(source.get("topRules") or {})
     target["statusGroups"].update(source.get("statusGroups") or {})
@@ -2221,6 +2279,68 @@ def summarize_bot_types(logs: list[dict]) -> list[dict]:
             item["protected"] += 1
 
     return sorted(totals.values(), key=lambda item: item["count"], reverse=True)
+
+
+def summarize_user_clients(logs: list[dict]) -> tuple[list[dict], list[dict]]:
+    os_totals: dict[str, dict] = {}
+    browser_totals: dict[str, dict] = {}
+    for entry in logs:
+        user_agent = entry.get("userAgent") or entry.get("user_agent") or ""
+        verdict = entry.get("verdict")
+        os_name = classify_user_client_os(user_agent)
+        browser_name = classify_user_client_browser(user_agent)
+        increment_user_client(os_totals, os_name, "os", verdict)
+        increment_user_client(browser_totals, browser_name, "browser", verdict)
+
+    return (
+        sorted(os_totals.values(), key=lambda item: item["count"], reverse=True),
+        sorted(browser_totals.values(), key=lambda item: item["count"], reverse=True),
+    )
+
+
+def increment_user_client(target: dict, name: str, client_type: str, verdict: str) -> None:
+    item = target.setdefault(
+        name,
+        {
+            "name": name,
+            "type": client_type,
+            "count": 0,
+            "blocked": 0,
+            "challenged": 0,
+            "protected": 0,
+        },
+    )
+    item["count"] += 1
+    if verdict == "block":
+        item["blocked"] += 1
+        item["protected"] += 1
+    elif verdict == "challenge":
+        item["challenged"] += 1
+        item["protected"] += 1
+
+
+def classify_user_client_os(user_agent: str) -> str:
+    agent = str(user_agent or "")
+    if not agent:
+        return "Unknown OS"
+    for name, pattern in USER_CLIENT_OS_REGEXES:
+        if pattern.search(agent):
+            return name
+    return "Unknown OS"
+
+
+def classify_user_client_browser(user_agent: str) -> str:
+    agent = str(user_agent or "")
+    if not agent:
+        return "Unknown Client"
+    for name, pattern in USER_CLIENT_BROWSER_REGEXES:
+        if pattern.search(agent):
+            return name
+    if re.search(r"version/[\d.]+.*mobile/.*safari", agent, re.IGNORECASE):
+        return "Mobile Safari"
+    if re.search(r"version/[\d.]+.*safari", agent, re.IGNORECASE):
+        return "Safari"
+    return "Other Client"
 
 
 def classify_bot_type(user_agent: str) -> str | None:

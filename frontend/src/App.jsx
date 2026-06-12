@@ -53,6 +53,9 @@ const emptyStats = {
   botTypeCount: 0,
   botRequestTotal: 0,
   botChallengeTotal: 0,
+  userClientOs: [],
+  userClientBrowsers: [],
+  userClientTotal: 0,
   topCountries: [],
   blockedCountries: [],
   countryCount: 0,
@@ -354,6 +357,8 @@ export default function App() {
   const [logPage, setLogPage] = useState(1);
   const [logPageSize, setLogPageSize] = useState(50);
   const [logResult, setLogResult] = useState({ logs: [], total: 0, page: 1, pages: 1, domains: [], siteOptions: [] });
+  const [dashboardSiteId, setDashboardSiteId] = useState('');
+  const [dashboardPeriodDays, setDashboardPeriodDays] = useState('7');
   const [navOpen, setNavOpen] = useState(false);
 
   useEffect(() => {
@@ -413,7 +418,14 @@ export default function App() {
       window.clearInterval(refreshTimer);
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [auth.authenticated, auth.loading, activeView, modal]);
+  }, [auth.authenticated, auth.loading, activeView, modal, dashboardSiteId, dashboardPeriodDays]);
+
+  useEffect(() => {
+    if (!auth.authenticated || auth.loading || activeView !== 'dashboard') {
+      return;
+    }
+    loadState(false, false);
+  }, [auth.authenticated, auth.loading, activeView, dashboardSiteId, dashboardPeriodDays]);
 
   useEffect(() => {
     if (!auth.authenticated || auth.loading || activeView !== 'logs') {
@@ -460,7 +472,9 @@ export default function App() {
   async function loadState(announce = false, manageLoading = true) {
     if (manageLoading) setLoading(true);
     try {
-      setData(await api('/api/state?logLimit=1000'));
+      const params = new URLSearchParams({ logLimit: '1000', periodDays: dashboardPeriodDays });
+      if (dashboardSiteId) params.set('siteId', dashboardSiteId);
+      setData(await api(`/api/state?${params.toString()}`));
       if (announce) showToast('State refreshed');
     } catch (error) {
       if (error.status === 401) {
@@ -1177,6 +1191,10 @@ export default function App() {
       setLogPage,
       logPageSize,
       setLogPageSize,
+      dashboardSiteId,
+      setDashboardSiteId,
+      dashboardPeriodDays,
+      setDashboardPeriodDays,
       auth,
       logout
     };
@@ -1188,7 +1206,7 @@ export default function App() {
     if (activeView === 'logs') return <LogsView {...props} />;
     if (activeView === 'settings') return <SettingsView {...props} />;
     return <DashboardView {...props} />;
-  }, [activeView, data, filter, auth, pendingActions, logsLoading, logResult, logSiteId, logVerdict, logPage, logPageSize]);
+  }, [activeView, data, filter, auth, pendingActions, logsLoading, logResult, logSiteId, logVerdict, logPage, logPageSize, dashboardSiteId, dashboardPeriodDays]);
 
   if (auth.loading) {
     return <LoadingPanel />;
@@ -1431,7 +1449,7 @@ function AuthScreen({ mode, loading, onSubmit }) {
   );
 }
 
-function DashboardView({ data }) {
+function DashboardView({ data, dashboardSiteId, setDashboardSiteId, dashboardPeriodDays, setDashboardPeriodDays }) {
   const stats = { ...emptyStats, ...(data?.stats || {}) };
   const topRule = stats.topRules[0]?.name || 'None';
   const timeline = stats.timeline || [];
@@ -1441,6 +1459,8 @@ function DashboardView({ data }) {
   const blockedTotal = Number(stats.blocked || 0);
   const allowedTotal = Number(stats.allowed || 0);
   const botTypes = stats.botTypes || [];
+  const userClientOs = stats.userClientOs || [];
+  const userClientBrowsers = stats.userClientBrowsers || [];
   const countries = stats.topCountries || [];
   const blockedCountries = stats.blockedCountries || countries.filter((country) => Number(country.blocked || 0) > 0);
   const statusRows = stats.statusGroups || [];
@@ -1452,15 +1472,8 @@ function DashboardView({ data }) {
   const qpsValue = Number(stats.qps ?? qpsTimeline[qpsTimeline.length - 1]?.qps ?? 0);
   const requestsMax = Math.max(0, ...timeline.map((point) => Number(point.total || 0)));
   const blockedMax = Math.max(0, ...timeline.map((point) => Number(point.blocked || 0)));
-  const siteLabel = sites.length === 1
-    ? (sites[0].hostnames?.[0] || sites[0].name || 'All applications')
-    : `${sites.length || 'All'} applications`;
-  const trafficWindow = timeline.reduce((totals, point) => ({
-    total: totals.total + Number(point.total || 0),
-    protected: totals.protected + Number(point.protected ?? (Number(point.blocked || 0) + Number(point.challenged || 0))),
-    challenged: totals.challenged + Number(point.challenged || 0),
-    blocked: totals.blocked + Number(point.blocked || 0)
-  }), { total: 0, protected: 0, challenged: 0, blocked: 0 });
+  const selectedSite = sites.find((site) => String(site.id || '') === String(dashboardSiteId || ''));
+  const selectedSiteLabel = selectedSite?.name || selectedSite?.hostnames?.[0] || 'All applications';
   const kpiGroups = [
     {
       wide: true,
@@ -1488,14 +1501,27 @@ function DashboardView({ data }) {
   return (
     <div className="sfl-dashboard">
       <section className="sfl-dashboard-bar">
-        <div className="sfl-tabs" aria-label="Dashboard sections">
-          <span className="sfl-tab active">Traffic Analysis</span>
-          <span className="sfl-tab">Security Posture</span>
-          <span className="sfl-tab">Data Dashboard</span>
+        <div className="sfl-dashboard-title">
+          <strong>Traffic Analysis</strong>
+          <span>{selectedSiteLabel}</span>
         </div>
         <div className="sfl-dashboard-controls">
-          <span className="sfl-select">{siteLabel}</span>
-          <span className="sfl-select">{stats.retentionDays ? `${stats.retentionDays} days` : '24 hours'}</span>
+          <label className="sfl-control-field">
+            <span>Application</span>
+            <select className="sfl-select-control" value={dashboardSiteId || ''} onChange={(event) => setDashboardSiteId(event.target.value)}>
+              <option value="">All applications</option>
+              {sites.map((site) => (
+                <option value={site.id} key={site.id}>{site.name || site.hostnames?.[0] || 'Untitled application'}</option>
+              ))}
+            </select>
+          </label>
+          <label className="sfl-control-field">
+            <span>Period</span>
+            <select className="sfl-select-control" value={dashboardPeriodDays || '7'} onChange={(event) => setDashboardPeriodDays(event.target.value)}>
+              <option value="1">1 day</option>
+              <option value="7">7 days</option>
+            </select>
+          </label>
         </div>
       </section>
 
@@ -1507,29 +1533,9 @@ function DashboardView({ data }) {
             ))}
           </div>
 
-          <section className="panel sfl-traffic-panel">
-            <div className="panel-heading traffic-heading">
-              <h2>Traffic Window</h2>
-              <div className="traffic-pills">
-                <span className="pill">{formatCompact(trafficWindow.total)} requests</span>
-                <span className="pill">{formatCompact(trafficWindow.protected)} protected</span>
-                <span className="pill">{formatCompact(trafficWindow.challenged)} challenged</span>
-                <span className="pill">{formatCompact(trafficWindow.blocked)} blocked</span>
-                <span className="pill">5 minute buckets</span>
-              </div>
-            </div>
-            <Timeline points={timeline} compact />
-          </section>
-
           <section className="panel sfl-geo-panel">
             <div className="sfl-panel-heading">
               <h2>Geo Location</h2>
-              <div className="sfl-segmented">
-                <span className="active">3D</span>
-                <span>2D</span>
-                <span className="active">Requests</span>
-                <span>Blocked</span>
-              </div>
             </div>
             <div className="sfl-geo-content">
               <GeoGlobe countries={countries} />
@@ -1576,13 +1582,7 @@ function DashboardView({ data }) {
       </div>
 
       <div className="sfl-donut-grid">
-        <DonutInsight
-          title="User Clients"
-          rows={botTypes}
-          empty="No bot-like traffic detected."
-          value={(item) => Number(item.count || 0)}
-          label={(item) => item.name}
-        />
+        <UserClientsPanel osRows={userClientOs} browserRows={userClientBrowsers} />
         <DonutInsight
           title="Response Status"
           rows={statusRows}
@@ -1703,7 +1703,6 @@ function DonutInsight({ title, rows = [], empty, value, label }) {
     <section className="panel sfl-donut-panel">
       <div className="sfl-panel-heading">
         <h2>{title}</h2>
-        <span className="sfl-more">More</span>
       </div>
       {topRows.length ? (
         <div className="sfl-donut-content">
@@ -1730,12 +1729,53 @@ function DonutInsight({ title, rows = [], empty, value, label }) {
   );
 }
 
+function UserClientsPanel({ osRows = [], browserRows = [] }) {
+  const osMax = Math.max(1, ...osRows.map((item) => Number(item.count || 0)));
+  const browserMax = Math.max(1, ...browserRows.map((item) => Number(item.count || 0)));
+  const hasRows = osRows.length || browserRows.length;
+  return (
+    <section className="panel sfl-donut-panel sfl-user-clients-panel">
+      <div className="sfl-panel-heading">
+        <h2>User Clients</h2>
+      </div>
+      {hasRows ? (
+        <div className="sfl-client-grid">
+          <ClientBreakdown title="Operating Systems" rows={osRows} maxValue={osMax} />
+          <ClientBreakdown title="Browsers" rows={browserRows} maxValue={browserMax} />
+        </div>
+      ) : (
+        <p className="muted">No client data available.</p>
+      )}
+    </section>
+  );
+}
+
+function ClientBreakdown({ title, rows = [], maxValue = 1 }) {
+  return (
+    <div className="sfl-client-column">
+      <h3>{title}</h3>
+      {rows.slice(0, 6).map((item, index) => {
+        const amount = Number(item.count || 0);
+        const width = Math.max(2, Math.round((amount / maxValue) * 100));
+        return (
+          <div className="sfl-client-row" key={`${title}-${item.name}-${index}`}>
+            <div>
+              <span>{item.name}</span>
+              <strong>{formatCompact(amount)}</strong>
+            </div>
+            <i style={{ width: `${width}%` }} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function SlimRankPanel({ title, rows = [], empty, maxValue = 1, label, value, tone = 'teal' }) {
   return (
     <section className={`panel sfl-slim-panel ${tone}`}>
       <div className="sfl-panel-heading">
         <h2>{title}</h2>
-        <span className="sfl-more">More</span>
       </div>
       {rows.length ? (
         <div className="sfl-slim-list">

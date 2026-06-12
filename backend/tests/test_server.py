@@ -30,7 +30,12 @@ from freewaf.server import (
     sync_ip_group_reference,
     verify_challenge_nonce,
 )
-from freewaf.store import Store
+from freewaf.store import (
+    Store,
+    build_stats_from_summary,
+    classify_user_client_browser,
+    classify_user_client_os,
+)
 
 
 CERT_PEM = """-----BEGIN CERTIFICATE-----
@@ -136,6 +141,121 @@ class CertificateServerTests(unittest.TestCase):
         self.assertEqual(stats["botRequestTotal"], 240)
         self.assertEqual(stats["siteStats"][0]["requests"], total)
         self.assertEqual(updated_stats["total"], total + 3)
+
+    def test_dashboard_summary_filters_site_and_user_clients(self):
+        def counts(total, blocked, os_name, browser_name):
+            protected = blocked
+            return {
+                "total": total,
+                "blocked": blocked,
+                "challenged": 0,
+                "monitored": 0,
+                "botTypes": {},
+                "userClientOs": {
+                    os_name: {"name": os_name, "type": "os", "count": total, "blocked": blocked, "challenged": 0, "protected": protected}
+                },
+                "userClientBrowsers": {
+                    browser_name: {"name": browser_name, "type": "browser", "count": total, "blocked": blocked, "challenged": 0, "protected": protected}
+                },
+                "countries": {},
+                "topRules": {},
+                "statusGroups": {"2xx": total - blocked, "4xx": blocked},
+            }
+
+        state = {
+            "sites": [
+                {"id": "site-a", "name": "Site A", "hostnames": ["a.example.test"]},
+                {"id": "site-b", "name": "Site B", "hostnames": ["b.example.test"]},
+            ]
+        }
+        summary = {
+            "retentionDays": 7,
+            "hosts": {
+                "a.example.test": counts(5, 2, "Windows", "Chrome"),
+                "b.example.test": counts(9, 0, "Android", "Chrome"),
+            },
+        }
+        now = datetime.now(timezone.utc).isoformat()
+        recent_logs = [
+            {"id": "1", "at": now, "host": "a.example.test", "verdict": "block", "statusCode": 403},
+            {"id": "2", "at": now, "host": "b.example.test", "verdict": "allow", "statusCode": 200},
+        ]
+
+        stats = build_stats_from_summary(state, summary, recent_logs, site_id="site-a")
+
+        self.assertEqual(stats["total"], 5)
+        self.assertEqual(stats["blocked"], 2)
+        self.assertEqual(stats["siteStats"][0]["requests"], 5)
+        self.assertEqual(stats["siteStats"][1]["requests"], 0)
+        self.assertEqual(stats["userClientOs"][0]["name"], "Windows")
+        self.assertEqual(stats["userClientBrowsers"][0]["name"], "Chrome")
+        self.assertEqual(stats["statusGroups"], [{"name": "2xx", "count": 3}, {"name": "4xx", "count": 2}])
+
+    def test_dashboard_stats_period_days_limits_aggregate_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log_file = root / "freewaf_access.log"
+            now = datetime.now(timezone.utc)
+            entries = [
+                (now - timedelta(days=2), "old"),
+                (now - timedelta(minutes=5), "fresh"),
+            ]
+            with log_file.open("w", encoding="utf-8") as handle:
+                for at, suffix in entries:
+                    handle.write(
+                        json.dumps(
+                            {
+                                "time": at.isoformat(),
+                                "remote_addr": "203.0.113.9",
+                                "host": "demo.test",
+                                "method": "GET",
+                                "uri": f"/{suffix}",
+                                "status": 200,
+                                "request_time": 0.01,
+                                "verdict": "allow",
+                                "reason": "Allowed",
+                                "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
+                                "referer": "",
+                            }
+                        )
+                        + "\n"
+                    )
+
+            store = mock.Mock()
+            store.get_logs.return_value = []
+            state = {"sites": [{"id": "site-demo", "name": "Demo", "hostnames": ["demo.test"]}]}
+            with mock.patch("freewaf.server.ROOT_DIR", root):
+                with mock.patch.dict(
+                    os.environ,
+                    {
+                        "NGINX_ACCESS_LOG": str(log_file),
+                        "NGINX_SITE_LOG_DIR": str(root / "sites"),
+                        "STATS_LOG_SCAN_LIMIT": "100",
+                        "STATS_LOG_SCAN_MAX": "100",
+                    },
+                    clear=False,
+                ):
+                    with nginx_module._LOG_TAIL_LOCK:
+                        nginx_module._LOG_TAIL_CACHE.clear()
+                    with nginx_module._LOG_INCREMENTAL_SCAN_LOCK:
+                        nginx_module._LOG_INCREMENTAL_SCAN_CACHE.clear()
+                    server_module.clear_stats_aggregate_cache()
+
+                    stats = combined_stats(store, state, retention_days=1)
+
+        self.assertEqual(stats["retentionDays"], 1)
+        self.assertEqual(stats["total"], 1)
+        self.assertEqual(stats["userClientOs"][0]["name"], "Windows")
+        self.assertEqual(stats["userClientBrowsers"][0]["name"], "Chrome")
+
+    def test_user_client_classifiers_extract_os_and_browser(self):
+        edge = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0 Safari/537.36 Edg/125.0"
+        safari = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Version/17.5 Mobile/15E148 Safari/604.1"
+
+        self.assertEqual(classify_user_client_os(edge), "Windows")
+        self.assertEqual(classify_user_client_browser(edge), "Microsoft Edge")
+        self.assertEqual(classify_user_client_os(safari), "iOS")
+        self.assertEqual(classify_user_client_browser(safari), "Mobile Safari")
 
     def test_pasted_cert_payload_is_written_to_nginx_cert_dir(self):
         with tempfile.TemporaryDirectory() as temp_dir:

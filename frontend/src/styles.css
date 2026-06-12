@@ -392,7 +392,6 @@ h2 {
 .sfl-donut-panel,
 .sfl-slim-panel,
 .sfl-geo-panel,
-.sfl-traffic-panel,
 .sfl-qps-panel,
 .sfl-status-panel {
   box-shadow: 0 8px 24px rgba(25, 37, 52, 0.06);
@@ -410,30 +409,26 @@ h2 {
   background: #fff;
 }
 
-.sfl-tabs {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+.sfl-dashboard-title {
+  display: grid;
+  gap: 2px;
   min-width: 0;
 }
 
-.sfl-tab {
-  display: inline-flex;
-  align-items: center;
-  min-height: 30px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
+.sfl-dashboard-title strong {
   color: var(--text);
-  font-size: 12px;
-  font-weight: 800;
+  font-size: 13px;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
-.sfl-tab.active {
-  background: #16c4c1;
-  color: #fff;
+.sfl-dashboard-title span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sfl-dashboard-controls {
@@ -443,17 +438,29 @@ h2 {
   justify-content: flex-end;
 }
 
-.sfl-select {
-  display: inline-flex;
-  align-items: center;
-  min-height: 30px;
-  min-width: 140px;
-  padding: 0 12px;
+.sfl-control-field {
+  display: grid;
+  gap: 4px;
+  min-width: 170px;
+}
+
+.sfl-control-field span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.sfl-select-control {
+  min-height: 32px;
+  width: 100%;
+  padding: 0 32px 0 10px;
   border: 1px solid var(--line);
   border-radius: 5px;
   background: #fff;
   color: var(--text);
   font-size: 12px;
+  font-weight: 700;
 }
 
 .sfl-dashboard-layout {
@@ -542,10 +549,6 @@ h2 {
   white-space: nowrap;
 }
 
-.sfl-traffic-panel {
-  min-height: 244px;
-}
-
 .sfl-panel-heading {
   display: flex;
   align-items: center;
@@ -557,42 +560,6 @@ h2 {
 .sfl-panel-heading h2 {
   margin: 0;
   font-size: 14px;
-}
-
-.sfl-segmented {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.sfl-segmented span,
-.sfl-more {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 30px;
-  padding: 0 12px;
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  background: #fff;
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.sfl-segmented span.active,
-.sfl-more {
-  border-color: #16c4c1;
-  background: #16c4c1;
-  color: #fff;
-}
-
-.sfl-more {
-  border: 0;
-  background: transparent;
-  color: #10aaa8;
-  text-transform: uppercase;
 }
 
 .sfl-geo-panel {
@@ -628,6 +595,13 @@ h2 {
     0 0 0 72px rgba(24, 32, 42, 0.025),
     inset -30px -42px 72px rgba(29, 92, 117, 0.28),
     inset 20px 18px 42px rgba(255, 255, 255, 0.42);
+  animation: sfl-globe-spin 24s linear infinite;
+}
+
+@keyframes sfl-globe-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .sfl-globe::before {
@@ -869,6 +843,69 @@ h2 {
   width: 6px;
   height: 6px;
   border-radius: 50%;
+}
+
+.sfl-user-clients-panel {
+  min-width: 0;
+}
+
+.sfl-client-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.sfl-client-column {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 18px;
+  border-radius: 5px;
+  background: #f7f9fb;
+}
+
+.sfl-client-column h3 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.sfl-client-row {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.sfl-client-row div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.sfl-client-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sfl-client-row strong {
+  color: #02070c;
+}
+
+.sfl-client-row i {
+  display: block;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: #4d8df7;
+}
+
+.sfl-client-column:first-child .sfl-client-row i {
+  background: #13bfbd;
 }
 
 .sfl-detail-grid {
@@ -2991,15 +3028,8 @@ td {
     flex-direction: column;
   }
 
-  .sfl-tabs,
-  .sfl-dashboard-controls,
-  .sfl-segmented {
+  .sfl-dashboard-controls {
     width: 100%;
-  }
-
-  .sfl-tabs {
-    overflow-x: auto;
-    padding-bottom: 2px;
   }
 
   .sfl-dashboard-controls {
@@ -3035,6 +3065,10 @@ td {
 
   .sfl-legend {
     width: 100%;
+    grid-template-columns: 1fr;
+  }
+
+  .sfl-client-grid {
     grid-template-columns: 1fr;
   }
 
@@ -3357,7 +3391,7 @@ td {
     border-top: 1px solid var(--line);
   }
 
-  .sfl-select {
+  .sfl-control-field {
     width: 100%;
   }
 

@@ -316,8 +316,11 @@ IP_GROUP_EXTERNALIZE_COUNT=5000
 IP_GROUP_EXTERNALIZE_BYTES=262144
 STATS_LOG_SCAN_LIMIT=50000
 STATS_LOG_SCAN_MAX=250000
+STATS_RETENTION_DAYS=7
 GEOIP_DB_FILE=/var/lib/freewaf/geoip/dbip-country-lite.csv.gz
 ```
+
+The installer also writes `/etc/logrotate.d/freewaf` so Nginx access logs are rotated daily and retained for 7 days.
 
 After changing environment variables:
 

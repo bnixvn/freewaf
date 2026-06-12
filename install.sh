@@ -6,6 +6,7 @@ ENV_DIR="${FREEWAF_ENV_DIR:-/etc/freewaf}"
 ENV_FILE="${ENV_DIR}/freewaf.env"
 SERVICE_FILE="/etc/systemd/system/freewaf.service"
 NGINX_INCLUDE="/etc/nginx/conf.d/freewaf.conf"
+LOGROTATE_FILE="/etc/logrotate.d/freewaf"
 ADMIN_PORT="${ADMIN_PORT:-7001}"
 DEMO_ORIGIN_PORT="${DEMO_ORIGIN_PORT:-9090}"
 ENABLE_DEMO_ORIGIN="${ENABLE_DEMO_ORIGIN:-true}"
@@ -59,6 +60,7 @@ apt_install_base() {
     curl \
     git \
     gnupg \
+    logrotate \
     nginx \
     openssl \
     python3 \
@@ -301,9 +303,32 @@ IP_GROUP_EXTERNALIZE_COUNT=5000
 IP_GROUP_EXTERNALIZE_BYTES=262144
 STATS_LOG_SCAN_LIMIT=50000
 STATS_LOG_SCAN_MAX=250000
+STATS_RETENTION_DAYS=7
 GEOIP_DB_FILE=/var/lib/freewaf/geoip/dbip-country-lite.csv.gz
 EOF
   chmod 0600 "$ENV_FILE"
+}
+
+write_logrotate() {
+  log "Writing ${LOGROTATE_FILE}"
+  cat > "$LOGROTATE_FILE" <<EOF
+${APP_DIR}/logs/freewaf_access.log ${APP_DIR}/logs/freewaf/*.log {
+    daily
+    rotate 7
+    missingok
+    notifempty
+    compress
+    delaycompress
+    dateext
+    create 0640 www-data adm
+    sharedscripts
+    postrotate
+        if command -v nginx >/dev/null 2>&1; then
+            nginx -s reopen >/dev/null 2>&1 || true
+        fi
+    endscript
+}
+EOF
 }
 
 refresh_nginx_config() {
@@ -408,6 +433,7 @@ main() {
   install_geoip_database
   install_modsecurity
   write_env
+  write_logrotate
   refresh_nginx_config
   write_systemd
   write_nginx_include

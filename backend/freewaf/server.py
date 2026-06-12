@@ -40,6 +40,8 @@ from .store import (
     build_stats,
     build_stats_from_summary,
     classify_bot_type,
+    classify_user_client_browser,
+    classify_user_client_os,
     country_for_ip,
     match_log_site,
     normalize_ip_items,
@@ -54,7 +56,7 @@ LOGIN_THROTTLE_IP_LIMIT = 5
 LOGIN_THROTTLE_USER_LIMIT = 10
 STATS_AGGREGATE_BUCKET_MS = 5 * 60 * 1000
 STATS_AGGREGATE_LOCK = threading.RLock()
-STATS_AGGREGATE_CACHE_VERSION = 1
+STATS_AGGREGATE_CACHE_VERSION = 2
 STATS_AGGREGATE_CACHE = {"files": {}, "countryCache": {}, "loadedCacheName": ""}
 
 
@@ -211,9 +213,11 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
             if parsed.path == "/api/state":
                 state = store.get_state()
                 limit = parse_int((query.get("logLimit") or ["200"])[0], 200)
+                site_id = str((query.get("siteId") or query.get("site_id") or [""])[0]).strip()
+                period_days = dashboard_period_days((query.get("periodDays") or query.get("period_days") or [""])[0])
                 logs = combined_logs(store, clamp(limit, 1, 1000))
                 state["logs"] = logs
-                state["stats"] = combined_stats(store, state)
+                state["stats"] = combined_stats(store, state, site_id=site_id, retention_days=period_days)
                 state["runtime"] = runtime_payload(state, admin_port, demo_origin_port, demo_enabled)
                 state["users"] = [public_user(user) for user in state.get("users", [])]
                 self.send_json(200, state)
@@ -221,7 +225,9 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
 
             if parsed.path == "/api/stats":
                 state = store.get_state()
-                self.send_json(200, combined_stats(store, state))
+                site_id = str((query.get("siteId") or query.get("site_id") or [""])[0]).strip()
+                period_days = dashboard_period_days((query.get("periodDays") or query.get("period_days") or [""])[0])
+                self.send_json(200, combined_stats(store, state, site_id=site_id, retention_days=period_days))
                 return
 
             if parsed.path == "/api/logs":
@@ -1129,17 +1135,17 @@ def combined_stats_logs(store: Store) -> list[dict]:
     return sorted(logs, key=lambda entry: entry.get("at") or "", reverse=True)[:limit]
 
 
-def combined_stats(store: Store, state: dict | None = None) -> dict:
+def combined_stats(store: Store, state: dict | None = None, site_id: str = "", retention_days: int | None = None) -> dict:
     source_state = state or store.get_state()
     recent_logs = combined_stats_logs(store)
-    summary = nginx_stats_summary()
+    summary = nginx_stats_summary(retention_days)
     if (summary.get("total") or 0) > 0:
-        return build_stats_from_summary(source_state, summary, recent_logs)
-    return build_stats({**source_state, "logs": recent_logs})
+        return build_stats_from_summary(source_state, summary, recent_logs, site_id=site_id)
+    return build_stats({**source_state, "logs": recent_logs}, site_id=site_id)
 
 
-def nginx_stats_summary() -> dict:
-    retention_days = stats_retention_days()
+def nginx_stats_summary(retention_days: int | None = None) -> dict:
+    retention_days = normalize_stats_retention_days(retention_days) if retention_days is not None else stats_retention_days()
     now_ms = int(time.time() * 1000)
     retention_start_ms = now_ms - retention_days * 24 * 60 * 60 * 1000
     cache_name = f"stats:{retention_days}"
@@ -1260,6 +1266,8 @@ def new_stats_counts() -> dict:
         "challenged": 0,
         "monitored": 0,
         "botTypes": {},
+        "userClientOs": {},
+        "userClientBrowsers": {},
         "countries": {},
         "topRules": {},
         "statusGroups": {},
@@ -1279,6 +1287,12 @@ def update_stats_counts(counts: dict, entry: dict, country_cache: dict) -> None:
     bot_type = classify_bot_type(entry.get("userAgent") or entry.get("user_agent") or "")
     if bot_type:
         increment_named_stats(counts["botTypes"], bot_type, {"name": bot_type}, verdict)
+
+    user_agent = entry.get("userAgent") or entry.get("user_agent") or ""
+    os_name = classify_user_client_os(user_agent)
+    browser_name = classify_user_client_browser(user_agent)
+    increment_named_stats(counts["userClientOs"], os_name, {"name": os_name, "type": "os"}, verdict)
+    increment_named_stats(counts["userClientBrowsers"], browser_name, {"name": browser_name, "type": "browser"}, verdict)
 
     ip = str(entry.get("ip") or entry.get("remote_addr") or "").strip()
     if ip not in country_cache:
@@ -1351,6 +1365,8 @@ def merge_aggregate_counts(target: dict, source: dict) -> None:
     target["challenged"] += int(source.get("challenged") or 0)
     target["monitored"] += int(source.get("monitored") or 0)
     merge_aggregate_named_stats(target["botTypes"], source.get("botTypes") or {})
+    merge_aggregate_named_stats(target["userClientOs"], source.get("userClientOs") or {})
+    merge_aggregate_named_stats(target["userClientBrowsers"], source.get("userClientBrowsers") or {})
     merge_aggregate_named_stats(target["countries"], source.get("countries") or {})
     merge_int_maps(target["topRules"], source.get("topRules") or {})
     merge_int_maps(target["statusGroups"], source.get("statusGroups") or {})
@@ -1443,6 +1459,17 @@ def stats_scan_limit() -> int:
 
 def stats_retention_days() -> int:
     return clamp(parse_int(os.environ.get("STATS_RETENTION_DAYS"), 7), 1, 31)
+
+
+def normalize_stats_retention_days(value) -> int:
+    return clamp(parse_int(value, stats_retention_days()), 1, 31)
+
+
+def dashboard_period_days(value) -> int:
+    raw = str(value or "").strip()
+    if not raw:
+        return stats_retention_days()
+    return 1 if parse_int(raw, 7) == 1 else 7
 
 
 def log_domain(entry: dict) -> str:
