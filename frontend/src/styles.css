@@ -1066,37 +1066,44 @@ h2 {
 .application-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  gap: 12px;
 }
 
 .application-card {
   display: grid;
-  grid-template-columns: 134px minmax(0, 1fr);
-  min-height: 188px;
+  grid-template-columns: 128px minmax(0, 1fr);
+  min-height: 182px;
   overflow: hidden;
-  border: 1px solid var(--line);
+  border: 1px solid #dde6ee;
   border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 8px 26px rgba(24, 32, 42, 0.06);
+  background: linear-gradient(180deg, #ffffff 0%, #fbfdfe 100%);
+  box-shadow: 0 8px 24px rgba(25, 37, 52, 0.055);
+}
+
+.application-card:hover {
+  border-color: #cbd7e3;
+  box-shadow: 0 12px 30px rgba(25, 37, 52, 0.075);
 }
 
 .application-status {
   display: grid;
-  align-content: center;
+  align-content: start;
   justify-items: center;
-  gap: 14px;
-  padding: 18px 14px;
-  border-right: 1px dashed var(--line);
+  gap: 10px;
+  padding: 16px 12px;
+  border-right: 1px solid #e2e9f0;
+  background: #f7fafb;
 }
 
 .app-globe {
   display: grid;
-  width: 38px;
-  height: 38px;
+  width: 36px;
+  height: 36px;
   place-items: center;
   border-radius: 50%;
-  background: #dff7ef;
-  color: var(--teal);
+  border: 1px solid #cfe9ee;
+  background: #eef9fb;
+  color: #0d817d;
 }
 
 .defense-button {
@@ -1106,16 +1113,20 @@ h2 {
   gap: 5px;
   width: 100%;
   min-height: 30px;
-  border: 1px solid var(--line);
-  border-radius: 5px;
+  border: 1px solid #cfdbe6;
+  border-radius: 6px;
   background: #fff;
-  color: var(--muted);
+  color: #627183;
+  font-size: 11px;
   font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 .defense-button.active {
-  border-color: #11bfb5;
-  color: var(--teal);
+  border-color: #8edbd5;
+  background: #eafaf9;
+  color: #087c76;
+  box-shadow: inset 0 0 0 1px rgba(17, 191, 181, 0.12);
 }
 
 .under-attack-button {
@@ -1125,50 +1136,59 @@ h2 {
   align-items: center;
   justify-content: center;
   gap: 5px;
-  border: 1px solid #f2c9c5;
-  border-radius: 5px;
-  background: #fff;
-  color: #9d4b43;
+  border: 1px solid #ead3d0;
+  border-radius: 6px;
+  background: #fffafa;
+  color: #9c5b55;
   font-size: 10px;
-  font-weight: 800;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 .under-attack-button.active {
-  border-color: #dc4b3f;
-  background: #fff0ee;
-  color: #c5372c;
-  box-shadow: inset 0 0 0 1px #dc4b3f;
+  border-color: #e28c84;
+  background: #fff0ef;
+  color: #b42318;
+  box-shadow: inset 0 0 0 1px rgba(220, 75, 63, 0.16);
 }
 
 .app-metric-pair {
   display: grid;
   grid-template-columns: 1fr 1fr;
   width: 100%;
-  gap: 8px;
+  gap: 6px;
+  margin-top: 2px;
+  padding-top: 8px;
+  border-top: 1px solid #e2e9f0;
 }
 
 .app-metric-pair div + div {
-  border-left: 1px dashed var(--line);
+  border-left: 1px solid #e2e9f0;
 }
 
 .app-metric-pair span {
   display: block;
-  color: #9aa5b1;
-  font-size: 12px;
+  color: #8190a1;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
   text-align: center;
 }
 
 .app-metric-pair strong {
   display: block;
-  margin-top: 8px;
+  margin-top: 5px;
+  color: #17202a;
+  font-size: 15px;
+  line-height: 1.1;
   text-align: center;
 }
 
 .application-main {
   display: grid;
-  align-content: center;
-  gap: 13px;
-  padding: 18px 20px;
+  align-content: start;
+  gap: 10px;
+  padding: 16px 18px;
 }
 
 .application-topline {
@@ -1181,7 +1201,19 @@ h2 {
 .application-topline h3 {
   margin: 0;
   overflow-wrap: anywhere;
-  font-size: 18px;
+  color: #111a22;
+  font-size: 17px;
+  line-height: 1.25;
+}
+
+.application-topline .pill {
+  min-height: 24px;
+  padding: 3px 8px;
+  border-color: #dce5ed;
+  background: #f5f8fa;
+  color: #657386;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .link-button {
@@ -1191,28 +1223,56 @@ h2 {
   font-weight: 700;
 }
 
+.application-topline .link-button {
+  min-height: 28px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: #0a817a;
+  font-size: 12px;
+}
+
+.application-topline .link-button:hover {
+  border-color: #cce9e6;
+  background: #f0fbfa;
+}
+
+.application-topline .table-action {
+  width: 32px;
+  height: 32px;
+  color: #a84f48;
+}
+
 .app-field {
   display: flex;
   min-width: 0;
   align-items: center;
   gap: 8px;
-  color: var(--muted);
+  color: #6b7a8c;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.app-field svg {
+  flex: 0 0 auto;
+  color: #8190a1;
 }
 
 .app-field strong {
   min-width: 0;
   overflow-wrap: anywhere;
-  color: var(--text);
+  color: #202b36;
+  font-weight: 650;
 }
 
 .protocol-text {
-  color: var(--teal);
+  color: #0a817a;
   font-weight: 700;
 }
 
 .feature-chip-row {
   display: flex;
-  gap: 8px;
+  gap: 7px;
   flex-wrap: wrap;
 }
 
@@ -1223,11 +1283,12 @@ h2 {
   min-height: 28px;
   min-width: 82px;
   padding: 4px 10px;
-  border: 1px solid #d5dde7;
-  border-radius: 5px;
-  background: #f2f4f6;
-  color: #26323a;
+  border: 1px solid #d8e1ea;
+  border-radius: 6px;
+  background: #f6f8fa;
+  color: #3e4b58;
   font-size: 12px;
+  font-weight: 650;
 }
 
 .feature-chip-button {
@@ -1236,13 +1297,14 @@ h2 {
 }
 
 .feature-chip-button:hover {
-  border-color: #11bfb5;
+  border-color: #9edbd6;
+  background: #f2fbfa;
 }
 
 .feature-chip.active {
-  border-color: #11bfb5;
-  background: #effdfb;
-  color: var(--teal);
+  border-color: #9edbd6;
+  background: #eaf8f7;
+  color: #087c76;
 }
 
 .chart {
