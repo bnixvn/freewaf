@@ -682,7 +682,15 @@ def normalize_challenge_page_settings(value) -> dict:
             1440,
         ),
         "waitSeconds": normalize_challenge_wait_seconds(source.get("waitSeconds") or source.get("wait_seconds"), defaults["waitSeconds"]),
+        "powDifficulty": normalize_pow_difficulty(source.get("powDifficulty") or source.get("pow_difficulty"), defaults.get("powDifficulty", 16)),
     }
+
+
+def normalize_pow_difficulty(value, default: int = 16) -> int:
+    bits = normalize_positive_int(value, default)
+    if bits < 0:
+        return 0
+    return min(bits, 24)
 
 
 def normalize_challenge_wait_seconds(value, default: int = 5) -> int:

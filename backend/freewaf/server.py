@@ -37,6 +37,9 @@ from .store import Store, StoreError, build_stats, country_for_ip, match_log_sit
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 FRONTEND_DIST = ROOT_DIR / "frontend" / "dist"
+LOGIN_THROTTLE_WINDOW_SECONDS = 300
+LOGIN_THROTTLE_IP_LIMIT = 5
+LOGIN_THROTTLE_USER_LIMIT = 10
 
 
 def main() -> None:
@@ -102,6 +105,54 @@ def main() -> None:
 def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, demo_enabled: bool, secure_cookie: bool = False):
     sessions: dict[str, dict] = {}
     sessions_lock = threading.RLock()
+    login_attempts: dict[str, list[float]] = {}
+    login_attempts_lock = threading.RLock()
+
+    def login_throttle_check(ip: str, username: str) -> tuple[bool, int]:
+        """Returns (allowed, retry_after_seconds). Uses sliding windows on
+        (ip) and (username) separately so an attacker cannot lock out a real
+        user just by spraying that username from many addresses."""
+        now = time.monotonic()
+        window = float(LOGIN_THROTTLE_WINDOW_SECONDS)
+        ip_limit = LOGIN_THROTTLE_IP_LIMIT
+        user_limit = LOGIN_THROTTLE_USER_LIMIT
+        ip_key = f"ip:{ip}" if ip else ""
+        user_key = f"user:{(username or '').strip().lower()}" if username else ""
+        with login_attempts_lock:
+            # Garbage collect every now and then so dict does not grow forever.
+            if len(login_attempts) > 4096:
+                cutoff = now - window
+                for stored_key in list(login_attempts.keys()):
+                    fresh = [t for t in login_attempts[stored_key] if t > cutoff]
+                    if fresh:
+                        login_attempts[stored_key] = fresh
+                    else:
+                        login_attempts.pop(stored_key, None)
+            for key, limit in ((ip_key, ip_limit), (user_key, user_limit)):
+                if not key or limit <= 0:
+                    continue
+                attempts = [t for t in login_attempts.get(key, []) if t > now - window]
+                login_attempts[key] = attempts
+                if len(attempts) >= limit:
+                    oldest = attempts[0]
+                    retry_after = max(1, int(window - (now - oldest)) + 1)
+                    return False, retry_after
+        return True, 0
+
+    def login_throttle_record_failure(ip: str, username: str) -> None:
+        now = time.monotonic()
+        with login_attempts_lock:
+            if ip:
+                login_attempts.setdefault(f"ip:{ip}", []).append(now)
+            if username:
+                login_attempts.setdefault(f"user:{username.strip().lower()}", []).append(now)
+
+    def login_throttle_record_success(ip: str, username: str) -> None:
+        with login_attempts_lock:
+            if ip:
+                login_attempts.pop(f"ip:{ip}", None)
+            if username:
+                login_attempts.pop(f"user:{username.strip().lower()}", None)
 
     class AdminHandler(BaseHTTPRequestHandler):
         server_version = "FreeWAFAdmin/1.0"
@@ -177,6 +228,11 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 )
                 return
 
+            if parsed.path == "/api/audit-log":
+                limit = parse_int((query.get("limit") or ["200"])[0], 200)
+                self.send_json(200, {"entries": read_audit_log(clamp(limit, 1, 1000))})
+                return
+
             self.serve_static(parsed.path)
 
         def do_POST(self):
@@ -200,16 +256,42 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                             "totpEnabled": bool(payload.get("totpEnabled")),
                         }
                     )
+                    self.record_audit(action="auth.setup", target="users", target_id=saved.get("id", ""), status=200, actor=saved, extra={"username": saved.get("username", "")})
                     self.login_user(saved)
                     return
 
                 if self.path == "/api/auth/login":
                     payload = self.read_payload()
-                    user = store.authenticate_user(payload.get("username", ""), payload.get("password", ""), payload.get("totpCode", ""))
+                    username = str(payload.get("username") or "").strip()
+                    remote_ip = self.client_remote_address()
+                    allowed, retry_after = login_throttle_check(remote_ip, username)
+                    if not allowed:
+                        self.record_audit(
+                            action="auth.login.throttled",
+                            target="users",
+                            status=429,
+                            actor={},
+                            extra={"username": username[:64], "retryAfter": retry_after},
+                        )
+                        self.send_json(
+                            429,
+                            {"error": "Too many login attempts. Please wait and try again.", "retryAfter": retry_after},
+                            headers={"Retry-After": str(retry_after)},
+                        )
+                        return
+                    try:
+                        user = store.authenticate_user(username, payload.get("password", ""), payload.get("totpCode", ""))
+                    except Exception:
+                        login_throttle_record_failure(remote_ip, username)
+                        self.record_audit(action="auth.login.failed", target="users", status=401, actor={}, extra={"username": username[:64]})
+                        raise
+                    login_throttle_record_success(remote_ip, username)
+                    self.record_audit(action="auth.login", target="users", target_id=user.get("id", ""), status=200, actor=user, extra={"username": user.get("username", "")})
                     self.login_user(user)
                     return
 
                 if self.path == "/api/auth/logout":
+                    self.record_audit(action="auth.logout", target="users", status=200)
                     self.logout_user()
                     return
 
@@ -220,12 +302,14 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 if resource == "ip-groups" and action == "sync":
                     saved = sync_ip_group_reference(store, item_id)
                     maybe_auto_write(store)
+                    self.record_audit(action="ip-groups.sync", target="ip-groups", target_id=item_id, status=200)
                     self.send_json(200, saved)
                     return
 
                 if resource == "users" and action == "password":
                     payload = self.read_payload()
                     saved = store.change_user_password(item_id, payload.get("password", ""))
+                    self.record_audit(action="users.password", target="users", target_id=item_id, status=200)
                     self.send_json(200, public_user(saved))
                     return
 
@@ -233,35 +317,43 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 if self.path == "/api/sites":
                     saved = store.upsert_site(payload)
                     apply_nginx_or_raise(store)
+                    self.record_audit(action="sites.create", target="sites", target_id=saved.get("id", ""), status=201, payload=payload)
                     self.send_json(201, saved)
                     return
                 if self.path == "/api/rules":
                     saved = store.upsert_rule(payload)
                     maybe_auto_write(store)
+                    self.record_audit(action="rules.create", target="rules", target_id=saved.get("id", ""), status=201, payload=payload)
                     self.send_json(201, saved)
                     return
                 if self.path == "/api/certificates":
                     saved = store.upsert_certificate(prepare_certificate_payload(payload))
                     apply_nginx_or_raise(store)
+                    self.record_audit(action="certificates.create", target="certificates", target_id=saved.get("id", ""), status=201, payload=payload)
                     self.send_json(201, saved)
                     return
                 if self.path == "/api/ip-groups":
                     saved = store.upsert_ip_group(payload)
                     saved = maybe_sync_new_reference_ip_group(store, saved)
                     maybe_auto_write(store)
+                    self.record_audit(action="ip-groups.create", target="ip-groups", target_id=saved.get("id", ""), status=201, payload=payload)
                     self.send_json(201, saved)
                     return
                 if self.path == "/api/access-rules":
                     saved = store.upsert_access_rule(payload)
                     maybe_auto_write(store)
+                    self.record_audit(action="access-rules.create", target="access-rules", target_id=saved.get("id", ""), status=201, payload=payload)
                     self.send_json(201, saved)
                     return
                 if self.path == "/api/users":
                     saved = store.upsert_user(payload)
+                    self.record_audit(action="users.create", target="users", target_id=saved.get("id", ""), status=201, payload=payload)
                     self.send_json(201, public_user(saved, include_totp_secret=bool(saved.get("_totpSecretGenerated"))))
                     return
                 if self.path == "/api/nginx/apply":
-                    self.send_json(200, apply_nginx(store, payload))
+                    result = apply_nginx(store, payload)
+                    self.record_audit(action="nginx.apply", target="nginx", status=200, payload=payload, extra={"ok": bool(result.get("ok"))})
+                    self.send_json(200, result)
                     return
                 self.send_json(404, {"error": "Not found"})
             except StoreError as error:
@@ -279,7 +371,9 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 return
             if self.path == "/api/settings":
                 try:
-                    saved = store.update_settings(self.read_payload())
+                    payload = self.read_payload()
+                    saved = store.update_settings(payload)
+                    self.record_audit(action="settings.update", target="settings", status=200, payload=payload)
                     self.send_json(200, saved)
                 except StoreError as error:
                     self.send_json(error.status, error_payload(error))
@@ -296,11 +390,13 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 if resource == "sites":
                     store.delete_site(item_id)
                     apply_nginx_or_raise(store)
+                    self.record_audit(action="sites.delete", target="sites", target_id=item_id, status=204)
                     self.send_empty(204)
                     return
                 if resource == "rules":
                     store.delete_rule(item_id)
                     maybe_auto_write(store)
+                    self.record_audit(action="rules.delete", target="rules", target_id=item_id, status=204)
                     self.send_empty(204)
                     return
                 if resource == "certificates":
@@ -311,16 +407,19 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     remove_certificate_files(certificate)
                     store.delete_certificate(item_id)
                     apply_nginx_or_raise(store)
+                    self.record_audit(action="certificates.delete", target="certificates", target_id=item_id, status=204)
                     self.send_empty(204)
                     return
                 if resource == "ip-groups":
                     store.delete_ip_group(item_id)
                     maybe_auto_write(store)
+                    self.record_audit(action="ip-groups.delete", target="ip-groups", target_id=item_id, status=204)
                     self.send_empty(204)
                     return
                 if resource == "access-rules":
                     store.delete_access_rule(item_id)
                     maybe_auto_write(store)
+                    self.record_audit(action="access-rules.delete", target="access-rules", target_id=item_id, status=204)
                     self.send_empty(204)
                     return
                 if resource == "users":
@@ -329,11 +428,13 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                         self.send_json(400, {"error": "You cannot delete the signed-in user"})
                         return
                     store.delete_user(item_id)
+                    self.record_audit(action="users.delete", target="users", target_id=item_id, status=204)
                     self.send_empty(204)
                     return
                 if self.path in {"/api/logs", "/api/stats"}:
                     store.clear_logs()
                     clear_nginx_logs(ROOT_DIR)
+                    self.record_audit(action="logs.clear", target="logs", status=204)
                     self.send_empty(204)
                     return
                 self.send_json(404, {"error": "Not found"})
@@ -345,6 +446,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 payload = self.read_payload()
                 resource, item_id = split_resource_path(self.path)
                 state = store.get_state()
+                action_verb = "replace" if replace else "update"
 
                 if resource == "sites":
                     if not replace:
@@ -355,6 +457,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                         payload = {**current, **payload}
                     saved = store.upsert_site(payload, item_id)
                     apply_nginx_or_raise(store)
+                    self.record_audit(action=f"sites.{action_verb}", target="sites", target_id=item_id, status=200, payload=payload)
                     self.send_json(200, saved)
                     return
 
@@ -367,6 +470,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                         payload = {**current, **payload}
                     saved = store.upsert_rule(payload, item_id)
                     maybe_auto_write(store)
+                    self.record_audit(action=f"rules.{action_verb}", target="rules", target_id=item_id, status=200, payload=payload)
                     self.send_json(200, saved)
                     return
 
@@ -379,6 +483,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                         payload = {**current, **payload}
                     saved = store.upsert_certificate(prepare_certificate_payload(payload, item_id), item_id)
                     apply_nginx_or_raise(store)
+                    self.record_audit(action=f"certificates.{action_verb}", target="certificates", target_id=item_id, status=200, payload=payload)
                     self.send_json(200, saved)
                     return
 
@@ -396,6 +501,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     saved = store.upsert_ip_group(payload, item_id)
                     saved = maybe_sync_new_reference_ip_group(store, saved)
                     maybe_auto_write(store)
+                    self.record_audit(action=f"ip-groups.{action_verb}", target="ip-groups", target_id=item_id, status=200, payload=payload)
                     self.send_json(200, saved)
                     return
 
@@ -411,6 +517,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                         payload["_moveAccessRule"] = True
                     saved = store.upsert_access_rule(payload, item_id)
                     maybe_auto_write(store)
+                    self.record_audit(action=f"access-rules.{action_verb}", target="access-rules", target_id=item_id, status=200, payload=payload)
                     self.send_json(200, saved)
                     return
 
@@ -422,6 +529,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                             return
                         payload = {**current, **payload}
                     saved = store.upsert_user(payload, item_id)
+                    self.record_audit(action=f"users.{action_verb}", target="users", target_id=item_id, status=200, payload=payload)
                     self.send_json(200, public_user(saved, include_totp_secret=bool(saved.get("_totpSecretGenerated"))))
                     return
 
@@ -531,6 +639,15 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 self.send_json(403, {"error": "Challenge expired or invalid"})
                 return
             settings = state.get("settings", {}).get("challengePage", {})
+            pow_bits = pow_difficulty_bits(settings)
+            if pow_bits > 0:
+                pow_salt = payload.get("powSalt")
+                pow_solution = payload.get("powSolution")
+                if not verify_pow(pow_salt if isinstance(pow_salt, str) else "",
+                                  pow_solution if isinstance(pow_solution, str) else "",
+                                  pow_bits):
+                    self.send_json(403, {"error": "Proof of work failed"})
+                    return
             ttl_minutes = clamp(parse_int(settings.get("tokenTtlMinutes"), 30), 1, 1440)
             max_age = ttl_minutes * 60
             expires = int(time.time()) + max_age
@@ -617,6 +734,55 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
 
         def log_message(self, format, *args):
             return
+
+        def client_remote_address(self) -> str:
+            forwarded = self.headers.get("x-forwarded-for") or ""
+            if forwarded:
+                first = forwarded.split(",")[0].strip()
+                if first:
+                    return first
+            real_ip = self.headers.get("x-real-ip")
+            if real_ip:
+                return real_ip.strip()
+            try:
+                return self.client_address[0]
+            except (IndexError, TypeError):
+                return ""
+
+        def record_audit(
+            self,
+            *,
+            action: str,
+            target: str = "",
+            target_id: str = "",
+            status: int = 200,
+            payload: dict | None = None,
+            extra: dict | None = None,
+            actor: dict | None = None,
+        ) -> None:
+            try:
+                user = actor if actor is not None else self.authenticated_user()
+                entry = {
+                    "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "action": action,
+                    "method": self.command,
+                    "path": self.path,
+                    "target": target,
+                    "targetId": target_id or "",
+                    "status": status,
+                    "remoteAddr": self.client_remote_address(),
+                    "userAgent": (self.headers.get("user-agent") or "")[:256],
+                    "userId": (user or {}).get("id", ""),
+                    "username": (user or {}).get("username", ""),
+                }
+                if payload is not None:
+                    entry["payload"] = _redact_audit_value(payload)
+                if extra:
+                    entry["extra"] = _redact_audit_value(extra)
+                append_audit_log(entry)
+            except Exception:
+                # never let audit break the API path
+                pass
 
     return AdminHandler
 
@@ -807,6 +973,9 @@ def render_challenge_page(state: dict, site: dict, context: dict) -> str:
     text = str(settings.get("textColor") or "#17202a")
     wait_seconds = challenge_wait_seconds(settings)
     nonce = json.dumps(challenge_nonce(context, delay_seconds=wait_seconds))
+    pow_bits = pow_difficulty_bits(settings)
+    pow_salt = json.dumps(make_pow_salt())
+    pow_bits_json = json.dumps(pow_bits)
     wait_ms = wait_seconds * 1000
     logo = f'<img class="logo" src="{logo_url}" alt="{brand}">' if logo_url else f'<div class="brand-mark">{brand[:1] or "F"}</div>'
     support = f'<a href="{support_url}" rel="noreferrer">Contact support</a>' if support_url else ""
@@ -827,9 +996,21 @@ def render_challenge_page(state: dict, site: dict, context: dict) -> str:
         f"<div class=\"status\" id=\"status\">Checking browser integrity... {wait_seconds}s</div>{support}"
         "<noscript><p>JavaScript is required to complete this security check.</p></noscript></main>"
         "<script>(function(){const status=document.getElementById('status');let remaining="
-        f"{wait_seconds};function tick(){{status.textContent=remaining>0?'Checking browser integrity... '+remaining+'s':'Finalizing verification...';}}"
-        "async function verify(){try{status.textContent='Finalizing verification...';const response=await fetch('/.freewaf/challenge/verify',"
-        f"{{method:'POST',credentials:'same-origin',headers:{{'content-type':'application/json'}},body:JSON.stringify({{nonce:{nonce}}})}});"
+        f"{wait_seconds};const powSalt={pow_salt};const powBits={pow_bits_json};const challengeNonce={nonce};"
+        "function tick(){status.textContent=remaining>0?'Checking browser integrity... '+remaining+'s':'Finalizing verification...';}"
+        "function leadingZeroBitsHex(hex){let bits=0;for(let i=0;i<hex.length;i++){const nibble=parseInt(hex[i],16);"
+        "if(nibble===0){bits+=4;continue;}if(nibble<2)bits+=3;else if(nibble<4)bits+=2;else if(nibble<8)bits+=1;return bits;}return bits;}"
+        "async function sha256Hex(text){const buffer=new TextEncoder().encode(text);"
+        "const digest=await crypto.subtle.digest('SHA-256',buffer);return Array.from(new Uint8Array(digest)).map(b=>b.toString(16).padStart(2,'0')).join('');}"
+        "async function solvePow(){if(!powBits)return '0';let counter=0;while(true){const candidate=counter.toString(36);"
+        "const hex=await sha256Hex(powSalt+':'+candidate);if(leadingZeroBitsHex(hex)>=powBits)return candidate;counter+=1;"
+        "if(counter%2048===0){status.textContent='Computing proof of work... '+counter;await new Promise(r=>setTimeout(r,0));}"
+        "if(counter>5000000){throw new Error('PoW timeout');}}}"
+        "async function verify(){try{status.textContent='Computing proof of work...';const solution=await solvePow();"
+        "status.textContent='Finalizing verification...';"
+        "const response=await fetch('/.freewaf/challenge/verify',"
+        "{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},"
+        "body:JSON.stringify({nonce:challengeNonce,powSalt:powSalt,powSolution:solution})});"
         "if(!response.ok)throw new Error('Verification failed');status.textContent='Verification complete. Continuing...';"
         "window.setTimeout(function(){window.location.reload();},350)}catch(error){status.textContent='Unable to verify this browser. Please refresh and try again.'}}"
         "tick();window.setTimeout(function(){verify();},"
@@ -844,6 +1025,34 @@ def challenge_wait_seconds(settings: dict) -> int:
     except (TypeError, ValueError):
         seconds = 5
     return seconds if seconds in {3, 5, 10} else 5
+
+
+def pow_difficulty_bits(settings: dict) -> int:
+    try:
+        bits = int(settings.get("powDifficulty") or 16)
+    except (TypeError, ValueError):
+        bits = 16
+    return clamp(bits, 0, 24)
+
+
+def make_pow_salt() -> str:
+    return secrets.token_urlsafe(16)
+
+
+def verify_pow(salt: str, solution: str, bits: int) -> bool:
+    if bits <= 0:
+        return True
+    if not isinstance(salt, str) or not isinstance(solution, str):
+        return False
+    if not salt or not solution or len(solution) > 32:
+        return False
+    digest = hashlib.sha256(f"{salt}:{solution}".encode("utf-8")).digest()
+    full_bytes, remainder = divmod(bits, 8)
+    if any(byte != 0 for byte in digest[:full_bytes]):
+        return False
+    if remainder and (digest[full_bytes] >> (8 - remainder)) != 0:
+        return False
+    return True
 
 
 def session_max_age_seconds(state: dict) -> int:
@@ -1406,6 +1615,91 @@ def make_demo_handler():
             return
 
     return DemoHandler
+
+
+AUDIT_LOG_FILE = ROOT_DIR / "logs" / "audit.log"
+_AUDIT_LOG_LOCK = threading.Lock()
+_AUDIT_REDACT_KEYS = {
+    "password",
+    "newpassword",
+    "currentpassword",
+    "totpsecret",
+    "totp_secret",
+    "totpcode",
+    "totp_code",
+    "secret",
+    "token",
+    "apikey",
+    "api_key",
+    "key",
+    "privatekey",
+    "private_key",
+    "certificate",
+    "cert",
+    "csr",
+    "p12",
+    "passphrase",
+    "authorization",
+    "cookie",
+}
+
+
+def _redact_audit_value(value, depth: int = 0):
+    if depth > 4:
+        return "<truncated>"
+    if isinstance(value, dict):
+        redacted = {}
+        for key, item in value.items():
+            normalized = str(key).lower().replace("-", "").replace("_", "")
+            if normalized in _AUDIT_REDACT_KEYS:
+                redacted[key] = "***" if item not in (None, "", []) else ""
+            else:
+                redacted[key] = _redact_audit_value(item, depth + 1)
+        return redacted
+    if isinstance(value, list):
+        if len(value) > 50:
+            return [_redact_audit_value(item, depth + 1) for item in value[:50]] + [f"<{len(value) - 50} more>"]
+        return [_redact_audit_value(item, depth + 1) for item in value]
+    if isinstance(value, str) and len(value) > 1024:
+        return value[:1024] + "<truncated>"
+    return value
+
+
+def append_audit_log(entry: dict, log_file: Path | None = None) -> None:
+    target = log_file or AUDIT_LOG_FILE
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(entry, ensure_ascii=True, default=str)
+        with _AUDIT_LOG_LOCK, target.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except OSError as error:
+        # Audit log must never break the API path; surface to stderr instead.
+        try:
+            print(f"audit-log-write-failed: {error}")
+        except OSError:
+            pass
+
+
+def read_audit_log(limit: int = 200, log_file: Path | None = None) -> list[dict]:
+    target = log_file or AUDIT_LOG_FILE
+    if not target.exists():
+        return []
+    capped = clamp(int(limit or 200), 1, 1000)
+    try:
+        with target.open("r", encoding="utf-8") as handle:
+            tail = handle.readlines()[-capped:]
+    except OSError:
+        return []
+    entries: list[dict] = []
+    for raw in reversed(tail):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            entries.append(json.loads(raw))
+        except json.JSONDecodeError:
+            continue
+    return entries
 
 
 def split_resource_path(path: str) -> tuple[str, str]:

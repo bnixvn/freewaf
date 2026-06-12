@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import os
 import csv
+import errno
 import gzip
 import ipaddress
 import json
 import re
 import shlex
+import shutil
 import subprocess
+import tempfile
+import threading
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -156,6 +161,15 @@ def render_domain_config_files(state: dict) -> dict[str, str]:
 
 
 def write_nginx_config(root_dir: Path, state: dict) -> Path:
+    """Atomically write the FreeWAF Nginx config bundle.
+
+    Writes individual site files into a temporary staging directory beside the
+    real ``sites/`` directory and only swaps the directory in once every file is
+    fully on disk. Concurrent calls are serialised through a per-output lock
+    file so two ``apply`` requests can never race a partial swap. The main
+    output file is replaced via ``os.replace`` for atomicity as well.
+    """
+
     output_file = nginx_output_file(root_dir)
     site_config_dir = nginx_site_config_dir(root_dir)
     site_configs = render_domain_config_files(state)
@@ -163,20 +177,159 @@ def write_nginx_config(root_dir: Path, state: dict) -> Path:
     site_config_dir.mkdir(parents=True, exist_ok=True)
     nginx_site_log_dir(root_dir).mkdir(parents=True, exist_ok=True)
 
-    for stale_file in site_config_dir.glob("*.conf"):
-        if stale_file.is_file():
-            stale_file.unlink()
-
-    for filename, content in site_configs.items():
-        (site_config_dir / filename).write_text(content, encoding="utf-8")
-
     blocks = generate_nginx_common_blocks(state)
     if site_configs:
         blocks.append(f"include {nginx_path(str(site_config_dir / '*.conf'))};")
     else:
         blocks.append("# No enabled sites.")
-    output_file.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
+    output_payload = "\n\n".join(blocks) + "\n"
+
+    lock_file = output_file.with_suffix(output_file.suffix + ".lock")
+    with _file_lock(lock_file):
+        # Stage every site config inside a sibling temp dir so the live
+        # ``sites/`` directory keeps serving the previous good state until the
+        # very last moment. ``mkdtemp`` guarantees a unique name.
+        staging_dir = Path(tempfile.mkdtemp(prefix="sites.", dir=str(site_config_dir.parent)))
+        previous_dir = site_config_dir.with_name(site_config_dir.name + ".old")
+        try:
+            for filename, content in site_configs.items():
+                _write_text_atomic(staging_dir / filename, content)
+
+            # Swap directories: current sites/ -> sites.old/, staging -> sites/
+            if previous_dir.exists():
+                shutil.rmtree(previous_dir, ignore_errors=True)
+            if site_config_dir.exists():
+                os.replace(site_config_dir, previous_dir)
+            os.replace(staging_dir, site_config_dir)
+            shutil.rmtree(previous_dir, ignore_errors=True)
+        except Exception:
+            # Roll back: discard staging, restore previous sites if it exists.
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            if previous_dir.exists() and not site_config_dir.exists():
+                try:
+                    os.replace(previous_dir, site_config_dir)
+                except OSError:
+                    pass
+            raise
+
+        _write_text_atomic(output_file, output_payload)
+
     return output_file
+
+
+def _write_text_atomic(target: Path, content: str) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=target.name + ".", suffix=".tmp", dir=str(target.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            try:
+                os.fsync(handle.fileno())
+            except OSError:
+                pass
+        os.replace(tmp_path, target)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+class _file_lock:
+    """Cross-platform best-effort exclusive file lock.
+
+    Uses ``fcntl.flock`` on POSIX and ``msvcrt.locking`` on Windows. Falls back
+    to a sentinel ``.locked`` file if neither is available so callers always
+    serialise even on exotic filesystems. The lock is released regardless of
+    how the with-block exits.
+    """
+
+    def __init__(self, path: Path, timeout: float = 30.0):
+        self.path = Path(path)
+        self.timeout = timeout
+        self._handle = None
+        self._mode = None
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._handle = open(self.path, "a+")
+        deadline = time.monotonic() + self.timeout
+        try:
+            import fcntl  # type: ignore[attr-defined]
+
+            self._mode = "fcntl"
+            while True:
+                try:
+                    fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as error:
+                    if error.errno not in (errno.EAGAIN, errno.EACCES):
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(f"Timed out acquiring lock {self.path}") from error
+                    time.sleep(0.1)
+            return self
+        except ImportError:
+            pass
+
+        try:
+            import msvcrt  # type: ignore[import-not-found]
+
+            self._mode = "msvcrt"
+            while True:
+                try:
+                    msvcrt.locking(self._handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(f"Timed out acquiring lock {self.path}")
+                    time.sleep(0.1)
+            return self
+        except ImportError:
+            pass
+
+        # Fallback: spin on a sentinel file; not perfect but better than nothing.
+        self._mode = "sentinel"
+        sentinel = self.path.with_suffix(self.path.suffix + ".sentinel")
+        while True:
+            try:
+                fd = os.open(str(sentinel), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+                self._sentinel = sentinel
+                return self
+            except FileExistsError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"Timed out acquiring lock {self.path}")
+                time.sleep(0.1)
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if self._mode == "fcntl":
+                import fcntl  # type: ignore[attr-defined]
+
+                fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
+            elif self._mode == "msvcrt":
+                import msvcrt  # type: ignore[import-not-found]
+
+                try:
+                    self._handle.seek(0)
+                    msvcrt.locking(self._handle.fileno(), msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+            elif self._mode == "sentinel":
+                try:
+                    os.unlink(self._sentinel)
+                except OSError:
+                    pass
+        finally:
+            if self._handle is not None:
+                try:
+                    self._handle.close()
+                except OSError:
+                    pass
+        return False
 
 
 def run_nginx_command(command: str | None) -> dict:
@@ -216,56 +369,146 @@ def nginx_cert_dir(root_dir: Path) -> Path:
     return configured if configured.is_absolute() else root_dir / configured
 
 
+_LOG_TAIL_CACHE: dict[str, dict] = {}
+_LOG_TAIL_LOCK = threading.Lock()
+_LOG_TAIL_MAX_ENTRIES = 5000
+_LOG_TAIL_MAX_BYTES = 16 * 1024 * 1024  # 16 MiB cold-read cap on first scan
+
+
+def _log_file_signature(log_file: Path) -> tuple:
+    try:
+        stat = log_file.stat()
+    except OSError:
+        return ()
+    return (getattr(stat, "st_ino", 0), stat.st_size, getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000)))
+
+
+def _convert_raw_log_entry(log_file: Path, raw: dict, sequence: int) -> dict:
+    verdict = str(raw.get("verdict") or "allow")
+    status = parse_int(raw.get("status"))
+    upstream_status = parse_int(raw.get("upstream_status"))
+    if verdict == "allow" and status == 461 and upstream_status is None:
+        verdict = "challenge"
+    if verdict == "allow" and status in {403, 429, 460} and upstream_status is None:
+        verdict = "block"
+    reason = str(raw.get("reason") or ("Blocked by Nginx WAF" if verdict == "block" else "Allowed"))
+    if verdict == "block" and reason == "Allowed":
+        reason = "Blocked by ModSecurity or Nginx edge policy"
+    if verdict == "challenge" and reason == "Allowed":
+        reason = "Browser challenge required"
+    return {
+        "id": f"nginx-{safe_identifier(log_file.name)}-{sequence}",
+        "at": str(raw.get("time") or ""),
+        "siteId": None,
+        "siteName": str(raw.get("host") or "Nginx"),
+        "host": str(raw.get("host") or ""),
+        "method": str(raw.get("method") or ""),
+        "path": str(raw.get("uri") or ""),
+        "ip": str(raw.get("remote_addr") or ""),
+        "verdict": verdict,
+        "statusCode": status,
+        "upstreamStatus": upstream_status,
+        "durationMs": int(float(raw.get("request_time") or 0) * 1000),
+        "reason": reason,
+        "matchedRules": [{"name": reason, "severity": "medium", "action": verdict}] if verdict != "allow" else [],
+        "userAgent": str(raw.get("user_agent") or ""),
+        "referer": str(raw.get("referer") or ""),
+        "requestSize": 0,
+    }
+
+
+def _read_log_tail(log_file: Path, limit: int) -> list[dict]:
+    """Return the most recent ``limit`` parsed entries for a single file using
+    an inode/size aware tail cache so subsequent calls only read newly
+    appended bytes."""
+    key = str(log_file)
+    signature = _log_file_signature(log_file)
+    if not signature:
+        return []
+    inode, size, _mtime = signature
+    cap = max(int(limit) * 2, _LOG_TAIL_MAX_ENTRIES // 2)
+    cap = min(cap, _LOG_TAIL_MAX_ENTRIES)
+
+    with _LOG_TAIL_LOCK:
+        cached = _LOG_TAIL_CACHE.get(key)
+        cached_inode = cached.get("inode") if cached else None
+        cached_size = cached.get("size") if cached else 0
+        cached_seq = cached.get("seq") if cached else 0
+        cached_entries = list(cached.get("entries") or []) if cached else []
+        cached_partial = cached.get("partial") if cached else b""
+
+    rotated = cached is None or cached_inode != inode or size < cached_size
+    start_offset = 0 if rotated else cached_size
+    entries = [] if rotated else cached_entries
+    sequence = 0 if rotated else cached_seq
+    partial = b"" if rotated else cached_partial
+
+    if rotated and size > _LOG_TAIL_MAX_BYTES:
+        # Skip ahead to the last chunk; we only need the tail anyway.
+        start_offset = size - _LOG_TAIL_MAX_BYTES
+
+    if size > start_offset:
+        try:
+            with log_file.open("rb") as handle:
+                if start_offset:
+                    handle.seek(start_offset)
+                buffer = partial + handle.read(size - start_offset)
+        except OSError:
+            buffer = partial
+
+        # Keep an unfinished trailing line for the next call.
+        if not buffer.endswith(b"\n"):
+            newline = buffer.rfind(b"\n")
+            if newline >= 0:
+                partial = buffer[newline + 1 :]
+                buffer = buffer[: newline + 1]
+            else:
+                # Whole buffer is one unterminated line; defer until completion.
+                partial = buffer
+                buffer = b""
+        else:
+            partial = b""
+
+        for raw_line in buffer.splitlines():
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            try:
+                raw = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            sequence += 1
+            entries.append(_convert_raw_log_entry(log_file, raw, sequence))
+
+        # Trim to cap so cache stays bounded.
+        if len(entries) > cap:
+            entries = entries[-cap:]
+
+    with _LOG_TAIL_LOCK:
+        _LOG_TAIL_CACHE[key] = {
+            "inode": inode,
+            "size": size,
+            "seq": sequence,
+            "entries": entries,
+            "partial": partial,
+        }
+
+    if not entries:
+        return []
+    return list(entries[-int(limit):])
+
+
 def parse_nginx_logs(root_dir: Path, limit: int = 500) -> list[dict]:
     log_files = [nginx_access_log_file(root_dir)]
     site_log_dir = nginx_site_log_dir(root_dir)
     if site_log_dir.exists():
         log_files.extend(sorted(site_log_dir.glob("accesslog_*")))
 
-    entries = []
+    entries: list[dict] = []
     for log_file in log_files:
         if not log_file.exists() or not log_file.is_file():
             continue
-        lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
-        for index, line in enumerate(reversed(lines[-limit:])):
-            try:
-                raw = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            verdict = str(raw.get("verdict") or "allow")
-            status = parse_int(raw.get("status"))
-            upstream_status = parse_int(raw.get("upstream_status"))
-            if verdict == "allow" and status == 461 and upstream_status is None:
-                verdict = "challenge"
-            if verdict == "allow" and status in {403, 429, 460} and upstream_status is None:
-                verdict = "block"
-            reason = str(raw.get("reason") or ("Blocked by Nginx WAF" if verdict == "block" else "Allowed"))
-            if verdict == "block" and reason == "Allowed":
-                reason = "Blocked by ModSecurity or Nginx edge policy"
-            if verdict == "challenge" and reason == "Allowed":
-                reason = "Browser challenge required"
-            entries.append(
-                {
-                    "id": f"nginx-{safe_identifier(log_file.name)}-{len(lines) - index}",
-                    "at": str(raw.get("time") or ""),
-                    "siteId": None,
-                    "siteName": str(raw.get("host") or "Nginx"),
-                    "host": str(raw.get("host") or ""),
-                    "method": str(raw.get("method") or ""),
-                    "path": str(raw.get("uri") or ""),
-                    "ip": str(raw.get("remote_addr") or ""),
-                    "verdict": verdict,
-                    "statusCode": status,
-                    "upstreamStatus": upstream_status,
-                    "durationMs": int(float(raw.get("request_time") or 0) * 1000),
-                    "reason": reason,
-                    "matchedRules": [{"name": reason, "severity": "medium", "action": verdict}] if verdict != "allow" else [],
-                    "userAgent": str(raw.get("user_agent") or ""),
-                    "referer": str(raw.get("referer") or ""),
-                    "requestSize": 0,
-                }
-            )
+        entries.extend(_read_log_tail(log_file, limit))
 
     return sorted(entries, key=lambda entry: entry.get("at") or "", reverse=True)[:limit]
 
@@ -278,6 +521,8 @@ def clear_nginx_logs(root_dir: Path) -> None:
     for log_file in log_files:
         if log_file.exists() and log_file.is_file():
             log_file.write_text("", encoding="utf-8")
+    with _LOG_TAIL_LOCK:
+        _LOG_TAIL_CACHE.clear()
 
 
 def render_access_maps(state: dict, access_rules: list[dict]) -> list[str]:
