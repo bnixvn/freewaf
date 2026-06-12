@@ -574,7 +574,8 @@ h2 {
 .sfl-geo-content {
   display: grid;
   grid-template-columns: minmax(320px, 1fr) 294px;
-  align-items: stretch;
+  align-content: start;
+  align-items: start;
   flex: 1;
   gap: 28px;
   min-height: 0;
@@ -583,19 +584,17 @@ h2 {
 .sfl-world-map-wrap {
   position: relative;
   display: grid;
-  height: 100%;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  place-items: center;
+  place-items: start center;
   background: #fff;
 }
 
 .sfl-world-map {
   display: block;
-  width: min(100%, 900px);
+  width: min(90%, 900px);
   height: auto;
-  max-height: 100%;
 }
 
 .sfl-map-country {
@@ -641,7 +640,7 @@ h2 {
 }
 
 .sfl-rank-list {
-  align-self: center;
+  align-self: start;
   padding: 18px 22px;
   border-radius: 5px;
   background: #f7f9fb;
