@@ -43,9 +43,14 @@ from .store import (
     classify_user_client_browser,
     classify_user_client_os,
     country_for_ip,
+    entry_ip,
+    hll_add,
+    hll_merge,
+    hll_new,
     match_log_site,
     normalize_ip_items,
     resolve_data_file,
+    visitor_identity,
 )
 
 
@@ -56,7 +61,7 @@ LOGIN_THROTTLE_IP_LIMIT = 5
 LOGIN_THROTTLE_USER_LIMIT = 10
 STATS_AGGREGATE_BUCKET_MS = 5 * 60 * 1000
 STATS_AGGREGATE_LOCK = threading.RLock()
-STATS_AGGREGATE_CACHE_VERSION = 2
+STATS_AGGREGATE_CACHE_VERSION = 3
 STATS_AGGREGATE_CACHE = {"files": {}, "countryCache": {}, "loadedCacheName": ""}
 
 
@@ -1265,6 +1270,8 @@ def new_stats_counts() -> dict:
         "blocked": 0,
         "challenged": 0,
         "monitored": 0,
+        "visitorSketch": hll_new(),
+        "uniqueIpSketch": hll_new(),
         "botTypes": {},
         "userClientOs": {},
         "userClientBrowsers": {},
@@ -1294,7 +1301,9 @@ def update_stats_counts(counts: dict, entry: dict, country_cache: dict) -> None:
     increment_named_stats(counts["userClientOs"], os_name, {"name": os_name, "type": "os"}, verdict)
     increment_named_stats(counts["userClientBrowsers"], browser_name, {"name": browser_name, "type": "browser"}, verdict)
 
-    ip = str(entry.get("ip") or entry.get("remote_addr") or "").strip()
+    ip = entry_ip(entry)
+    hll_add(counts["uniqueIpSketch"], ip)
+    hll_add(counts["visitorSketch"], visitor_identity(entry))
     if ip not in country_cache:
         country_cache[ip] = country_for_ip(ip)
     country = country_cache[ip]
@@ -1364,6 +1373,8 @@ def merge_aggregate_counts(target: dict, source: dict) -> None:
     target["blocked"] += int(source.get("blocked") or 0)
     target["challenged"] += int(source.get("challenged") or 0)
     target["monitored"] += int(source.get("monitored") or 0)
+    hll_merge(target["visitorSketch"], source.get("visitorSketch") or [])
+    hll_merge(target["uniqueIpSketch"], source.get("uniqueIpSketch") or [])
     merge_aggregate_named_stats(target["botTypes"], source.get("botTypes") or {})
     merge_aggregate_named_stats(target["userClientOs"], source.get("userClientOs") or {})
     merge_aggregate_named_stats(target["userClientBrowsers"], source.get("userClientBrowsers") or {})

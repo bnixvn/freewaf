@@ -11,6 +11,7 @@ import csv
 import gzip
 import hashlib
 import hmac
+import math
 import secrets
 import struct
 import time
@@ -72,6 +73,11 @@ BOT_TYPE_PATTERNS = [
     ("Generic crawler", r"bot|crawler|spider|externalagent"),
 ]
 BOT_TYPE_REGEXES = [(name, re.compile(pattern, re.IGNORECASE)) for name, pattern in BOT_TYPE_PATTERNS]
+HLL_PRECISION = 8
+HLL_REGISTER_COUNT = 1 << HLL_PRECISION
+HLL_REGISTER_MASK = HLL_REGISTER_COUNT - 1
+HLL_HASH_BITS = 64
+HLL_REMAINING_BITS = HLL_HASH_BITS - HLL_PRECISION
 USER_CLIENT_OS_PATTERNS = [
     ("Windows", r"windows nt|win64|win32"),
     ("Android", r"android"),
@@ -1956,6 +1962,62 @@ def normalize_access_action(value) -> str:
     return action if action in ACCESS_ACTIONS else "deny"
 
 
+def entry_ip(entry: dict) -> str:
+    return str(entry.get("ip") or entry.get("remote_addr") or "").strip()
+
+
+def visitor_identity(entry: dict) -> str:
+    ip = entry_ip(entry)
+    if not ip:
+        return ""
+    user_agent = str(entry.get("userAgent") or entry.get("user_agent") or "").strip()
+    return f"{ip}\0{user_agent}"
+
+
+def hll_new() -> list[int]:
+    return [0] * HLL_REGISTER_COUNT
+
+
+def hll_add(registers: list[int], value: str) -> None:
+    if not value:
+        return
+    digest = hashlib.blake2b(str(value).encode("utf-8"), digest_size=8).digest()
+    hashed = int.from_bytes(digest, "big", signed=False)
+    index = hashed & HLL_REGISTER_MASK
+    remaining = hashed >> HLL_PRECISION
+    rank = HLL_REMAINING_BITS + 1 if remaining == 0 else HLL_REMAINING_BITS - remaining.bit_length() + 1
+    registers[index] = max(int(registers[index] or 0), rank)
+
+
+def hll_merge(target: list[int], source) -> None:
+    if not isinstance(source, list):
+        return
+    for index, value in enumerate(source[:HLL_REGISTER_COUNT]):
+        target[index] = max(int(target[index] or 0), int(value or 0))
+
+
+def hll_count(registers) -> int:
+    if not isinstance(registers, list):
+        return 0
+    normalized = [int(value or 0) for value in registers[:HLL_REGISTER_COUNT]]
+    if len(normalized) < HLL_REGISTER_COUNT:
+        normalized.extend([0] * (HLL_REGISTER_COUNT - len(normalized)))
+    zero_count = normalized.count(0)
+    harmonic = sum(2 ** -value for value in normalized)
+    alpha = 0.7213 / (1 + 1.079 / HLL_REGISTER_COUNT)
+    estimate = alpha * HLL_REGISTER_COUNT * HLL_REGISTER_COUNT / harmonic
+    if estimate <= 2.5 * HLL_REGISTER_COUNT and zero_count:
+        estimate = HLL_REGISTER_COUNT * (math.log(HLL_REGISTER_COUNT / zero_count))
+    return int(round(estimate))
+
+
+def hll_from_values(values) -> list[int]:
+    registers = hll_new()
+    for value in values:
+        hll_add(registers, value)
+    return registers
+
+
 def build_stats(state: dict, site_id: str = "") -> dict:
     source_logs = state.get("logs") or []
     sites = state.get("sites") or []
@@ -1981,6 +2043,8 @@ def build_stats(state: dict, site_id: str = "") -> dict:
     monitored = sum(1 for entry in logs if entry.get("verdict") == "monitor")
     protected = blocked + challenged
     total = len(logs)
+    unique_ips = len({entry_ip(entry) for entry in logs if entry_ip(entry)})
+    visitors = len({visitor_identity(entry) for entry in logs if visitor_identity(entry)})
 
     bot_types = summarize_bot_types(logs)
     user_client_os, user_client_browsers = summarize_user_clients(logs)
@@ -2011,6 +2075,8 @@ def build_stats(state: dict, site_id: str = "") -> dict:
         "protected": protected,
         "monitored": monitored,
         "allowed": max(total - protected - monitored, 0),
+        "visitors": visitors,
+        "uniqueIps": unique_ips,
         "blockRate": round((blocked / total) * 100, 1) if total else 0,
         "protectedRate": round((protected / total) * 100, 1) if total else 0,
         "botTypes": bot_types[:10],
@@ -2093,6 +2159,8 @@ def build_stats_from_summary(state: dict, summary: dict, recent_logs: list[dict]
     monitored = aggregate["monitored"]
     protected = blocked + challenged
     total = aggregate["total"]
+    visitors = hll_count(aggregate["visitorSketch"])
+    unique_ips = hll_count(aggregate["uniqueIpSketch"])
     countries = sorted(aggregate["countries"].values(), key=lambda item: item["count"], reverse=True)
     real_countries = [item for item in countries if is_real_country_code(item["code"])]
     blocked_countries = sorted(
@@ -2133,6 +2201,8 @@ def build_stats_from_summary(state: dict, summary: dict, recent_logs: list[dict]
         "protected": protected,
         "monitored": monitored,
         "allowed": max(total - protected - monitored, 0),
+        "visitors": visitors,
+        "uniqueIps": unique_ips,
         "blockRate": round((blocked / total) * 100, 1) if total else 0,
         "protectedRate": round((protected / total) * 100, 1) if total else 0,
         "botTypes": bot_types[:10],
@@ -2165,6 +2235,8 @@ def empty_stats_counts() -> dict:
         "blocked": 0,
         "challenged": 0,
         "monitored": 0,
+        "visitorSketch": hll_new(),
+        "uniqueIpSketch": hll_new(),
         "botTypes": {},
         "userClientOs": {},
         "userClientBrowsers": {},
@@ -2179,6 +2251,8 @@ def merge_stats_counts(target: dict, source: dict) -> None:
     target["blocked"] += int(source.get("blocked") or 0)
     target["challenged"] += int(source.get("challenged") or 0)
     target["monitored"] += int(source.get("monitored") or 0)
+    hll_merge(target["visitorSketch"], source.get("visitorSketch") or [])
+    hll_merge(target["uniqueIpSketch"], source.get("uniqueIpSketch") or [])
     merge_named_count_maps(target["botTypes"], source.get("botTypes") or {})
     merge_named_count_maps(target["userClientOs"], source.get("userClientOs") or {})
     merge_named_count_maps(target["userClientBrowsers"], source.get("userClientBrowsers") or {})

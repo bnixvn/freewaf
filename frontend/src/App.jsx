@@ -48,6 +48,8 @@ const emptyStats = {
   protected: 0,
   monitored: 0,
   allowed: 0,
+  visitors: 0,
+  uniqueIps: 0,
   blockRate: 0,
   protectedRate: 0,
   botTypes: [],
@@ -1456,9 +1458,7 @@ function DashboardView({ data, dashboardSiteId, setDashboardSiteId, dashboardPer
   const timeline = stats.timeline || [];
   const sites = data?.sites || [];
   const protectedTotal = Number(stats.protected ?? (Number(stats.blocked || 0) + Number(stats.challenged || 0)));
-  const challengedTotal = Number(stats.challenged || 0);
   const blockedTotal = Number(stats.blocked || 0);
-  const allowedTotal = Number(stats.allowed || 0);
   const botTypes = stats.botTypes || [];
   const userClientOs = stats.userClientOs || [];
   const userClientBrowsers = stats.userClientBrowsers || [];
@@ -1477,9 +1477,9 @@ function DashboardView({ data, dashboardSiteId, setDashboardSiteId, dashboardPer
   const selectedSiteLabel = selectedSite?.name || selectedSite?.hostnames?.[0] || 'All applications';
   const kpiItems = [
     { label: 'Requests', value: formatCompact(stats.total), note: 'Analyzed request events', icon: <Activity size={14} /> },
+    { label: 'Visitors(UV)', value: formatCompact(stats.visitors), note: 'Unique IP and user-agent pairs', icon: <UserPlus size={14} /> },
+    { label: 'Unique IP', value: formatCompact(stats.uniqueIps), note: 'Distinct source IPs', icon: <Network size={14} /> },
     { label: 'Protected', value: formatCompact(protectedTotal), note: `${stats.protectedRate ?? 0}% challenge or block`, icon: <ShieldCheck size={14} /> },
-    { label: 'Challenges', value: formatCompact(challengedTotal), note: `${formatCompact(blockedTotal)} hard blocks`, icon: <ShieldAlert size={14} /> },
-    { label: 'Allowed', value: formatCompact(allowedTotal), note: 'Passed to origin', icon: <Server size={14} /> },
     { label: 'Blocked Requests', value: formatCompact(blockedTotal), note: `${stats.blockRate ?? 0}% hard block rate`, icon: <ShieldAlert size={14} /> },
     { label: 'Bot Types', value: formatCompact(stats.botTypeCount), note: `${formatCompact(stats.botRequestTotal)} bot-like requests`, icon: <Network size={14} /> },
     { label: 'Countries', value: formatCompact(stats.countryCount), note: `${formatCompact(stats.protectedCountryCount)} protected`, icon: <Globe2 size={14} /> },

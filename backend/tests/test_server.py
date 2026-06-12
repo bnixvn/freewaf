@@ -35,6 +35,7 @@ from freewaf.store import (
     build_stats_from_summary,
     classify_user_client_browser,
     classify_user_client_os,
+    hll_from_values,
 )
 
 
@@ -143,13 +144,15 @@ class CertificateServerTests(unittest.TestCase):
         self.assertEqual(updated_stats["total"], total + 3)
 
     def test_dashboard_summary_filters_site_and_user_clients(self):
-        def counts(total, blocked, os_name, browser_name):
+        def counts(total, blocked, os_name, browser_name, ips, visitors):
             protected = blocked
             return {
                 "total": total,
                 "blocked": blocked,
                 "challenged": 0,
                 "monitored": 0,
+                "visitorSketch": hll_from_values(visitors),
+                "uniqueIpSketch": hll_from_values(ips),
                 "botTypes": {},
                 "userClientOs": {
                     os_name: {"name": os_name, "type": "os", "count": total, "blocked": blocked, "challenged": 0, "protected": protected}
@@ -171,8 +174,15 @@ class CertificateServerTests(unittest.TestCase):
         summary = {
             "retentionDays": 7,
             "hosts": {
-                "a.example.test": counts(5, 2, "Windows", "Chrome"),
-                "b.example.test": counts(9, 0, "Android", "Chrome"),
+                "a.example.test": counts(
+                    5,
+                    2,
+                    "Windows",
+                    "Chrome",
+                    ["203.0.113.1", "203.0.113.2"],
+                    ["203.0.113.1\0Chrome", "203.0.113.1\0Firefox", "203.0.113.2\0Chrome"],
+                ),
+                "b.example.test": counts(9, 0, "Android", "Chrome", ["203.0.113.3"], ["203.0.113.3\0Chrome"]),
             },
         }
         now = datetime.now(timezone.utc).isoformat()
@@ -187,6 +197,8 @@ class CertificateServerTests(unittest.TestCase):
         self.assertEqual(stats["blocked"], 2)
         self.assertEqual(stats["siteStats"][0]["requests"], 5)
         self.assertEqual(stats["siteStats"][1]["requests"], 0)
+        self.assertEqual(stats["uniqueIps"], 2)
+        self.assertEqual(stats["visitors"], 3)
         self.assertEqual(stats["userClientOs"][0]["name"], "Windows")
         self.assertEqual(stats["userClientBrowsers"][0]["name"], "Chrome")
         self.assertEqual(stats["statusGroups"], [{"name": "2xx", "count": 3}, {"name": "4xx", "count": 2}])
@@ -245,6 +257,8 @@ class CertificateServerTests(unittest.TestCase):
 
         self.assertEqual(stats["retentionDays"], 1)
         self.assertEqual(stats["total"], 1)
+        self.assertEqual(stats["uniqueIps"], 1)
+        self.assertEqual(stats["visitors"], 1)
         self.assertEqual(stats["userClientOs"][0]["name"], "Windows")
         self.assertEqual(stats["userClientBrowsers"][0]["name"], "Chrome")
 
