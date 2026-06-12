@@ -312,7 +312,7 @@ EOF
 write_logrotate() {
   log "Writing ${LOGROTATE_FILE}"
   cat > "$LOGROTATE_FILE" <<EOF
-${APP_DIR}/logs/freewaf_access.log ${APP_DIR}/logs/freewaf/*.log {
+${APP_DIR}/logs/freewaf_access.log ${APP_DIR}/logs/freewaf/accesslog_* ${APP_DIR}/logs/freewaf/errorlog_* {
     daily
     rotate 7
     missingok
