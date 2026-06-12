@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 import csv
 import errno
@@ -554,7 +555,7 @@ def nginx_log_files(root_dir: Path) -> list[Path]:
     return log_files
 
 
-def scan_nginx_log_entries(root_dir: Path, cache_name: str, on_entry, on_reset=None) -> None:
+def scan_nginx_log_entries(root_dir: Path, cache_name: str, on_entry, on_reset=None) -> dict:
     """Incrementally scan every FreeWAF access log and call ``on_entry``.
 
     This is separate from the UI tail cache: dashboard counters need a
@@ -627,6 +628,30 @@ def scan_nginx_log_entries(root_dir: Path, cache_name: str, on_entry, on_reset=N
                 continue
 
             cache[key] = {"inode": inode, "size": size, "seq": sequence, "partial": partial}
+
+        return {
+            key: {
+                "inode": value.get("inode"),
+                "size": value.get("size"),
+                "seq": value.get("seq"),
+                "partial": base64.b64encode(value.get("partial") or b"").decode("ascii"),
+            }
+            for key, value in cache.items()
+        }
+
+
+def seed_nginx_log_scan_cache(cache_name: str, state: dict) -> None:
+    with _LOG_INCREMENTAL_SCAN_LOCK:
+        _LOG_INCREMENTAL_SCAN_CACHE[cache_name] = {
+            key: {
+                "inode": value.get("inode"),
+                "size": int(value.get("size") or 0),
+                "seq": int(value.get("seq") or 0),
+                "partial": base64.b64decode(value.get("partial") or ""),
+            }
+            for key, value in (state or {}).items()
+            if isinstance(value, dict)
+        }
 
 
 def clear_nginx_logs(root_dir: Path) -> None:

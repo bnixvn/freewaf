@@ -29,6 +29,7 @@ from .nginx import (
     parse_nginx_logs,
     run_nginx_command,
     scan_nginx_log_entries,
+    seed_nginx_log_scan_cache,
     site_ports,
     write_nginx_config,
 )
@@ -53,7 +54,8 @@ LOGIN_THROTTLE_IP_LIMIT = 5
 LOGIN_THROTTLE_USER_LIMIT = 10
 STATS_AGGREGATE_BUCKET_MS = 5 * 60 * 1000
 STATS_AGGREGATE_LOCK = threading.RLock()
-STATS_AGGREGATE_CACHE = {"files": {}, "countryCache": {}}
+STATS_AGGREGATE_CACHE_VERSION = 1
+STATS_AGGREGATE_CACHE = {"files": {}, "countryCache": {}, "loadedCacheName": ""}
 
 
 def main() -> None:
@@ -1143,6 +1145,7 @@ def nginx_stats_summary() -> dict:
     cache_name = f"stats:{retention_days}"
 
     with STATS_AGGREGATE_LOCK:
+        load_stats_aggregate_cache(cache_name, retention_days)
         STATS_AGGREGATE_CACHE["retentionDays"] = retention_days
 
         def on_reset(path: str) -> None:
@@ -1151,15 +1154,91 @@ def nginx_stats_summary() -> dict:
         def on_entry(path: str, entry: dict) -> None:
             aggregate_stats_entry(STATS_AGGREGATE_CACHE, path, entry, retention_start_ms)
 
-        scan_nginx_log_entries(ROOT_DIR, cache_name, on_entry, on_reset)
+        scanner_state = scan_nginx_log_entries(ROOT_DIR, cache_name, on_entry, on_reset)
+        STATS_AGGREGATE_CACHE["scannerState"] = scanner_state
         prune_stats_aggregate(STATS_AGGREGATE_CACHE, retention_start_ms)
-        return collapse_stats_aggregate(STATS_AGGREGATE_CACHE, retention_start_ms)
+        summary = collapse_stats_aggregate(STATS_AGGREGATE_CACHE, retention_start_ms)
+        save_stats_aggregate_cache(cache_name, retention_days, scanner_state)
+        return summary
 
 
 def clear_stats_aggregate_cache() -> None:
     with STATS_AGGREGATE_LOCK:
         STATS_AGGREGATE_CACHE["files"] = {}
         STATS_AGGREGATE_CACHE["countryCache"] = {}
+        STATS_AGGREGATE_CACHE["scannerState"] = {}
+        STATS_AGGREGATE_CACHE["loadedCacheName"] = ""
+    try:
+        stats_cache_file().unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def load_stats_aggregate_cache(cache_name: str, retention_days: int) -> None:
+    if STATS_AGGREGATE_CACHE.get("loadedCacheName") == cache_name:
+        return
+    STATS_AGGREGATE_CACHE["files"] = {}
+    STATS_AGGREGATE_CACHE["countryCache"] = {}
+    STATS_AGGREGATE_CACHE["scannerState"] = {}
+    STATS_AGGREGATE_CACHE["loadedCacheName"] = cache_name
+    path = stats_cache_file()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if payload.get("version") != STATS_AGGREGATE_CACHE_VERSION:
+        return
+    if int(payload.get("retentionDays") or 0) != retention_days:
+        return
+
+    files = {}
+    for file_path, file_summary in (payload.get("files") or {}).items():
+        buckets = {}
+        for raw_at, bucket in (file_summary.get("buckets") or {}).items():
+            try:
+                bucket_at = int(raw_at)
+            except (TypeError, ValueError):
+                continue
+            buckets[bucket_at] = bucket
+        files[file_path] = {"buckets": buckets}
+    scanner_state = payload.get("scannerState") if isinstance(payload.get("scannerState"), dict) else {}
+    STATS_AGGREGATE_CACHE["files"] = files
+    STATS_AGGREGATE_CACHE["scannerState"] = scanner_state
+    seed_nginx_log_scan_cache(cache_name, scanner_state)
+
+
+def save_stats_aggregate_cache(cache_name: str, retention_days: int, scanner_state: dict) -> None:
+    path = stats_cache_file()
+    files = {}
+    for file_path, file_summary in (STATS_AGGREGATE_CACHE.get("files") or {}).items():
+        files[file_path] = {
+            "buckets": {
+                str(bucket_at): bucket
+                for bucket_at, bucket in (file_summary.get("buckets") or {}).items()
+            }
+        }
+    payload = {
+        "version": STATS_AGGREGATE_CACHE_VERSION,
+        "cacheName": cache_name,
+        "retentionDays": retention_days,
+        "savedAt": utc_now(),
+        "files": files,
+        "scannerState": scanner_state,
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=True, separators=(",", ":")), encoding="utf-8")
+        os.replace(temporary, path)
+    except OSError:
+        pass
+
+
+def stats_cache_file() -> Path:
+    configured = Path(os.environ.get("STATS_CACHE_FILE", "./data/stats-cache.json"))
+    return configured if configured.is_absolute() else ROOT_DIR / configured
 
 
 def aggregate_stats_entry(cache: dict, path: str, entry: dict, retention_start_ms: int) -> None:
@@ -1435,9 +1514,9 @@ def start_stats_warmup_worker(store: Store) -> None:
         try:
             stats = combined_stats(store, store.get_state())
             elapsed = time.time() - started
-            print(f"stats-warmup-complete total={stats.get('total', 0)} elapsed={elapsed:.3f}s")
+            print(f"stats-warmup-complete total={stats.get('total', 0)} elapsed={elapsed:.3f}s", flush=True)
         except Exception as error:
-            print(f"stats-warmup-failed: {error}")
+            print(f"stats-warmup-failed: {error}", flush=True)
 
     thread = threading.Thread(target=worker, daemon=True, name="stats-warmup")
     thread.start()
