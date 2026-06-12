@@ -1,4 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import worldMap from '@svg-maps/world';
 import {
   Activity,
   BarChart3,
@@ -1523,7 +1524,7 @@ function DashboardView({ data, dashboardSiteId, setDashboardSiteId, dashboardPer
               <h2>Geo Location</h2>
             </div>
             <div className="sfl-geo-content">
-              <GeoGlobe countries={countries} />
+              <GeoMap countries={countries} />
               <SafeLineRankList
                 rows={countries}
                 maxValue={Math.max(1, ...countries.map((item) => Number(item.count || 0)))}
@@ -1636,24 +1637,30 @@ function DashboardKpiGroup({ items, wide = false }) {
   );
 }
 
-function GeoGlobe({ countries = [] }) {
-  const primary = countries[0] ? countryDisplayName(countries[0]) : 'No traffic';
-  const secondary = countries[1] ? countryDisplayName(countries[1]) : 'Waiting for data';
+function GeoMap({ countries = [] }) {
+  const countryMap = new Map(countries.map((country) => [String(country.code || '').toLowerCase(), country]));
+  const maxValue = Math.max(1, ...countries.map((country) => Number(country.count || 0)));
   return (
-    <div className="sfl-globe-wrap" aria-label="Traffic geography">
-      <div className="sfl-globe">
-        <span className="sfl-globe-land land-a" />
-        <span className="sfl-globe-land land-b" />
-        <span className="sfl-globe-land land-c" />
-        <span className="sfl-globe-path path-a" />
-        <span className="sfl-globe-path path-b" />
-        <span className="sfl-globe-point point-a" />
-        <span className="sfl-globe-point point-b" />
-        <span className="sfl-globe-point point-c" />
-      </div>
-      <div className="sfl-globe-caption">
-        <strong>{primary}</strong>
-        <span>{secondary}</span>
+    <div className="sfl-world-map-wrap" aria-label="Traffic geography">
+      <svg className="sfl-world-map" viewBox={worldMap.viewBox} role="img" aria-label="World traffic map">
+        {worldMap.locations.map((location) => {
+          const country = countryMap.get(String(location.id || '').toLowerCase());
+          const amount = Number(country?.count || 0);
+          const hasData = amount > 0;
+          return (
+            <path
+              className={`sfl-map-country ${hasData ? 'has-data' : ''}`}
+              d={location.path}
+              key={location.id}
+              style={{ '--map-fill': hasData ? mapCountryFill(amount, maxValue) : undefined }}
+            >
+              <title>{hasData ? `${countryDisplayName(country)}: ${formatCompact(amount)} requests` : location.name}</title>
+            </path>
+          );
+        })}
+      </svg>
+      <div className="sfl-map-legend" aria-hidden="true">
+        <span />
       </div>
     </div>
   );
@@ -4917,6 +4924,13 @@ function donutGradient(rows, value) {
     return `${chartColor(index)} ${start.toFixed(1)}deg ${end.toFixed(1)}deg`;
   });
   return `conic-gradient(${stops.join(', ')})`;
+}
+
+function mapCountryFill(value, maxValue) {
+  const max = Math.max(1, Number(maxValue || 1));
+  const ratio = Math.log10(Number(value || 0) + 1) / Math.log10(max + 1);
+  const lightness = Math.round(88 - ratio * 36);
+  return `hsl(179 72% ${lightness}%)`;
 }
 
 function formatQps(value) {
