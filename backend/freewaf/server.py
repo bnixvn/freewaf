@@ -64,6 +64,7 @@ def main() -> None:
     store = Store(resolve_data_file(ROOT_DIR))
     store.init()
     start_ip_group_sync_worker(store)
+    start_stats_warmup_worker(store)
     state = store.get_state()
     panel = state.get("settings", {}).get("panel", {})
     admin_https = bool(panel.get("httpsEnabled"))
@@ -1422,6 +1423,23 @@ def start_ip_group_sync_worker(store: Store) -> None:
             time.sleep(ip_group_sync_check_seconds())
 
     thread = threading.Thread(target=worker, daemon=True, name="ip-group-sync")
+    thread.start()
+
+
+def start_stats_warmup_worker(store: Store) -> None:
+    if os.environ.get("FREEWAF_STATS_WARMUP", "true").lower() == "false":
+        return
+
+    def worker() -> None:
+        started = time.time()
+        try:
+            stats = combined_stats(store, store.get_state())
+            elapsed = time.time() - started
+            print(f"stats-warmup-complete total={stats.get('total', 0)} elapsed={elapsed:.3f}s")
+        except Exception as error:
+            print(f"stats-warmup-failed: {error}")
+
+    thread = threading.Thread(target=worker, daemon=True, name="stats-warmup")
     thread.start()
 
 
