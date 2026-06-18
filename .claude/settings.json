@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /d/2026/safeline grep -n \"httpFlood\" backend/freewaf/nginx.py)",
+      "Bash(git -C /d/2026/safeline grep -n \"geoBlock\\\\|botProtection\" backend/freewaf/nginx.py)"
+    ]
+  }
+}

@@ -33,6 +33,7 @@ from freewaf.server import (
 from freewaf.store import (
     Store,
     build_stats_from_summary,
+    classify_bot_type,
     classify_user_client_browser,
     classify_user_client_os,
     hll_from_values,
@@ -270,6 +271,24 @@ class CertificateServerTests(unittest.TestCase):
         self.assertEqual(classify_user_client_browser(edge), "Microsoft Edge")
         self.assertEqual(classify_user_client_os(safari), "iOS")
         self.assertEqual(classify_user_client_browser(safari), "Mobile Safari")
+
+    def test_bot_classifier_returns_specific_client_and_crawler_names(self):
+        cases = {
+            "curl/8.5.0": "cURL",
+            "python-requests/2.32.3": "Python Requests",
+            "meta-externalagent/1.1 (+https://developers.facebook.com/docs/sharing/webmasters/crawler)": "Meta External Agent",
+            "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)": "Facebook External Hit",
+            "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; GPTBot/1.2; +https://openai.com/gptbot)": "GPTBot",
+            "ClaudeBot/1.0": "ClaudeBot",
+            "FeedFetcher-Google": "FeedFetcher-Google",
+            "Mozilla/5.0 Baidu spider": "Baidu crawler",
+            "Mozilla/5.0 (compatible; ExampleResearchBot/2.0; +https://example.test/bot)": "ExampleResearchBot",
+        }
+
+        for user_agent, expected in cases.items():
+            with self.subTest(user_agent=user_agent):
+                self.assertEqual(classify_bot_type(user_agent), expected)
+                self.assertEqual(classify_user_client_browser(user_agent), expected)
 
     def test_pasted_cert_payload_is_written_to_nginx_cert_dir(self):
         with tempfile.TemporaryDirectory() as temp_dir:

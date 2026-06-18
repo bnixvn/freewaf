@@ -60,19 +60,196 @@ ACCESS_CONDITION_OPERATORS = {
     "not_in_ip_group",
 }
 BOT_TYPE_PATTERNS = [
-    ("Scanner", r"sqlmap|nikto|acunetix|nessus|nuclei|wpscan|masscan|nmap|zgrab|gobuster|dirbuster|ffuf|jaeles|openvas"),
-    ("Meta/Facebook crawler", r"meta-externalagent|facebookexternalhit|facebot"),
-    ("Googlebot", r"googlebot|adsbot-google|mediapartners-google"),
-    ("Bingbot", r"bingbot|msnbot"),
-    ("SemrushBot", r"semrushbot"),
-    ("AhrefsBot", r"ahrefsbot"),
-    ("YandexBot", r"yandexbot"),
-    ("Baiduspider", r"baiduspider"),
-    ("Headless browser", r"headlesschrome|phantomjs|selenium|playwright|puppeteer"),
-    ("HTTP client", r"curl|wget|python-requests|python-urllib|aiohttp|httpx|go-http-client|java/|okhttp|apache-httpclient|node-fetch|axios|libwww-perl|perl|ruby"),
-    ("Generic crawler", r"bot|crawler|spider|externalagent"),
+    # --- Attack / Scanner tools ---
+    ("SQLMap", r"\bsqlmap(?:/|\b)"),
+    ("Nikto", r"\bnikto(?:/|\b)"),
+    ("Acunetix", r"\bacunetix(?:/|\b)"),
+    ("Nessus", r"\bnessus(?:/|\b)"),
+    ("Nuclei", r"\bnuclei(?:/|\b)"),
+    ("WPScan", r"\bwpscan(?:/|\b)"),
+    ("Masscan", r"\bmasscan(?:/|\b)"),
+    ("Nmap", r"\bnmap(?:/|\b)"),
+    ("ZGrab", r"\bzgrab(?:/|\b)"),
+    ("ScanBot", r"\bscanbot(?:/|\b)"),
+    ("BetaBot", r"\bbetabot(?:/|\b)"),
+    ("Gobuster", r"\bgobuster(?:/|\b)"),
+    ("DirBuster", r"\bdirbuster(?:/|\b)"),
+    ("Dirsearch", r"\bdirsearch(?:/|\b)"),
+    ("FFUF", r"\bffuf(?:/|\b)"),
+    ("Feroxbuster", r"\bferoxbuster(?:/|\b)"),
+    ("Jaeles", r"\bjaeles(?:/|\b)"),
+    ("OpenVAS", r"\bopenvas(?:/|\b)"),
+    ("Burp Suite", r"\bburpsuite(?:/|\b)"),
+    ("Hydra", r"\bhydra(?:/|\b)"),
+    # --- Social / Platform bots ---
+    ("Meta External Agent", r"\bmeta-externalagent(?:/|\b)"),
+    ("Meta External Fetcher", r"\bmeta-externalfetcher(?:/|\b)"),
+    ("Facebook External Hit", r"\bfacebookexternalhit(?:/|\b)"),
+    ("Facebot", r"\bfacebot(?:/|\b)"),
+    ("Twitterbot", r"\btwitterbot(?:/|\b)"),
+    ("LinkedInBot", r"\blinkedinbot(?:/|\b)"),
+    ("Pinterestbot", r"\bpinterestbot(?:/|\b)"),
+    ("Discordbot", r"\bdiscordbot(?:/|\b)"),
+    ("Slackbot", r"\bslackbot(?:-linkexpanding)?(?:/|\b)"),
+    ("TelegramBot", r"\btelegrambot(?:/|\b)"),
+    ("WhatsApp", r"\bwhatsapp(?:/|\b)"),
+    ("TikTokBot", r"\btiktok(?:bot|crawler|spider)(?:/|\b)|\bbytedance(?:bot|crawler|spider)(?:/|\b)"),
+    ("LINE Bot", r"\bline(?:bot|crawler)(?:/|\b)"),
+    ("WeChat", r"\bwechat(?:bot|crawler|spider)?(?:/|\b)|\bmicromessenger(?:/|\b)"),
+    ("VK Robot", r"\bvkshare(?:/|\b)|\bvkrobot(?:/|\b)"),
+    ("Snapchat", r"\bsnapchat(?:bot)?(?:/|\b)|\bsnap url preview service(?:/|\b)"),
+    ("Redditbot", r"\bredditbot(?:/|\b)"),
+    ("Mastodon", r"\bmastodon(?:bot)?(?:/|\b)"),
+    # --- Google bots ---
+    ("Googlebot", r"\bgooglebot(?:/(?:image|video|news))?(?:/|\b)"),
+    ("Google Inspection Tool", r"\bgoogle-inspectiontool(?:/|\b)"),
+    ("GoogleOther", r"\bgoogleother(?:-image|-video)?(?:/|\b)"),
+    ("Storebot-Google", r"\bstorebot-google(?:/|\b)"),
+    ("Google CloudVertexBot", r"\bgoogle-cloudvertexbot(?:/|\b)"),
+    ("AdsBot-Google", r"\badsbot-google(?:/|\b)"),
+    ("Mediapartners-Google", r"\bmediapartners-google(?:/|\b)"),
+    ("FeedFetcher-Google", r"\bfeedfetcher-google(?:/|\b)"),
+    ("Google-Safety", r"\bgoogle-safety(?:/|\b)"),
+    # --- Search engine bots ---
+    ("Bingbot", r"\bbingbot(?:/|\b)|\bmsnbot(?:/|\b)"),
+    ("DuckDuckBot", r"\bduckduckbot(?:/|\b)"),
+    ("Yahoo Slurp", r"\b(?:yahoo!\s+)?slurp(?:/|\b)"),
+    ("Baiduspider", r"\bbaiduspider(?:/|\b)"),
+    ("Baidu crawler", r"\bbaidu(?:\s+\w+)?\s+spider(?:/|\b)|\bbaidu(?:/|\b)"),
+    ("Sogou Spider", r"\bsogou(?:\s+\w+)?\s+spider(?:/|\b)"),
+    ("YandexBot", r"\byandexbot(?:/|\b)|\byandex(?:/[\d.]+)?\s+(?:bot|crawler)(?:/|\b)"),
+    ("SeznamBot", r"\bseznambot(?:/|\b)"),
+    ("Qwantify", r"\bqwantify(?:/|\b)"),
+    ("NaverBot", r"\bnaver(?:bot|crawler|searchadvisor)(?:/|\b)|\byeti(?:/|\b)"),
+    ("Daum", r"\bdaum(?:oa)?(?:/|\b)"),
+    ("MojeekBot", r"\bmojeekbot(?:/|\b)"),
+    ("Ecosia", r"\becosia(?:bot)?(?:/|\b)"),
+    ("Bravebot", r"\bbravebot(?:/|\b)"),
+    # --- AI / LLM crawlers ---
+    ("GPTBot", r"\bgptbot(?:/|\b)"),
+    ("ChatGPT-User", r"\bchatgpt-user(?:/|\b)"),
+    ("OAI-SearchBot", r"\boai-searchbot(?:/|\b)"),
+    ("ClaudeBot", r"\bclaudebot(?:/|\b)"),
+    ("Claude-SearchBot", r"\bclaude-searchbot(?:/|\b)"),
+    ("Claude-User", r"\bclaude-user(?:/|\b)"),
+    ("Anthropic AI", r"\banthropic-ai(?:/|\b)"),
+    ("PerplexityBot", r"\bperplexitybot(?:/|\b)"),
+    ("Perplexity-User", r"\bperplexity-user(?:/|\b)"),
+    ("Applebot", r"\bapplebot(?:-extended)?(?:/|\b)"),
+    ("Amazonbot", r"\bamazonbot(?:/|\b)"),
+    ("Bytespider", r"\bbytespider(?:/|\b)"),
+    ("CCBot", r"\bccbot(?:/|\b)"),
+    ("Cohere AI", r"\bcohere(?:-ai)?(?:/|\b)"),
+    ("Diffbot", r"\bdiffbot(?:/|\b)"),
+    ("ImagesiftBot", r"\bimagesiftbot(?:/|\b)"),
+    ("Omgili", r"\bomgili(?:bot)?(?:/|\b)"),
+    ("YouBot", r"\byoubot(?:/|\b)"),
+    ("Meta Llama", r"\bmeta-llama(?:-scanner)?(?:/|\b)|\bllamabot(?:/|\b)"),
+    ("MistralBot", r"\bmistral(?:bot)?(?:/|\b)"),
+    # --- SEO / Marketing bots ---
+    ("AhrefsBot", r"\bahrefsbot(?:/|\b)"),
+    ("SemrushBot", r"\bsemrushbot(?:/|\b)|\bsemrush(?:/|\b)"),
+    ("MJ12bot", r"\bmj12bot(?:/|\b)"),
+    ("DotBot", r"\bdotbot(?:/|\b)"),
+    ("PetalBot", r"\bpetalbot(?:/|\b)"),
+    ("DataForSeoBot", r"\bdataforseobot(?:/|\b)"),
+    ("Screaming Frog SEO Spider", r"\bscreaming frog seo spider(?:/|\b)"),
+    ("BLEXBot", r"\bblexbot(?:/|\b)"),
+    ("Linkdex", r"\blinkdex(?:/|\b)"),
+    ("seoscanners.net", r"\bseoscanners\.net(?:/|\b)"),
+    ("MozDotCom", r"\bmoz\.com(?:/|\b)|\brogerbot(?:/|\b)"),
+    ("Serpstat", r"\bserpstat(?:bot)?(?:/|\b)"),
+    ("Majestic", r"\bmj12bot(?:/|\b)|\bmajestic(?:/|\b)"),
+    ("Cốc Cốc", r"\bcoccocbot(?:/|\b)|\bcoccoc(?:/|\b)"),
+    # --- Archival / Research ---
+    ("Internet Archive", r"\bia_archiver(?:/|\b)|\barchive\.org(?:/|\b)|\bwayback(?:/|\b)"),
+    ("Common Crawl", r"\bcommoncrawl(?:/|\b)|\bccbot(?:/|\b)"),
+    # --- Monitoring / Uptime ---
+    ("UptimeRobot", r"\buptimerobot(?:/|\b)"),
+    ("Pingdom", r"\bpingdom(?:/|\b)"),
+    ("Better Uptime", r"\bbetter uptime bot(?:/|\b)|\bbetteruptime(?:/|\b)"),
+    ("StatusCake", r"\bstatuscake(?:/|\b)"),
+    ("Site24x7", r"\bsite24x7(?:/|\b)"),
+    ("New Relic Synthetics", r"\bnewrelicpinger(?:/|\b)|\bnew relic synthetics(?:/|\b)"),
+    ("Datadog", r"\bdatadog(?:/|\b)|\bdd-synthetics(?:/|\b)"),
+    ("Checkly", r"\bcheckly(?:/|\b)"),
+    ("Freshping", r"\bfreshping(?:/|\b)"),
+    ("NodePing", r"\bnodeping(?:/|\b)"),
+    ("Oh Dear", r"\bohdear(?:/|\b)"),
+    ("Cronitor", r"\bcronitor(?:/|\b)"),
+    ("HetrixTools", r"\bhetrix(?:bot|tools)(?:/|\b)"),
+    # --- Automation / Headless ---
+    ("Playwright", r"\bplaywright(?:/|\b)"),
+    ("Puppeteer", r"\bpuppeteer(?:/|\b)"),
+    ("Selenium", r"\bselenium(?:/|\b)"),
+    ("Headless Chrome", r"\bheadlesschrome(?:/|\b)"),
+    ("PhantomJS", r"\bphantomjs(?:/|\b)"),
+    ("Cypress", r"\bcypress(?:/|\b)"),
+    ("Nightwatch", r"\bnightwatch(?:js)?(?:/|\b)"),
+    ("WebDriver", r"\bwebdriver(?:/|\b)"),
+    # --- HTTP Libraries / Tools ---
+    ("Postman Runtime", r"\bpostmanruntime(?:/|\b)"),
+    ("Insomnia", r"\binsomnia(?:/|\b)"),
+    ("cURL", r"(?:^|[\s;(])(?:curl|libcurl)(?:/|\b)"),
+    ("Wget", r"(?:^|[\s;(])wget(?:/|\b)"),
+    ("Python Requests", r"\bpython-requests(?:/|\b)"),
+    ("Python urllib", r"\bpython-urllib(?:/|\b)"),
+    ("Python aiohttp", r"\bpython(?:/[\d.]+)?\s+aiohttp(?:/|\b)|\baiohttp(?:/|\b)"),
+    ("Python HTTPX", r"\bpython-httpx(?:/|\b)"),
+    ("Go HTTP Client", r"\bgo-http-client(?:/|\b)"),
+    ("OkHttp", r"\bokhttp(?:/|\b)"),
+    ("Apache HttpClient", r"\bapache-httpclient(?:/|\b)"),
+    ("node-fetch", r"\bnode-fetch(?:/|\b)"),
+    ("Axios", r"\baxios(?:/|\b)"),
+    ("libwww-perl", r"\blibwww-perl(?:/|\b)"),
+    ("RestSharp", r"\brestsharp(?:/|\b)"),
+    ("Dart HTTP", r"\bdart(?:/[\d.]+)?(?:\s+http)?(?:/|\b)|\bpackage:http(?:/|\b)"),
+    ("Ktor", r"\bktor(?:/|\b)"),
+    ("Guzzle", r"\bguzzlehttp(?:/|\b)"),
+    # --- Feed readers ---
+    ("Feedfinder", r"\bfeedfinder(?:/|\b)"),
+    ("RSSingBot", r"\brssingbot(?:/|\b)"),
+    ("Feedly", r"\bfeedly(?:bot|fetcher)?(?:/|\b)"),
+    ("NewsBlur", r"\bnewsblur(?:/|\b)"),
+    ("Feedbin", r"\bfeedbin(?:/|\b)"),
+    ("Inoreader", r"\binoreader(?:/|\b)"),
+    ("Netvibes", r"\bnetvibes(?:/|\b)"),
+    # --- Miscellaneous bots ---
+    ("Heritrix", r"\bheritrix(?:/|\b)"),
+    ("Nutch", r"\bnutch(?:/|\b)"),
+    ("Larbin", r"\blarbin(?:/|\b)"),
+    ("Exabot", r"\bexabot(?:/|\b)"),
+    ("MicrosoftPreview", r"\bmicrosoftpreview(?:/|\b)"),
+    ("AdIdxBot", r"\badidxbot(?:/|\b)"),
+    ("TinEye", r"\btineye(?:/|\b)"),
+    ("TwengaBot", r"\btwengabot(?:/|\b)"),
+    ("LTX71", r"\bltx71(?:/|\b)"),
+    ("Moreover", r"\bmoreover(?:/|\b)"),
+    ("Sitebot", r"\bsitebot(?:/|\b)"),
+    ("Indy Library", r"\bindy library(?:/|\b)"),
+    ("WebCapture", r"\bwebcapture(?:/|\b)"),
+    ("TurnitinBot", r"\bturnitinbot(?:/|\b)"),
+    ("PaperLiBot", r"\bpaperlibot(?:/|\b)"),
+    ("DomainTools", r"\bdomaintools(?:/|\b)"),
+    ("Meltwater", r"\bmeltwater(?:news)?(?:/|\b)"),
+    ("Brandwatch", r"\bbrandwatch(?:/|\b)"),
+    ("Censys", r"\bcensys(?:inspect)?(?:/|\b)"),
+    ("Shodan", r"\bshodan(?:/|\b)"),
+    ("ZoomInfo", r"\bzoominfo(?:bot)?(?:/|\b)"),
+    ("BuiltWith", r"\bbuiltwith(?:/|\b)"),
+    ("Wappalyzer", r"\bwappalyzer(?:/|\b)"),
+    ("Netcraft", r"\bnetcraft(?:/|\b)"),
+    ("Grapeshot", r"\bgrapeshot(?:/|\b)"),
+    ("profound.net", r"\bprofound\.net(?:/|\b)"),
+    ("PiplBot", r"\bpiplbot(?:/|\b)"),
+    ("LinkWalker", r"\blinkwalker(?:/|\b)"),
+    ("BLEXBot", r"\bblexbot(?:/|\b)"),
 ]
 BOT_TYPE_REGEXES = [(name, re.compile(pattern, re.IGNORECASE)) for name, pattern in BOT_TYPE_PATTERNS]
+GENERIC_BOT_TOKEN_REGEX = re.compile(
+    r"(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9._-]{1,47}?(?:bot|crawler|spider|scraper|fetcher|extractor|scanner|probe|verifier|validator|checker|monitor|externalagent))(?=[/\s;,)]+|$)",
+    re.IGNORECASE,
+)
 HLL_PRECISION = 8
 HLL_REGISTER_COUNT = 1 << HLL_PRECISION
 HLL_REGISTER_MASK = HLL_REGISTER_COUNT - 1
@@ -80,25 +257,27 @@ HLL_HASH_BITS = 64
 HLL_REMAINING_BITS = HLL_HASH_BITS - HLL_PRECISION
 USER_CLIENT_OS_PATTERNS = [
     ("Windows", r"windows nt|win64|win32"),
+    ("ChromeOS", r"cros\b"),
     ("Android", r"android"),
-    ("iOS", r"iphone|ipad|ipod"),
+    ("iOS", r"iphone|ipad|ipod|ipados"),
     ("macOS", r"mac os x|macintosh"),
-    ("Linux", r"linux|x11"),
+    ("Linux", r"linux|x11(?!.*cros)"),
     ("BSD", r"freebsd|openbsd|netbsd"),
 ]
 USER_CLIENT_OS_REGEXES = [(name, re.compile(pattern, re.IGNORECASE)) for name, pattern in USER_CLIENT_OS_PATTERNS]
 USER_CLIENT_BROWSER_PATTERNS = [
     ("Microsoft Edge", r"\b(?:edg|edge|edga|edgios)/"),
+    ("Brave", r"\bbrave(?:-browser)?/"),
     ("Opera", r"\b(?:opr|opera)/"),
     ("Samsung Internet", r"samsungbrowser/"),
+    ("Vivaldi", r"\bvivaldi/"),
+    ("Arc", r"\barc(?:-browser)?/"),
+    ("Yandex Browser", r"\byabrowser/"),
+    ("QQ Browser", r"\bqqbrowser/"),
+    ("UC Browser", r"\b(?:ucbrowser|ucweb)/"),
+    ("DuckDuckGo", r"\bduckduckgo/"),
     ("Chrome", r"\b(?:chrome|crios|chromium)/"),
     ("Firefox", r"\b(?:firefox|fxios)/"),
-    ("Googlebot", r"googlebot|adsbot-google|mediapartners-google"),
-    ("Bingbot", r"bingbot|msnbot"),
-    ("YandexBot", r"yandexbot"),
-    ("Baiduspider", r"baiduspider"),
-    ("HTTP Client", r"curl|wget|python-requests|python-urllib|aiohttp|httpx|go-http-client|java/|okhttp|apache-httpclient|node-fetch|axios|libwww-perl|perl|ruby"),
-    ("Crawler", r"bot|crawler|spider|externalagent"),
 ]
 USER_CLIENT_BROWSER_REGEXES = [(name, re.compile(pattern, re.IGNORECASE)) for name, pattern in USER_CLIENT_BROWSER_PATTERNS]
 GEOIP_READER_LOCK = threading.Lock()
@@ -2411,6 +2590,9 @@ def classify_user_client_browser(user_agent: str) -> str:
     agent = str(user_agent or "")
     if not agent:
         return "Unknown Client"
+    automated_client = classify_bot_type(agent)
+    if automated_client:
+        return automated_client
     for name, pattern in USER_CLIENT_BROWSER_REGEXES:
         if pattern.search(agent):
             return name
@@ -2422,12 +2604,18 @@ def classify_user_client_browser(user_agent: str) -> str:
 
 
 def classify_bot_type(user_agent: str) -> str | None:
-    agent = str(user_agent or "")
+    agent = str(user_agent or "").strip()
     if not agent:
-        return "Missing User-Agent"
+        return None
     for name, pattern in BOT_TYPE_REGEXES:
         if pattern.search(agent):
             return name
+    generic = GENERIC_BOT_TOKEN_REGEX.search(agent)
+    if generic:
+        name = generic.group(1).strip("._-")
+        if name.lower() in {"bot", "crawler", "spider", "scraper", "fetcher", "extractor", "scanner", "probe", "verifier", "validator", "checker", "monitor", "externalagent"}:
+            return f"Generic {name.title()}"
+        return name
     return None
 
 

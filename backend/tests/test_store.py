@@ -100,7 +100,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(stats["allowed"], 1)
         self.assertEqual(stats["blockRate"], 25.0)
         self.assertEqual(stats["protectedRate"], 50.0)
-        meta_bot = next(item for item in stats["botTypes"] if item["name"] == "Meta/Facebook crawler")
+        meta_bot = next(item for item in stats["botTypes"] if item["name"] == "Meta External Agent")
         self.assertEqual(meta_bot["challenged"], 1)
         self.assertEqual(stats["topCountries"][0]["name"], "United States")
         self.assertEqual(stats["topCountries"][0]["protected"], 2)

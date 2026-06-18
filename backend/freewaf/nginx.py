@@ -419,6 +419,8 @@ def _log_file_signature(log_file: Path) -> tuple:
 
 
 def _convert_raw_log_entry(log_file: Path, raw: dict, sequence: int) -> dict:
+    if not isinstance(raw, dict):
+        return None
     verdict = str(raw.get("verdict") or "allow")
     status = parse_int(raw.get("status"))
     upstream_status = parse_int(raw.get("upstream_status"))
@@ -517,7 +519,9 @@ def _read_log_tail(log_file: Path, limit: int) -> list[dict]:
             except json.JSONDecodeError:
                 continue
             sequence += 1
-            entries.append(_convert_raw_log_entry(log_file, raw, sequence))
+            converted = _convert_raw_log_entry(log_file, raw, sequence)
+            if converted is not None:
+                entries.append(converted)
 
         # Trim to cap so cache stays bounded.
         if len(entries) > cap:
@@ -551,7 +555,7 @@ def nginx_log_files(root_dir: Path) -> list[Path]:
     log_files = [nginx_access_log_file(root_dir)]
     site_log_dir = nginx_site_log_dir(root_dir)
     if site_log_dir.exists():
-        log_files.extend(sorted(site_log_dir.glob("accesslog_*")))
+        log_files.extend(sorted(p for p in site_log_dir.glob("accesslog_*") if p.suffix != ".gz"))
     return log_files
 
 
@@ -623,7 +627,9 @@ def scan_nginx_log_entries(root_dir: Path, cache_name: str, on_entry, on_reset=N
                             except json.JSONDecodeError:
                                 continue
                             sequence += 1
-                            on_entry(key, _convert_raw_log_entry(log_file, raw, sequence))
+                            converted = _convert_raw_log_entry(log_file, raw, sequence)
+                            if converted is not None:
+                                on_entry(key, converted)
             except OSError:
                 continue
 
@@ -2779,7 +2785,7 @@ def escape_server_name(value: str) -> str:
 
 
 def nginx_regex(value: str) -> str:
-    escaped = str(value).replace("\n", " ").replace("\r", " ").replace('"', '\\"')
+    escaped = str(value).replace("\\", "\\\\").replace("\n", " ").replace("\r", " ").replace('"', '\\"')
     return f'"{escaped}"'
 
 
