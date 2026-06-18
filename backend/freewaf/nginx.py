@@ -2717,8 +2717,17 @@ def target_variables(target: str) -> list[str]:
     if target == "ip":
         return ["$remote_addr"]
     if target == "headers":
-        return ["$http_user_agent", "$http_referer", "$http_content_type"]
-    return ["$request_method", "$request_uri", "$http_user_agent", "$http_referer", "$remote_addr"]
+        return [
+            "$http_user_agent",
+            "$http_referer",
+            "$http_content_type",
+            "$http_cookie",
+            "$http_range",
+            "$http_accept_language",
+            "$http_x_forwarded_for",
+            "$http_x_requested_with",
+        ]
+    return ["$request_method", "$request_uri", *target_variables("headers"), "$remote_addr"]
 
 
 def render_rate_limit(state: dict, site: dict) -> list[str]:
