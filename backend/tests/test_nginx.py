@@ -10,6 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from freewaf import nginx as nginx_module
 from freewaf.defaults import BUILTIN_RULES, DEFAULT_SETTINGS, SAFELINE_COMPATIBILITY_RULES, VERIFIED_AI_BOT_PROVIDERS, VERIFIED_BOT_PROVIDERS
 from freewaf.nginx import generate_nginx_config, parse_nginx_logs, write_nginx_config
 
@@ -99,6 +100,51 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertEqual(entries[0]["statusCode"], 403)
         self.assertEqual(entries[0]["matchedRules"][0]["name"], "Blocked by ModSecurity or Nginx edge policy")
 
+    def test_nginx_log_parser_skips_json_values_that_are_not_objects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root_dir = Path(directory)
+            log_file = root_dir / "freewaf_access.log"
+            log_file.write_text(
+                '123\n"string"\n[]\n{"host":"valid.example","uri":"/valid"}\n',
+                encoding="utf-8",
+            )
+
+            with mock.patch.dict(
+                os.environ,
+                {"NGINX_ACCESS_LOG": str(log_file), "NGINX_SITE_LOG_DIR": str(root_dir / "sites")},
+                clear=False,
+            ):
+                entries = parse_nginx_logs(root_dir, 10)
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["host"], "valid.example")
+        self.assertEqual(entries[0]["path"], "/valid")
+
+    def test_incremental_nginx_log_scan_skips_json_values_that_are_not_objects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root_dir = Path(directory)
+            log_file = root_dir / "freewaf_access.log"
+            log_file.write_text(
+                '123\n"string"\n[]\n{"host":"valid.example","uri":"/valid"}\n',
+                encoding="utf-8",
+            )
+            entries = []
+
+            with mock.patch.dict(
+                os.environ,
+                {"NGINX_ACCESS_LOG": str(log_file), "NGINX_SITE_LOG_DIR": str(root_dir / "sites")},
+                clear=False,
+            ):
+                nginx_module.scan_nginx_log_entries(
+                    root_dir,
+                    f"test-{id(entries)}",
+                    lambda _key, entry: entries.append(entry),
+                )
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["host"], "valid.example")
+        self.assertEqual(entries[0]["path"], "/valid")
+
     def test_writes_one_nginx_file_per_domain(self):
         state = make_state(
             sites=[
@@ -172,6 +218,51 @@ class NginxGeneratorTests(unittest.TestCase):
 
             self.assertFalse(stale_file.exists())
             self.assertIn("# No enabled sites.", output_file.read_text(encoding="utf-8"))
+            self.assertIn("/nginx/generated/sites/*.conf;", output_file.read_text(encoding="utf-8").replace("\\", "/"))
+
+    def test_http01_challenge_location_is_served_before_redirect_and_waf(self):
+        state = make_state(
+            settings=make_settings(proxy={"forceHttps": True}),
+            certificates=[
+                {
+                    "id": "cert-demo",
+                    "name": "Demo cert",
+                    "certFile": "nginx/certs/demo.crt",
+                    "keyFile": "nginx/certs/demo.key",
+                }
+            ],
+            sites=[
+                {
+                    "id": "site-demo",
+                    "name": "Demo",
+                    "hostnames": ["example.test"],
+                    "origin": "http://127.0.0.1:9090",
+                    "ports": ["80", "443_ssl"],
+                    "listen": 443,
+                    "tls": {
+                        "enabled": True,
+                        "certificateId": "cert-demo",
+                        "redirectHttp": True,
+                        "httpListen": 80,
+                        "http2": True,
+                    },
+                    "proxy": {"forceHttps": True},
+                    "mode": "block",
+                    "enabled": True,
+                }
+            ],
+        )
+
+        with mock.patch.dict(os.environ, {"CERTBOT_WEBROOT": "/var/www/freewaf-acme"}, clear=False):
+            config = generate_nginx_config(state)
+
+        http_server = config[config.find("listen 0.0.0.0:80;") : config.find("listen 0.0.0.0:443")]
+        challenge_index = http_server.find("location ^~ /.well-known/acme-challenge/")
+        redirect_index = http_server.find("return 301 https://$host:443$request_uri;")
+        self.assertGreaterEqual(challenge_index, 0)
+        self.assertGreater(redirect_index, challenge_index)
+        self.assertIn("root /var/www/freewaf-acme;", http_server)
+        self.assertIn("try_files $uri =404;", http_server)
 
     def test_generates_blocking_rule_for_builtin_sqli(self):
         config = generate_nginx_config(make_state())
@@ -204,6 +295,49 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("if ($http_cookie ~*", config)
         self.assertIn("if ($http_range ~*", config)
         self.assertIn("if ($http_accept_language ~*", config)
+
+    def test_rule_regex_with_escaped_quotes_renders_nginx_safe_string(self):
+        state = make_state(
+            rules=[
+                {
+                    "id": "quote-regex",
+                    "name": "Quote regex",
+                    "enabled": True,
+                    "siteId": "*",
+                    "matcher": "regex",
+                    "target": "url",
+                    "pattern": r'(?:(?:\"|%22)@(?:type|class)(?:\"|%22)|DefaultTyping)',
+                    "action": "block",
+                    "severity": "high",
+                }
+            ]
+        )
+
+        config = generate_nginx_config(state)
+
+        self.assertIn(r'(?:(?:\"|%22)@(?:type|class)(?:\"|%22)|DefaultTyping)', config)
+        self.assertNotIn(r'(?:\\"|%22)', config)
+
+    def test_rule_regex_with_literal_namespace_backslash_renders_pcre_safe_string(self):
+        state = make_state(
+            rules=[
+                {
+                    "id": "namespace-regex",
+                    "name": "Namespace regex",
+                    "enabled": True,
+                    "siteId": "*",
+                    "matcher": "regex",
+                    "target": "url",
+                    "pattern": r"(?:/_ignition/execute-solution|solution=Facade\\Ignition)",
+                    "action": "block",
+                    "severity": "high",
+                }
+            ]
+        )
+
+        config = generate_nginx_config(state)
+
+        self.assertIn(r"solution=Facade\\\\Ignition", config)
 
     def test_application_builtin_rules_are_nginx_native(self):
         app_rule_ids = {
@@ -608,7 +742,7 @@ class NginxGeneratorTests(unittest.TestCase):
             os.environ,
             {
                 "NGINX_HAS_MODSECURITY": "true",
-                "NGINX_HAS_BROTLI": "true",
+                "NGINX_HAS_BROTLI": "force",
                 "NGINX_MODSECURITY_OWASP_RULES_FILE": "/etc/freewaf/modsecurity/owasp-crs.conf",
             },
             clear=False,
@@ -627,6 +761,28 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("modsecurity on;", config)
         self.assertIn("modsecurity_rules_file /etc/freewaf/modsecurity/owasp-crs.conf;", config)
         self.assertIn("modsecurity_rules 'SecRequestBodyLimit 8388608';", config)
+
+    def test_brotli_true_requires_detected_nginx_module(self):
+        state = make_state(settings=make_settings(proxy={"brotli": True}))
+        nginx_module._BROTLI_SUPPORT_CACHE.clear()
+
+        with mock.patch.dict(os.environ, {"NGINX_HAS_BROTLI": "true", "NGINX_TEST_CMD": "/usr/sbin/nginx -t"}, clear=False):
+            with mock.patch(
+                "freewaf.nginx.subprocess.run",
+                return_value=mock.Mock(stdout="", stderr="configure arguments: --with-http_ssl_module"),
+            ) as run_nginx:
+                config = generate_nginx_config(state)
+
+        self.assertNotIn("brotli on;", config)
+        self.assertIn("did not report Brotli support", config)
+        run_nginx.assert_called_once_with(
+            ["/usr/sbin/nginx", "-V"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        nginx_module._BROTLI_SUPPORT_CACHE.clear()
 
     def test_omits_forwarded_headers_when_disabled(self):
         state = make_state(

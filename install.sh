@@ -7,6 +7,7 @@ ENV_FILE="${ENV_DIR}/freewaf.env"
 SERVICE_FILE="/etc/systemd/system/freewaf.service"
 NGINX_INCLUDE="/etc/nginx/conf.d/freewaf.conf"
 LOGROTATE_FILE="/etc/logrotate.d/freewaf"
+CERTBOT_DEPLOY_HOOK="/etc/letsencrypt/renewal-hooks/deploy/freewaf-nginx-reload"
 ADMIN_PORT="${ADMIN_PORT:-7001}"
 DEMO_ORIGIN_PORT="${DEMO_ORIGIN_PORT:-9090}"
 ENABLE_DEMO_ORIGIN="${ENABLE_DEMO_ORIGIN:-true}"
@@ -292,7 +293,7 @@ NGINX_CHAOS_CHALLENGE_URL=
 NGINX_FREEWAF_STATIC_DIR=
 NGINX_STATIC_ROOT=${APP_DIR}/public/static
 CERTBOT_CMD=/usr/bin/certbot
-CERTBOT_AUTH_METHOD=nginx
+CERTBOT_AUTH_METHOD=webroot
 CERTBOT_WEBROOT=/var/www/html
 CERTBOT_LIVE_DIR=/etc/letsencrypt/live
 CERTBOT_CREDENTIALS_DIR=/etc/freewaf/certbot
@@ -332,6 +333,18 @@ ${APP_DIR}/logs/freewaf_access.log ${APP_DIR}/logs/freewaf/accesslog_* ${APP_DIR
     endscript
 }
 EOF
+}
+
+write_certbot_deploy_hook() {
+  log "Writing ${CERTBOT_DEPLOY_HOOK}"
+  install -d -m 0755 "$(dirname "$CERTBOT_DEPLOY_HOOK")"
+  cat > "$CERTBOT_DEPLOY_HOOK" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+/usr/sbin/nginx -t
+/usr/bin/systemctl reload nginx
+EOF
+  chmod 0755 "$CERTBOT_DEPLOY_HOOK"
 }
 
 refresh_nginx_config() {
@@ -437,6 +450,7 @@ main() {
   install_modsecurity
   write_env
   write_logrotate
+  write_certbot_deploy_hook
   refresh_nginx_config
   write_systemd
   write_nginx_include

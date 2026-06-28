@@ -33,6 +33,7 @@ BOT_BLOCK_UA_PATTERN = (
     r"dirbuster|ffuf|jaeles|zmeu|commix|havij|netsparker|openvas|arachni)"
 )
 GEO_CIDR_CACHE = {}
+_BROTLI_SUPPORT_CACHE: dict[str, bool] = {}
 
 
 def nginx_output_file(root_dir: Path) -> Path:
@@ -179,10 +180,9 @@ def write_nginx_config(root_dir: Path, state: dict) -> Path:
     nginx_site_log_dir(root_dir).mkdir(parents=True, exist_ok=True)
 
     blocks = generate_nginx_common_blocks(state)
-    if site_configs:
-        blocks.append(f"include {nginx_path(str(site_config_dir / '*.conf'))};")
-    else:
+    if not site_configs:
         blocks.append("# No enabled sites.")
+    blocks.append(f"include {nginx_path(str(site_config_dir / '*.conf'))};")
     output_payload = "\n\n".join(blocks) + "\n"
 
     lock_file = output_file.with_suffix(output_file.suffix + ".lock")
@@ -518,6 +518,8 @@ def _read_log_tail(log_file: Path, limit: int) -> list[dict]:
                 raw = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(raw, dict):
+                continue
             sequence += 1
             converted = _convert_raw_log_entry(log_file, raw, sequence)
             if converted is not None:
@@ -625,6 +627,8 @@ def scan_nginx_log_entries(root_dir: Path, cache_name: str, on_entry, on_reset=N
                             try:
                                 raw = json.loads(line)
                             except json.JSONDecodeError:
+                                continue
+                            if not isinstance(raw, dict):
                                 continue
                             sequence += 1
                             converted = _convert_raw_log_entry(log_file, raw, sequence)
@@ -1020,6 +1024,8 @@ def render_redirect_server(site: dict, state: dict, server_name: str, port: int,
         *render_modsecurity_directives(site),
         *render_site_waf_directives(site, state),
         "",
+        *render_acme_challenge_location(),
+        "",
         *render_safeline_locations(site),
         "",
         *render_internal_waf_locations(site, state),
@@ -1109,6 +1115,8 @@ def render_proxy_server(
     lines.extend(
         [
             "",
+            *render_acme_challenge_location(),
+            "",
             *render_safeline_locations(site),
             "",
             *render_internal_waf_locations(site, state),
@@ -1138,6 +1146,18 @@ def render_wordpress_cache_min_fallback_location(site: dict) -> list[str]:
         "        rewrite ^/wp-content/cache/min/1/(.+)$ /$1 last;",
         "    }",
         "",
+    ]
+
+
+def render_acme_challenge_location() -> list[str]:
+    webroot = nginx_path(os.environ.get("CERTBOT_WEBROOT", "/var/www/html")).rstrip("/") or "/var/www/html"
+    return [
+        "    location ^~ /.well-known/acme-challenge/ {",
+        *render_challenge_location_modsecurity_bypass(),
+        "        default_type text/plain;",
+        f"        root {webroot};",
+        "        try_files $uri =404;",
+        "    }",
     ]
 
 
@@ -1860,12 +1880,54 @@ def server_names_regex(hostnames: list[str]) -> str:
 def render_compression_directives(proxy: dict) -> list[str]:
     lines = [f"    gzip {'on' if proxy.get('gzip') else 'off'};"]
     if proxy.get("brotli"):
-        if os.environ.get("NGINX_HAS_BROTLI", "false").lower() == "true":
+        if nginx_has_brotli():
             lines.append("    brotli on;")
         else:
-            lines.append("    # Brotli is enabled in this application; set NGINX_HAS_BROTLI=true to emit brotli on;")
+            lines.append("    # Brotli is enabled in this application, but this Nginx build did not report Brotli support.")
     lines.append("")
     return lines
+
+
+def nginx_has_brotli() -> bool:
+    flag = os.environ.get("NGINX_HAS_BROTLI", "false").strip().lower()
+    if flag in {"", "0", "false", "no", "off"}:
+        return False
+    if flag in {"force", "forced", "always"}:
+        return True
+
+    nginx_bin = nginx_binary()
+    cached = _BROTLI_SUPPORT_CACHE.get(nginx_bin)
+    if cached is not None:
+        return cached
+
+    try:
+        completed = subprocess.run(
+            [nginx_bin, "-V"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        _BROTLI_SUPPORT_CACHE[nginx_bin] = False
+        return False
+
+    output = f"{completed.stdout}\n{completed.stderr}".lower()
+    supported = "brotli" in output
+    _BROTLI_SUPPORT_CACHE[nginx_bin] = supported
+    return supported
+
+
+def nginx_binary() -> str:
+    configured = os.environ.get("NGINX_BINARY", "").strip()
+    if configured:
+        return configured
+    command = os.environ.get("NGINX_TEST_CMD", "nginx -t")
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        parts = []
+    return parts[0] if parts else "nginx"
 
 
 def render_acl_notes(site: dict) -> list[str]:
@@ -2785,8 +2847,32 @@ def escape_server_name(value: str) -> str:
 
 
 def nginx_regex(value: str) -> str:
-    escaped = str(value).replace("\\", "\\\\").replace("\n", " ").replace("\r", " ").replace('"', '\\"')
+    escaped = str(value).replace("\n", " ").replace("\r", " ")
+    escaped = escape_nginx_regex_backslashes(escaped.replace('\\"', '"'))
+    escaped = escaped.replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def escape_nginx_regex_backslashes(value: str) -> str:
+    valid_alpha_escapes = set("AaBbCcDdEeFfGgHhKkNnOoPpQqRrSsTtVvWwXxZz")
+    literal_backslash = "__FREEWAF_LITERAL_BACKSLASH__"
+    output = []
+    index = 0
+    while index < len(value):
+        char = value[index]
+        next_char = value[index + 1] if index + 1 < len(value) else ""
+        if char == "\\" and next_char == "\\":
+            output.append(literal_backslash)
+            index += 2
+            continue
+        if char == "\\" and next_char.isalpha() and next_char not in valid_alpha_escapes:
+            output.append(literal_backslash)
+            output.append(next_char)
+            index += 2
+            continue
+        output.append(char)
+        index += 1
+    return "".join(output).replace(literal_backslash, r"\\\\")
 
 
 def any_regex(values: list[str]) -> str:

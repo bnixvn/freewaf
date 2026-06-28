@@ -50,6 +50,92 @@ MIIB
 
 
 class CertificateServerTests(unittest.TestCase):
+    def test_apply_nginx_rolls_back_generated_bundle_when_test_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            generated_dir = root / "nginx" / "generated"
+            sites_dir = generated_dir / "sites"
+            sites_dir.mkdir(parents=True)
+            output_file = generated_dir / "freewaf.conf"
+            output_file.write_text("old main config", encoding="utf-8")
+            old_site_file = sites_dir / "old.conf"
+            old_site_file.write_text("old site config", encoding="utf-8")
+
+            store = mock.Mock()
+            store.get_state.return_value = {
+                "settings": {},
+                "sites": [
+                    {
+                        "id": "site-new",
+                        "name": "New",
+                        "hostnames": ["new.example.test"],
+                        "origin": "http://127.0.0.1:9090",
+                        "listen": 8080,
+                        "mode": "block",
+                        "enabled": True,
+                    }
+                ],
+                "rules": [],
+                "accessRules": [],
+                "certificates": [],
+            }
+
+            with mock.patch.object(server_module, "ROOT_DIR", root):
+                with mock.patch.object(
+                    server_module,
+                    "run_nginx_command",
+                    return_value={"configured": True, "ok": False, "stderr": "nginx test failed"},
+                ):
+                    result = server_module.apply_nginx(store, {"test": True, "reload": True})
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["rollback"], {"ok": True, "restored": True})
+            self.assertEqual(output_file.read_text(encoding="utf-8"), "old main config")
+            self.assertEqual(old_site_file.read_text(encoding="utf-8"), "old site config")
+            self.assertEqual(sorted(file.name for file in sites_dir.glob("*.conf")), ["old.conf"])
+
+    def test_apply_nginx_rolls_back_generated_bundle_when_reload_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            sites_dir = root / "nginx" / "generated" / "sites"
+            sites_dir.mkdir(parents=True)
+            output_file = root / "nginx" / "generated" / "freewaf.conf"
+            output_file.write_text("old main config", encoding="utf-8")
+
+            store = mock.Mock()
+            store.get_state.return_value = {
+                "settings": {},
+                "sites": [
+                    {
+                        "id": "site-new",
+                        "name": "New",
+                        "hostnames": ["new.example.test"],
+                        "origin": "http://127.0.0.1:9090",
+                        "listen": 8080,
+                        "mode": "block",
+                        "enabled": True,
+                    }
+                ],
+                "rules": [],
+                "accessRules": [],
+                "certificates": [],
+            }
+
+            with mock.patch.object(server_module, "ROOT_DIR", root):
+                with mock.patch.object(
+                    server_module,
+                    "run_nginx_command",
+                    side_effect=[
+                        {"configured": True, "ok": True, "stderr": ""},
+                        {"configured": True, "ok": False, "stderr": "reload failed"},
+                    ],
+                ):
+                    result = server_module.apply_nginx(store, {"test": True, "reload": True})
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["rollback"], {"ok": True, "restored": True})
+            self.assertEqual(output_file.read_text(encoding="utf-8"), "old main config")
+
     def test_api_json_responses_disable_cache(self):
         handler_cls = make_admin_handler(mock.Mock(), 7001, 9090, False, False)
         server = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
@@ -334,13 +420,71 @@ class CertificateServerTests(unittest.TestCase):
                         }
                     )
 
-        run_certbot.assert_called_once_with(["example.test", "www.example.test"], "ops@example.test")
+        run_certbot.assert_called_once_with(["example.test", "www.example.test"], "ops@example.test", None)
         expected_live = Path(live_dir) / "example.test-0001"
         self.assertEqual(prepared["source"], "certbot")
         self.assertEqual(prepared["name"], "example.test")
         self.assertEqual(prepared["certFile"], str(expected_live / "fullchain.pem").replace("\\", "/"))
         self.assertEqual(prepared["keyFile"], str(expected_live / "privkey.pem").replace("\\", "/"))
         self.assertEqual(prepared["status"], "ready")
+
+    def test_certbot_webroot_prepares_temporary_http01_server_and_restores_nginx(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_file = root / "nginx" / "generated" / "freewaf.conf"
+            site_dir = output_file.parent / "sites"
+            site_dir.mkdir(parents=True)
+            output_file.write_text("include sites/*.conf;\n", encoding="utf-8")
+            existing_site = site_dir / "existing.conf"
+            existing_site.write_text("server { listen 0.0.0.0:8080; }\n", encoding="utf-8")
+            webroot = root / "acme"
+            commands = []
+
+            def fake_run(command, capture_output=True, text=True, timeout=180, check=False):
+                commands.append(command)
+                return mock.Mock(
+                    returncode=0,
+                    stdout=(
+                        "Successfully received certificate.\n"
+                        "/etc/letsencrypt/live/example.test/fullchain.pem\n"
+                    ),
+                    stderr="",
+                )
+
+            with mock.patch.object(server_module, "ROOT_DIR", root):
+                with mock.patch.dict(
+                    os.environ,
+                    {
+                        "CERTBOT_CMD": "/usr/bin/certbot",
+                        "CERTBOT_AUTH_METHOD": "webroot",
+                        "CERTBOT_WEBROOT": str(webroot),
+                        "NGINX_OUTPUT_FILE": str(output_file),
+                        "NGINX_SITE_CONF_DIR": str(site_dir),
+                        "NGINX_TEST_CMD": "/usr/sbin/nginx -t",
+                        "NGINX_RELOAD_CMD": "/usr/sbin/nginx -s reload",
+                    },
+                    clear=False,
+                ):
+                    with mock.patch("freewaf.server.run_nginx_command", return_value={"configured": True, "ok": True, "stderr": ""}) as run_nginx:
+                        with mock.patch("freewaf.server.subprocess.run", side_effect=fake_run):
+                            result = server_module.run_certbot(["example.test", "www.example.test"], "ops@example.test", state={"sites": []})
+
+            self.assertTrue((webroot / ".well-known" / "acme-challenge").is_dir())
+            self.assertFalse((site_dir / "_freewaf_acme_http01.conf").exists())
+            self.assertEqual(existing_site.read_text(encoding="utf-8"), "server { listen 0.0.0.0:8080; }\n")
+            self.assertEqual(run_nginx.call_count, 3)
+            self.assertIn("--webroot", commands[0])
+            self.assertIn("-w", commands[0])
+            self.assertIn(str(webroot), commands[0])
+            self.assertIn("-d", commands[0])
+            self.assertEqual(result["ok"], True)
+
+    def test_certbot_http01_rejects_wildcard_domains(self):
+        with self.assertRaises(server_module.StoreError) as context:
+            server_module.run_certbot(["example.test", "*.example.test"], "ops@example.test")
+
+        self.assertEqual(context.exception.status, 400)
+        self.assertIn("Wildcard domains require DNS-01", context.exception.message)
 
     def test_cloudflare_certificate_payload_writes_credentials_and_uses_dns_challenge(self):
         with tempfile.TemporaryDirectory() as temp_dir:

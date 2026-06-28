@@ -10,8 +10,10 @@ import os
 import re
 import secrets
 import shlex
+import shutil
 import ssl
 import subprocess
+import tempfile
 import uuid
 import threading
 import time
@@ -25,7 +27,9 @@ from urllib.parse import parse_qs, quote, urlparse
 from .nginx import (
     clear_nginx_logs,
     generate_nginx_config,
+    nginx_output_file,
     nginx_runtime,
+    nginx_site_config_dir,
     parse_nginx_logs,
     run_nginx_command,
     scan_nginx_log_entries,
@@ -356,7 +360,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     self.send_json(201, saved)
                     return
                 if self.path == "/api/certificates":
-                    saved = store.upsert_certificate(prepare_certificate_payload(payload))
+                    saved = store.upsert_certificate(prepare_certificate_payload(payload, state=store.get_state()))
                     apply_nginx_or_raise(store)
                     self.record_audit(action="certificates.create", target="certificates", target_id=saved.get("id", ""), status=201, payload=payload)
                     self.send_json(201, public_certificate(saved))
@@ -511,7 +515,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                             self.send_json(404, {"error": "Certificate not found"})
                             return
                         payload = {**current, **payload}
-                    saved = store.upsert_certificate(prepare_certificate_payload(payload, item_id), item_id)
+                    saved = store.upsert_certificate(prepare_certificate_payload(payload, item_id, state=store.get_state()), item_id)
                     apply_nginx_or_raise(store)
                     self.record_audit(action=f"certificates.{action_verb}", target="certificates", target_id=item_id, status=200, payload=payload)
                     self.send_json(200, public_certificate(saved))
@@ -826,6 +830,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
 
 
 def apply_nginx(store: Store, payload: dict) -> dict:
+    snapshot = snapshot_nginx_bundle(ROOT_DIR) if payload.get("test") else None
     output_file = write_nginx_config(ROOT_DIR, store.get_state())
     result = {
         "ok": True,
@@ -833,12 +838,15 @@ def apply_nginx(store: Store, payload: dict) -> dict:
         "config": generate_nginx_config(store.get_state()),
         "test": None,
         "reload": None,
+        "rollback": None,
     }
 
     if payload.get("test"):
         test_result = run_nginx_command(os.environ.get("NGINX_TEST_CMD", "nginx -t"))
         result["test"] = test_result
         result["ok"] = result["ok"] and test_result.get("ok", False)
+        if not test_result.get("ok", False) and snapshot:
+            result["rollback"] = restore_nginx_bundle(snapshot)
 
     if payload.get("reload"):
         if result["test"] and not result["test"].get("ok"):
@@ -848,8 +856,55 @@ def apply_nginx(store: Store, payload: dict) -> dict:
             reload_result = run_nginx_command(os.environ.get("NGINX_RELOAD_CMD", "nginx -s reload"))
             result["reload"] = reload_result
             result["ok"] = result["ok"] and reload_result.get("ok", False)
+            if not reload_result.get("ok", False) and snapshot and not result["rollback"]:
+                result["rollback"] = restore_nginx_bundle(snapshot)
 
+    if snapshot:
+        cleanup_nginx_snapshot(snapshot)
     return result
+
+
+def snapshot_nginx_bundle(root_dir: Path) -> dict:
+    output_file = nginx_output_file(root_dir)
+    site_dir = nginx_site_config_dir(root_dir)
+    backup_dir = Path(tempfile.mkdtemp(prefix="freewaf-nginx-backup."))
+    snapshot = {
+        "outputFile": output_file,
+        "siteDir": site_dir,
+        "backupDir": backup_dir,
+        "outputExists": output_file.exists(),
+        "siteDirExists": site_dir.exists(),
+    }
+    if output_file.exists():
+        shutil.copy2(output_file, backup_dir / "freewaf.conf")
+    if site_dir.exists():
+        shutil.copytree(site_dir, backup_dir / "sites")
+    return snapshot
+
+
+def restore_nginx_bundle(snapshot: dict) -> dict:
+    output_file = Path(snapshot["outputFile"])
+    site_dir = Path(snapshot["siteDir"])
+    backup_dir = Path(snapshot["backupDir"])
+    try:
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        if snapshot.get("outputExists"):
+            shutil.copy2(backup_dir / "freewaf.conf", output_file)
+        elif output_file.exists():
+            output_file.unlink()
+
+        if site_dir.exists():
+            shutil.rmtree(site_dir)
+        if snapshot.get("siteDirExists"):
+            shutil.copytree(backup_dir / "sites", site_dir)
+        return {"ok": True, "restored": True}
+    except OSError as error:
+        return {"ok": False, "restored": False, "stderr": str(error)}
+
+
+def cleanup_nginx_snapshot(snapshot: dict) -> None:
+    backup_dir = Path(snapshot["backupDir"])
+    shutil.rmtree(backup_dir, ignore_errors=True)
 
 
 def apply_nginx_or_raise(store: Store) -> dict:
@@ -1693,13 +1748,13 @@ def ip_group_sync_check_seconds() -> int:
     return max(60, parse_int(os.environ.get("IP_GROUP_SYNC_CHECK_SECONDS"), 3600))
 
 
-def prepare_certificate_payload(payload: dict, certificate_id: str | None = None) -> dict:
+def prepare_certificate_payload(payload: dict, certificate_id: str | None = None, state: dict | None = None) -> dict:
     prepared = dict(payload)
     source = str(prepared.get("source") or "upload").lower()
     if source == "cloudflare":
         return prepare_cloudflare_certificate_payload(prepared, certificate_id)
     if source == "certbot":
-        return prepare_certbot_certificate_payload(prepared, certificate_id)
+        return prepare_certbot_certificate_payload(prepared, certificate_id, state)
 
     cert_text = str(prepared.pop("certificate", "") or "").strip()
     key_text = str(prepared.pop("privateKey", "") or "").strip()
@@ -1777,7 +1832,7 @@ def prepare_cloudflare_certificate_payload(payload: dict, certificate_id: str | 
     return prepared
 
 
-def prepare_certbot_certificate_payload(payload: dict, certificate_id: str | None = None) -> dict:
+def prepare_certbot_certificate_payload(payload: dict, certificate_id: str | None = None, state: dict | None = None) -> dict:
     domains = normalize_payload_list(payload.get("domains"))
     email = str(payload.get("email") or "").strip()
     if not domains:
@@ -1785,7 +1840,7 @@ def prepare_certbot_certificate_payload(payload: dict, certificate_id: str | Non
     if "@" not in email:
         raise StoreError(400, "Email address is required")
 
-    result = run_certbot(domains, email)
+    result = run_certbot(domains, email, state)
     primary_domain = domains[0].lower()
     cert_file, key_file = certbot_paths_from_result(result, primary_domain)
     cert_id = certificate_id or str(payload.get("id") or f"certbot-{uuid.uuid4().hex[:8]}")
@@ -1841,13 +1896,166 @@ def certbot_paths_from_result(result: dict, primary_domain: str) -> tuple[str, s
     return str(live_dir / "fullchain.pem").replace("\\", "/"), str(live_dir / "privkey.pem").replace("\\", "/")
 
 
-def run_certbot(domains: list[str], email: str) -> dict:
-    certbot = os.environ.get("CERTBOT_CMD", "certbot")
-    method = os.environ.get("CERTBOT_AUTH_METHOD", "nginx").lower()
-    command = [certbot, "certonly", "--non-interactive", "--agree-tos", "--email", email, "--keep-until-expiring"]
+def ensure_certbot_webroot(webroot: str) -> Path:
+    path = Path(webroot)
+    challenge_dir = path / ".well-known" / "acme-challenge"
+    try:
+        challenge_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise StoreError(500, f"Cannot prepare certbot webroot {path}: {error}") from error
+    return path
 
-    if method == "webroot":
+
+def ensure_http01_challenge_server(domains: list[str], webroot: str, state: dict | None = None) -> dict | None:
+    if os.environ.get("CERTBOT_PREPARE_HTTP01_SERVER", "true").lower() in {"0", "false", "no", "off"}:
+        return None
+
+    site_dir = nginx_site_config_dir(ROOT_DIR)
+    output_file = nginx_output_file(ROOT_DIR)
+    if not output_file.exists():
+        raise StoreError(500, f"Nginx include file is missing: {output_file}")
+
+    snapshot = snapshot_nginx_bundle(ROOT_DIR)
+    challenge_file = site_dir / "_freewaf_acme_http01.conf"
+    server_names = " ".join(nginx_server_name(domain) for domain in domains)
+    server_names = server_names or "_"
+    try:
+        site_dir.mkdir(parents=True, exist_ok=True)
+        if state and http01_domains_have_site_listener(domains, state):
+            write_nginx_config(ROOT_DIR, state)
+        else:
+            include_line = f"include {nginx_conf_path(site_dir / '*.conf')};"
+            output_text = output_file.read_text(encoding="utf-8", errors="replace")
+            if include_line not in output_text:
+                output_file.write_text(output_text.rstrip() + "\n\n" + include_line + "\n", encoding="utf-8")
+            challenge_file.write_text(
+                "\n".join(
+                    [
+                        "# Temporary FreeWAF HTTP-01 challenge server.",
+                        "server {",
+                        "    listen 0.0.0.0:80;",
+                        "    listen [::]:80;",
+                        f"    server_name {server_names};",
+                        "",
+                        "    location ^~ /.well-known/acme-challenge/ {",
+                        "        default_type text/plain;",
+                        f"        root {nginx_conf_path(webroot)};",
+                        "        try_files $uri =404;",
+                        "    }",
+                        "",
+                        "    location / {",
+                        "        return 404;",
+                        "    }",
+                        "}",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+        test_result = run_nginx_command(os.environ.get("NGINX_TEST_CMD", "nginx -t"))
+        if not test_result.get("ok"):
+            restore_nginx_bundle(snapshot)
+            cleanup_nginx_snapshot(snapshot)
+            message = (test_result.get("stderr") or test_result.get("stdout") or "Nginx test failed").strip()
+            raise StoreError(500, f"Cannot prepare HTTP-01 challenge server: {message}")
+        reload_result = run_nginx_command(os.environ.get("NGINX_RELOAD_CMD", "nginx -s reload"))
+        if not reload_result.get("ok"):
+            restore_nginx_bundle(snapshot)
+            cleanup_nginx_snapshot(snapshot)
+            message = (reload_result.get("stderr") or reload_result.get("stdout") or "Nginx reload failed").strip()
+            raise StoreError(500, f"Cannot reload HTTP-01 challenge server: {message}")
+        return snapshot
+    except StoreError:
+        raise
+    except OSError as error:
+        restore_nginx_bundle(snapshot)
+        cleanup_nginx_snapshot(snapshot)
+        raise StoreError(500, f"Cannot write HTTP-01 challenge server: {error}") from error
+
+
+def restore_http01_challenge_server(snapshot: dict | None) -> None:
+    if not snapshot:
+        return
+    restored = restore_nginx_bundle(snapshot)
+    cleanup_nginx_snapshot(snapshot)
+    if not restored.get("ok"):
+        raise StoreError(500, f"Cannot restore Nginx after certbot: {restored.get('stderr') or 'restore failed'}")
+    reload_result = run_nginx_command(os.environ.get("NGINX_RELOAD_CMD", "nginx -s reload"))
+    if not reload_result.get("ok"):
+        message = (reload_result.get("stderr") or reload_result.get("stdout") or "Nginx reload failed").strip()
+        raise StoreError(500, f"Certificate issued, but Nginx restore reload failed: {message}")
+
+
+def try_restore_http01_challenge_server(snapshot: dict | None) -> str:
+    try:
+        restore_http01_challenge_server(snapshot)
+        return ""
+    except StoreError as error:
+        return error.message
+
+
+def nginx_conf_path(value: str | Path) -> str:
+    return str(value).replace("\\", "/").replace(";", "").replace("{", "").replace("}", "").strip() or "/var/www/html"
+
+
+def nginx_server_name(value: str) -> str:
+    safe = str(value or "_").replace(";", "").replace("{", "").replace("}", "").strip()
+    return safe or "_"
+
+
+def http01_domains_have_site_listener(domains: list[str], state: dict) -> bool:
+    needed = {str(domain or "").lower() for domain in domains if domain}
+    if not needed:
+        return False
+    covered = set()
+    for site in state.get("sites", []) if isinstance(state, dict) else []:
+        if not site.get("enabled"):
+            continue
+        site_names = {str(hostname or "").strip().lower() for hostname in site.get("hostnames") or []}
+        if not (needed & site_names):
+            continue
+        for port, is_ssl in site_ports_for_http01(site):
+            if port == 80 and not is_ssl:
+                covered.update(needed & site_names)
+                break
+    return needed <= covered
+
+
+def site_ports_for_http01(site: dict) -> list[tuple[int, bool]]:
+    ports = site.get("ports")
+    if isinstance(ports, list) and ports:
+        parsed = []
+        for raw in ports:
+            value = str(raw or "").strip().lower()
+            if not value:
+                continue
+            is_ssl = value.endswith("_ssl")
+            number = value[:-4] if is_ssl else value
+            try:
+                parsed.append((int(number), is_ssl))
+            except ValueError:
+                continue
+        if parsed:
+            return parsed
+    tls = site.get("tls") or {}
+    if tls.get("enabled") and tls.get("redirectHttp"):
+        return [(int(tls.get("httpListen") or 80), False), (int(site.get("listen") or 443), True)]
+    return [(int(site.get("listen") or 8080), bool(tls.get("enabled")))]
+
+
+def run_certbot(domains: list[str], email: str, state: dict | None = None) -> dict:
+    certbot = os.environ.get("CERTBOT_CMD", "certbot")
+    method = os.environ.get("CERTBOT_AUTH_METHOD", "webroot").lower()
+    if any(str(domain).startswith("*.") for domain in domains):
+        raise StoreError(400, "Wildcard domains require DNS-01. Use Cloudflare DNS for *.domain certificates.")
+    command = [certbot, "certonly", "--non-interactive", "--agree-tos", "--email", email, "--keep-until-expiring"]
+    challenge_snapshot = None
+    restore_error = ""
+
+    if method in {"webroot", "nginx"}:
         webroot = os.environ.get("CERTBOT_WEBROOT", "/var/www/html")
+        ensure_certbot_webroot(webroot)
+        challenge_snapshot = ensure_http01_challenge_server(domains, webroot, state)
         command.extend(["--webroot", "-w", webroot])
     elif method == "standalone":
         command.append("--standalone")
@@ -1860,13 +2068,27 @@ def run_certbot(domains: list[str], email: str) -> dict:
     try:
         completed = subprocess.run(command, capture_output=True, text=True, timeout=180, check=False)
     except FileNotFoundError:
-        raise StoreError(500, f"Certbot command not found: {certbot}") from None
+        restore_error = try_restore_http01_challenge_server(challenge_snapshot)
+        challenge_snapshot = None
+        suffix = f" Also failed to restore Nginx: {restore_error}" if restore_error else ""
+        raise StoreError(500, f"Certbot command not found: {certbot}.{suffix}") from None
     except subprocess.TimeoutExpired:
-        raise StoreError(500, "Certbot command timed out") from None
+        restore_error = try_restore_http01_challenge_server(challenge_snapshot)
+        challenge_snapshot = None
+        suffix = f" Also failed to restore Nginx: {restore_error}" if restore_error else ""
+        raise StoreError(500, f"Certbot command timed out.{suffix}") from None
+    finally:
+        if challenge_snapshot:
+            restore_error = try_restore_http01_challenge_server(challenge_snapshot)
+            challenge_snapshot = None
 
     if completed.returncode != 0:
         message = completed.stderr or completed.stdout or "Certbot failed"
+        if restore_error:
+            message = f"{message.strip()}\nAlso failed to restore Nginx after certbot: {restore_error}"
         raise StoreError(500, message.strip())
+    if restore_error:
+        raise StoreError(500, restore_error)
 
     return {
         "ok": True,
@@ -2049,7 +2271,7 @@ def runtime_payload(state: dict, admin_port: int, demo_origin_port: int, demo_en
         "nginx": nginx_runtime(ROOT_DIR),
         "certbot": {
             "command": os.environ.get("CERTBOT_CMD", "certbot"),
-            "authMethod": os.environ.get("CERTBOT_AUTH_METHOD", "nginx"),
+            "authMethod": os.environ.get("CERTBOT_AUTH_METHOD", "webroot"),
             "webroot": os.environ.get("CERTBOT_WEBROOT", "/var/www/html"),
             "liveDir": os.environ.get("CERTBOT_LIVE_DIR", "/etc/letsencrypt/live"),
             "renewBeforeDays": 30,
