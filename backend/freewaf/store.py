@@ -59,6 +59,27 @@ ACCESS_CONDITION_OPERATORS = {
     "in_ip_group",
     "not_in_ip_group",
 }
+CLIENT_IP_SOURCES = {
+    "socket",
+    "xff_leftmost",
+    "xff_rightmost",
+    "xff_second_rightmost",
+    "xff_third_rightmost",
+    "header",
+    "proxy_protocol",
+}
+CLIENT_IP_SOURCE_ALIASES = {
+    "remote_addr": "socket",
+    "socket_connection": "socket",
+    "x_forwarded_for": "xff_leftmost",
+    "xff": "xff_leftmost",
+    "rightmost_xff": "xff_rightmost",
+    "second_rightmost_xff": "xff_second_rightmost",
+    "third_rightmost_xff": "xff_third_rightmost",
+    "http_header": "header",
+    "proxy": "proxy_protocol",
+}
+HTTP_HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,126}$")
 BOT_TYPE_PATTERNS = [
     # --- Attack / Scanner tools ---
     ("SQLMap", r"\bsqlmap(?:/|\b)"),
@@ -619,7 +640,7 @@ class Store:
                         else:
                             merged_defaults[group_key] = group_value
                     current[key] = merged_defaults
-                elif key in {"panel", "rateLimit", "challengePage"} and isinstance(value, dict):
+                elif key in {"panel", "rateLimit", "challengePage", "clientIp"} and isinstance(value, dict):
                     current[key] = {**(current.get(key) or {}), **value}
                 else:
                     current[key] = value
@@ -809,6 +830,23 @@ def normalize_settings(settings: dict) -> dict:
         },
         "applicationDefaults": normalize_application_defaults(source.get("applicationDefaults") or source.get("application_defaults") or {}),
         "challengePage": normalize_challenge_page_settings(source.get("challengePage") or source.get("challenge_page") or {}),
+        "clientIp": normalize_client_ip_settings(source.get("clientIp") or source.get("client_ip") or {}),
+    }
+
+
+def normalize_client_ip_settings(value) -> dict:
+    source = value if isinstance(value, dict) else {}
+    defaults = DEFAULT_SETTINGS["clientIp"]
+    raw_source = re.sub(r"[\s-]+", "_", str(source.get("source") or defaults["source"]).strip().lower())
+    client_source = CLIENT_IP_SOURCE_ALIASES.get(raw_source, raw_source)
+    if client_source not in CLIENT_IP_SOURCES:
+        client_source = defaults["source"]
+    header_name = str(source.get("headerName") or source.get("header_name") or defaults["headerName"]).strip()
+    if not HTTP_HEADER_NAME_RE.match(header_name):
+        header_name = defaults["headerName"]
+    return {
+        "source": client_source,
+        "headerName": header_name,
     }
 
 

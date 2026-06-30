@@ -67,6 +67,39 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("# No enabled sites.", config)
         self.assertNotIn("unknown \"sfl_verdict\"", config)
 
+    def test_default_client_ip_source_uses_socket_connection(self):
+        config = generate_nginx_config(make_state())
+
+        self.assertIn("map $remote_addr $sfl_client_ip {", config)
+        self.assertIn('"remote_addr":"$sfl_client_ip"', config)
+        self.assertIn("proxy_set_header X-Real-IP $sfl_client_ip;", config)
+        self.assertIn("proxy_set_header X-Forwarded-For $sfl_client_ip;", config)
+
+    def test_x_forwarded_for_client_ip_source_is_supported(self):
+        settings = make_settings()
+        settings["clientIp"] = {"source": "xff_rightmost", "headerName": "X-Forwarded-For"}
+        config = generate_nginx_config(make_state(settings=settings))
+
+        self.assertIn("map $http_x_forwarded_for $sfl_xff_rightmost {", config)
+        self.assertIn("map $sfl_xff_rightmost $sfl_client_ip {", config)
+        self.assertIn("map $sfl_xff_rightmost $sfl_client_ip {", config)
+
+    def test_custom_header_client_ip_source_is_supported(self):
+        settings = make_settings()
+        settings["clientIp"] = {"source": "header", "headerName": "CF-Connecting-IP"}
+        config = generate_nginx_config(make_state(settings=settings))
+
+        self.assertIn("map $http_cf_connecting_ip $sfl_client_ip {", config)
+        self.assertIn('"remote_addr":"$sfl_client_ip"', config)
+
+    def test_proxy_protocol_client_ip_source_adds_listen_flag(self):
+        settings = make_settings()
+        settings["clientIp"] = {"source": "proxy_protocol", "headerName": "X-Forwarded-For"}
+        config = generate_nginx_config(make_state(settings=settings))
+
+        self.assertIn("map $proxy_protocol_addr $sfl_client_ip {", config)
+        self.assertIn("listen 0.0.0.0:8080 proxy_protocol;", config)
+
     def test_nginx_log_parser_counts_edge_403_as_block(self):
         with tempfile.TemporaryDirectory() as directory:
             root_dir = Path(directory)
@@ -672,7 +705,7 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("modsecurity_rules 'SecRuleEngine On';", config)
         self.assertIn("modsecurity_rules 'SecRequestBodyLimit 8388608';", config)
         self.assertNotIn("proxy_set_header Host $http_host;", config)
-        self.assertIn("proxy_set_header X-Forwarded-For $remote_addr;", config)
+        self.assertIn("proxy_set_header X-Forwarded-For $sfl_client_ip;", config)
         self.assertIn("proxy_set_header X-Forwarded-Proto https;", config)
         self.assertIn("proxy_set_header X-Forwarded-Host $host;", config)
 
@@ -755,7 +788,7 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("gzip on;", config)
         self.assertIn("brotli on;", config)
         self.assertIn("proxy_set_header Host $host;", config)
-        self.assertIn("proxy_set_header X-Forwarded-For $remote_addr;", config)
+        self.assertIn("proxy_set_header X-Forwarded-For $sfl_client_ip;", config)
         self.assertIn("proxy_set_header X-Forwarded-Proto https;", config)
         self.assertIn("proxy_set_header X-Forwarded-Host $host;", config)
         self.assertIn("modsecurity on;", config)
@@ -808,7 +841,7 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertNotIn("proxy_set_header X-Forwarded-For", config)
         self.assertNotIn("proxy_set_header X-Forwarded-Proto", config)
         self.assertNotIn("proxy_set_header X-Forwarded-Host", config)
-        self.assertIn("proxy_set_header X-Real-IP $remote_addr;", config)
+        self.assertIn("proxy_set_header X-Real-IP $sfl_client_ip;", config)
 
     def test_redirect_application_returns_configured_address(self):
         state = make_state(
@@ -885,7 +918,7 @@ class NginxGeneratorTests(unittest.TestCase):
         )
         config = generate_nginx_config(state)
 
-        self.assertIn("geo $sfl_access_ip_1", config)
+        self.assertIn("geo $sfl_client_ip $sfl_access_ip_1", config)
         self.assertIn("203.0.113.0/24 1;", config)
         self.assertIn("198.51.100.10 1;", config)
         self.assertIn("Deny test range", config)
@@ -954,7 +987,7 @@ class NginxGeneratorTests(unittest.TestCase):
         )
         config = generate_nginx_config(state)
 
-        self.assertIn("geo $sfl_access_ip_1_1_1", config)
+        self.assertIn("geo $sfl_client_ip $sfl_access_ip_1_1_1", config)
         self.assertIn("203.0.113.0/24 1;", config)
         self.assertIn('if ($request_uri ~* "/admin")', config)
         self.assertIn("set $sfl_access_1_group_1 1;", config)
@@ -1020,7 +1053,7 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("status:461", config)
         self.assertIn('REQUEST_COOKIES:freewaf_challenge "@rx .+"', config)
         self.assertGreater(config.find("freewaf_site_demo_bot_count"), config.find("    location / {"))
-        self.assertIn('limit_req_zone "$remote_addr|$request_method|$http_user_agent" zone=freewaf_rate_fingerprint', config)
+        self.assertIn('limit_req_zone "$sfl_client_ip|$request_method|$http_user_agent" zone=freewaf_rate_fingerprint', config)
 
     def test_verified_search_engine_bots_use_official_ip_and_user_agent_match(self):
         google = VERIFIED_BOT_PROVIDERS["google"]
@@ -1070,11 +1103,11 @@ class NginxGeneratorTests(unittest.TestCase):
         ):
             config = generate_nginx_config(state)
 
-        self.assertIn("geo $sfl_verified_google_ip", config)
+        self.assertIn("geo $sfl_client_ip $sfl_verified_google_ip", config)
         self.assertIn("66.249.64.0/27 1;", config)
         self.assertIn('map "$sfl_verified_google_ip:$http_user_agent" $sfl_verified_google_bot {', config)
         self.assertIn("Googlebot|Google-InspectionTool|GoogleOther", config)
-        self.assertIn("geo $sfl_verified_bing_ip", config)
+        self.assertIn("geo $sfl_client_ip $sfl_verified_bing_ip", config)
         self.assertIn("40.77.167.0/24 1;", config)
         self.assertIn('map "$sfl_verified_google_bot|$sfl_verified_bing_bot" $sfl_verified_search_bot {', config)
         self.assertIn("map $sfl_verified_rate_bypass $sfl_global_rate_key", config)
@@ -1135,11 +1168,11 @@ class NginxGeneratorTests(unittest.TestCase):
         ):
             config = generate_nginx_config(state)
 
-        self.assertIn("geo $sfl_verified_ai_openai_user_ip", config)
+        self.assertIn("geo $sfl_client_ip $sfl_verified_ai_openai_user_ip", config)
         self.assertIn("104.210.139.192/28 1;", config)
         self.assertIn('map "$sfl_verified_ai_openai_user_ip:$http_user_agent" $sfl_verified_ai_openai_user_bot {', config)
         self.assertIn("ChatGPT-User", config)
-        self.assertIn("geo $sfl_verified_ai_anthropic_user_ip", config)
+        self.assertIn("geo $sfl_client_ip $sfl_verified_ai_anthropic_user_ip", config)
         self.assertIn("160.79.104.0/21 1;", config)
         self.assertIn('map "$sfl_verified_ai_openai_user_bot|$sfl_verified_ai_anthropic_user_bot" $sfl_verified_ai_bot_site_demo {', config)
         self.assertIn("if ($sfl_verified_ai_bot_site_demo = 1)", config)
@@ -1214,7 +1247,7 @@ class NginxGeneratorTests(unittest.TestCase):
 
         self.assertIn("map \"$request_method:$uri\" $sfl_under_attack_bypass", config)
         self.assertIn("secure_link \"$cookie_freewaf_challenge,$cookie_freewaf_challenge_expires\";", config)
-        self.assertIn("$secure_link_expires|$host|$remote_addr|$http_user_agent|unit-test-secret", config)
+        self.assertIn("$secure_link_expires|$host|$sfl_client_ip|$http_user_agent|unit-test-secret", config)
         self.assertIn("location @freewaf_challenge", config)
         self.assertIn("location = /.freewaf/challenge/verify", config)
         self.assertIn("proxy_set_header X-FreeWAF-Challenge-Site \"site-demo\";", config)
@@ -1255,7 +1288,7 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertNotIn("map $http_user_agent $sfl_bad_bot_ua", config)
         self.assertNotIn("Bot protection protected login path", config)
         self.assertNotIn("freewaf_site_demo_bot_count", config)
-        self.assertIn('limit_req_zone "$binary_remote_addr|$request_method|$request_uri|$http_user_agent" zone=sfl_replay_site_demo:10m rate=1r/s;', config)
+        self.assertIn('limit_req_zone "$sfl_client_ip|$request_method|$request_uri|$http_user_agent" zone=sfl_replay_site_demo:10m rate=1r/s;', config)
         self.assertIn("limit_req zone=sfl_replay_site_demo burst=1 nodelay;", config)
         self.assertIn('add_header X-FreeWAF-Dynamic-Protection "html,watermark" always;', config)
 
@@ -1284,7 +1317,7 @@ class NginxGeneratorTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"GEOIP_DB_FILE": str(geoip_file)}, clear=False):
                 config = generate_nginx_config(state)
 
-        self.assertIn("geo $sfl_geo_block_site_demo", config)
+        self.assertIn("geo $sfl_client_ip $sfl_geo_block_site_demo", config)
         self.assertIn("8.8.8.0/24 1;", config)
         self.assertNotIn("1.1.1.0/24 1;", config)
         self.assertIn("if ($sfl_geo_block_site_demo = 1)", config)
@@ -1354,7 +1387,7 @@ class NginxGeneratorTests(unittest.TestCase):
         )
         config = generate_nginx_config(state)
 
-        self.assertIn("limit_req_zone $binary_remote_addr zone=freewaf_rate:10m", config)
+        self.assertIn("limit_req_zone $sfl_client_ip zone=freewaf_rate:10m", config)
         self.assertIn("limit_req zone=freewaf_rate burst=120 nodelay;", config)
         self.assertNotIn("zone=sfl_acl_site_demo", config)
 

@@ -21,6 +21,10 @@ DEFAULT_SETTINGS = {
         "windowMs": 60000,
         "max": 120,
     },
+    "clientIp": {
+        "source": "socket",
+        "headerName": "X-Forwarded-For",
+    },
     "applicationDefaults": {
         "proxy": {
             "forceHttps": False,

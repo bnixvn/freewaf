@@ -624,6 +624,22 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(defaults["modSecurity"]["mode"], "detection_only")
             self.assertEqual(defaults["modSecurity"]["requestBodyLimit"], 8388608)
 
+    def test_client_ip_settings_are_normalized_and_merged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.json")
+            store.init()
+            store.update_settings({"clientIp": {"source": "HTTP Header", "headerName": "CF-Connecting-IP"}})
+            store.update_settings({"clientIp": {"headerName": "True-Client-IP"}})
+
+            settings = store.get_state()["settings"]["clientIp"]
+            self.assertEqual(settings["source"], "header")
+            self.assertEqual(settings["headerName"], "True-Client-IP")
+
+            store.update_settings({"clientIp": {"source": "bad", "headerName": "Bad Header!"}})
+            settings = store.get_state()["settings"]["clientIp"]
+            self.assertEqual(settings["source"], "socket")
+            self.assertEqual(settings["headerName"], "X-Forwarded-For")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -163,6 +163,8 @@ const defaultApplicationDefaults = {
   proxyXForwardedHost: '$http_host',
   proxyXForwardedProto: '$scheme',
   proxySslServerName: 'true',
+  clientIpSource: 'socket',
+  clientIpHeaderName: 'X-Forwarded-For',
   modSecurityEnabled: 'true',
   modSecurityMode: 'on',
   modSecurityRuleset: 'comodo',
@@ -1106,11 +1108,12 @@ export default function App() {
     }
   }
 
-  async function saveApplicationDefaults(applicationDefaults) {
+  async function saveApplicationDefaults(applicationDefaults, clientIp) {
     try {
+      const body = clientIp ? { applicationDefaults, clientIp } : { applicationDefaults };
       const saved = await api('/api/settings', {
         method: 'PATCH',
-        body: { applicationDefaults }
+        body
       });
       updateSettingsLocal(saved);
       const result = await api('/api/nginx/apply', {
@@ -2355,6 +2358,7 @@ function LogsView({
 function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaults, saveChallengePage, deleteUser, previewNginx, applyNginx, auth, logout }) {
   const panel = data.settings?.panel || {};
   const applicationDefaults = data.settings?.applicationDefaults || {};
+  const clientIp = data.settings?.clientIp || {};
   const challengePage = data.settings?.challengePage || {};
   const [pendingAction, setPendingAction] = useState('');
   const [panelForm, setPanelForm] = useState(() => ({
@@ -2365,7 +2369,7 @@ function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaul
     logoUrl: panel.logoUrl || '',
     sessionHours: panel.sessionHours || 12
   }));
-  const [applicationForm, setApplicationForm] = useState(() => applicationDefaultsFormFromSettings(applicationDefaults));
+  const [applicationForm, setApplicationForm] = useState(() => applicationDefaultsFormFromSettings(applicationDefaults, clientIp));
   const [challengeForm, setChallengeForm] = useState(() => challengePageFormFromSettings(challengePage));
 
   useEffect(() => {
@@ -2380,8 +2384,8 @@ function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaul
   }, [panel.httpsEnabled, panel.certificateId, panel.publicUrl, panel.faviconUrl, panel.logoUrl, panel.sessionHours]);
 
   useEffect(() => {
-    setApplicationForm(applicationDefaultsFormFromSettings(applicationDefaults));
-  }, [applicationDefaults]);
+    setApplicationForm(applicationDefaultsFormFromSettings(applicationDefaults, clientIp));
+  }, [applicationDefaults, clientIp]);
 
   useEffect(() => {
     setChallengeForm(challengePageFormFromSettings(challengePage));
@@ -2421,7 +2425,7 @@ function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaul
 
   function submitApplicationDefaults(event) {
     event.preventDefault();
-    runLocalAction('applicationDefaults', () => saveApplicationDefaults(applicationDefaultsPayload(applicationForm)));
+    runLocalAction('applicationDefaults', () => saveApplicationDefaults(applicationDefaultsPayload(applicationForm), clientIpPayload(applicationForm)));
   }
 
   function updateChallenge(name, value) {
@@ -2481,6 +2485,24 @@ function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaul
               <ApplicationOption label="ModSecurity" checked={boolValue(applicationForm.modSecurityEnabled)} onChange={(value) => updateApplication('modSecurityEnabled', String(value))} />
             </div>
             <div className="application-option-inputs">
+              <SelectField
+                label="Get Attack IP From"
+                value={applicationForm.clientIpSource}
+                onChange={(value) => updateApplication('clientIpSource', value)}
+                options={[
+                  { value: 'socket', label: 'Socket Connection' },
+                  { value: 'xff_leftmost', label: 'X-Forwarded-For' },
+                  { value: 'xff_rightmost', label: 'Rightmost IP in X-Forwarded-For' },
+                  { value: 'xff_second_rightmost', label: '2nd Rightmost IP in X-Forwarded-For' },
+                  { value: 'xff_third_rightmost', label: '3rd Rightmost IP in X-Forwarded-For' },
+                  { value: 'header', label: 'HTTP Header' },
+                  { value: 'proxy_protocol', label: 'Proxy Protocol' }
+                ]}
+                full
+              />
+              {applicationForm.clientIpSource === 'header' && (
+                <TextField label="HTTP Header Name" value={applicationForm.clientIpHeaderName} onChange={(value) => updateApplication('clientIpHeaderName', value)} placeholder="CF-Connecting-IP" />
+              )}
               {boolValue(applicationForm.modSecurityEnabled) && (
                 <>
                   <SelectField
@@ -4679,7 +4701,7 @@ function errorLimitSummary(form) {
   return `An IP that triggers ${codes} errors ${positiveInt(form.errorCount, 10)} times within ${positiveInt(form.errorPeriod, 10)} seconds will ${floodActionPhrase(form.errorAction, form.errorBlockMin)}.`;
 }
 
-function applicationDefaultsFormFromSettings(applicationDefaults) {
+function applicationDefaultsFormFromSettings(applicationDefaults, clientIp = {}) {
   const proxy = applicationDefaults?.proxy || {};
   const modSecurity = applicationDefaults?.modSecurity || {};
   return {
@@ -4697,6 +4719,8 @@ function applicationDefaultsFormFromSettings(applicationDefaults) {
     proxyXForwardedHost: proxy.xForwardedHost || '$http_host',
     proxyXForwardedProto: proxy.xForwardedProto || '$scheme',
     proxySslServerName: String(proxy.proxySslServerName ?? true),
+    clientIpSource: clientIp.source || 'socket',
+    clientIpHeaderName: clientIp.headerName || 'X-Forwarded-For',
     modSecurityEnabled: String(modSecurity.enabled ?? true),
     modSecurityMode: modSecurity.mode === 'detection_only' ? 'detection_only' : 'on',
     modSecurityRuleset: modSecurity.ruleset === 'owasp' ? 'owasp' : 'comodo',
@@ -4727,6 +4751,13 @@ function applicationDefaultsPayload(form) {
       ruleset: form.modSecurityRuleset === 'owasp' ? 'owasp' : 'comodo',
       requestBodyLimit: positiveInt(form.modSecurityRequestBodyLimit, 13107200)
     }
+  };
+}
+
+function clientIpPayload(form) {
+  return {
+    source: form.clientIpSource || 'socket',
+    headerName: form.clientIpHeaderName || 'X-Forwarded-For'
   };
 }
 
