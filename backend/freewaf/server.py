@@ -231,6 +231,34 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 self.send_json(200, state)
                 return
 
+            if parsed.path == "/api/dashboard":
+                self.send_json(200, state_slice_payload(store, "dashboard", query))
+                return
+
+            if parsed.path == "/api/sites":
+                self.send_json(200, state_slice_payload(store, "sites", query))
+                return
+
+            if parsed.path == "/api/rules":
+                self.send_json(200, state_slice_payload(store, "rules", query))
+                return
+
+            if parsed.path in {"/api/access", "/api/access-rules"}:
+                self.send_json(200, state_slice_payload(store, "access", query))
+                return
+
+            if parsed.path == "/api/ip-groups":
+                self.send_json(200, state_slice_payload(store, "ip-groups", query))
+                return
+
+            if parsed.path == "/api/certificates":
+                self.send_json(200, state_slice_payload(store, "certificates", query))
+                return
+
+            if parsed.path == "/api/settings":
+                self.send_json(200, state_slice_payload(store, "settings", query))
+                return
+
             if parsed.path == "/api/stats":
                 state = store.get_state()
                 site_id = str((query.get("siteId") or query.get("site_id") or [""])[0]).strip()
@@ -948,6 +976,58 @@ def public_certificate(certificate: dict) -> dict:
     if certificate.get("source") == "cloudflare":
         payload["cloudflareConfigured"] = bool(certificate.get("cloudflareCredentialsFile"))
     return payload
+
+
+def state_slice_payload(
+    store: Store,
+    section: str,
+    query: dict | None = None,
+) -> dict:
+    query = query or {}
+
+    if section == "dashboard":
+        state = store.get_state_fields("sites", "settings")
+        site_id = str((query.get("siteId") or query.get("site_id") or [""])[0]).strip()
+        period_days = dashboard_period_days((query.get("periodDays") or query.get("period_days") or [""])[0])
+        return {
+            "sites": state.get("sites", []),
+            "stats": combined_stats(store, state, site_id=site_id, retention_days=period_days),
+            "settings": {"panel": state.get("settings", {}).get("panel", {})},
+        }
+    if section == "sites":
+        state = store.get_state_fields("sites", "certificates", "settings")
+        return {
+            "sites": state.get("sites", []),
+            "certificates": [public_certificate(item) for item in state.get("certificates", [])],
+            "settings": state.get("settings", {}),
+        }
+    if section == "rules":
+        state = store.get_state_fields("rules", "sites")
+        return {
+            "rules": state.get("rules", []),
+            "sites": state.get("sites", []),
+        }
+    if section == "access":
+        state = store.get_state_fields("accessRules", "sites", "ipGroups")
+        return {
+            "accessRules": state.get("accessRules", []),
+            "sites": state.get("sites", []),
+            "ipGroups": state.get("ipGroups", []),
+        }
+    if section == "ip-groups":
+        state = store.get_state_fields("ipGroups")
+        return {"ipGroups": state.get("ipGroups", [])}
+    if section == "certificates":
+        state = store.get_state_fields("certificates")
+        return {"certificates": [public_certificate(item) for item in state.get("certificates", [])]}
+    if section == "settings":
+        state = store.get_state_fields("settings", "users", "certificates")
+        return {
+            "settings": state.get("settings", {}),
+            "users": [public_user(user) for user in state.get("users", [])],
+            "certificates": [public_certificate(item) for item in state.get("certificates", [])],
+        }
+    raise ValueError(f"Unknown state section: {section}")
 
 
 def error_payload(error: StoreError) -> dict:

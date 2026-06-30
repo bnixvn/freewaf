@@ -88,6 +88,38 @@ function createEmptyData() {
   };
 }
 
+function viewDataEndpoint(view, dashboardSiteId = '', dashboardPeriodDays = '7') {
+  if (view === 'dashboard') {
+    const params = new URLSearchParams({ periodDays: dashboardPeriodDays || '7' });
+    if (dashboardSiteId) params.set('siteId', dashboardSiteId);
+    return `/api/dashboard?${params.toString()}`;
+  }
+  return {
+    sites: '/api/sites',
+    rules: '/api/rules',
+    access: '/api/access-rules',
+    ipGroups: '/api/ip-groups',
+    certificates: '/api/certificates',
+    settings: '/api/settings'
+  }[view] || '';
+}
+
+function mergeViewData(current, payload) {
+  const base = current || createEmptyData();
+  const next = { ...base, ...payload };
+  if (payload?.settings) {
+    next.settings = {
+      ...(base.settings || {}),
+      ...payload.settings,
+      panel: {
+        ...(base.settings?.panel || {}),
+        ...(payload.settings.panel || {})
+      }
+    };
+  }
+  return next;
+}
+
 const defaultSite = {
   name: '',
   applicationType: 'reverse_proxy',
@@ -373,8 +405,11 @@ export default function App() {
   const [dashboardSiteId, setDashboardSiteId] = useState('');
   const [dashboardPeriodDays, setDashboardPeriodDays] = useState('7');
   const [navOpen, setNavOpen] = useState(false);
-  const stateRequestRef = useRef(null);
+  const [loadedViews, setLoadedViews] = useState({});
+  const activeViewRef = useRef(activeView);
+  const viewRequestRef = useRef(new Map());
   const logsRequestRef = useRef(null);
+  activeViewRef.current = activeView;
 
   useEffect(() => {
     if (!navOpen) return undefined;
@@ -413,20 +448,19 @@ export default function App() {
     return undefined;
   }, [data?.settings?.panel?.faviconUrl]);
 
-  // Auto-refresh /api/state for every view except `logs` (which has its own
-  // paginated endpoint). Pause while a modal is open or the tab is hidden
-  // so background polling does not fight with form edits or waste cycles.
+  // Only live traffic views poll. Configuration views load on entry or refresh,
+  // so background requests cannot overwrite forms while they are being edited.
   useEffect(() => {
-    if (!auth.authenticated || auth.loading || activeView === 'logs') {
+    if (!auth.authenticated || auth.loading || activeView !== 'dashboard') {
       return undefined;
     }
     const tick = () => {
       if (modal || document.hidden) return;
-      loadState(false, false);
+      loadViewData('dashboard', { manageLoading: false });
     };
     const refreshTimer = window.setInterval(tick, 5000);
     const onVisible = () => {
-      if (!document.hidden && !modal) loadState(false, false);
+      if (!document.hidden && !modal) loadViewData('dashboard', { manageLoading: false });
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => {
@@ -436,10 +470,13 @@ export default function App() {
   }, [auth.authenticated, auth.loading, activeView, modal, dashboardSiteId, dashboardPeriodDays]);
 
   useEffect(() => {
-    if (!auth.authenticated || auth.loading || activeView !== 'dashboard') {
+    if (!auth.authenticated || auth.loading || activeView === 'logs') {
       return;
     }
-    loadState(false, false);
+    if (activeView !== 'dashboard' && loadedViews[activeView]) {
+      return;
+    }
+    loadViewData(activeView, { manageLoading: false });
   }, [auth.authenticated, auth.loading, activeView, dashboardSiteId, dashboardPeriodDays]);
 
   useEffect(() => {
@@ -471,7 +508,7 @@ export default function App() {
       if (status.authenticated) {
         setData((current) => current || createEmptyData());
         setAuth({ loading: false, ...status });
-        await loadState(false, false);
+        await loadViewData('dashboard', { manageLoading: false });
       } else {
         setData(null);
         setAuth({ loading: false, ...status });
@@ -484,17 +521,26 @@ export default function App() {
     }
   }
 
-  async function loadState(announce = false, manageLoading = true) {
-    const params = new URLSearchParams({ periodDays: dashboardPeriodDays });
-    if (dashboardSiteId) params.set('siteId', dashboardSiteId);
-    const requestKey = params.toString();
-    if (stateRequestRef.current?.key === requestKey) return stateRequestRef.current.promise;
+  async function loadViewData(view = activeView, options = {}) {
+    const { announce = false, manageLoading = true, force = false } = options;
+    const endpoint = viewDataEndpoint(view, dashboardSiteId, dashboardPeriodDays);
+    if (!endpoint) return null;
+    const requestKey = endpoint;
+    const currentRequest = viewRequestRef.current.get(view);
+    if (!force && currentRequest?.key === requestKey) return currentRequest.promise;
     if (manageLoading) setLoading(true);
+    const requestToken = Symbol(requestKey);
     const request = (async () => {
-      setData(await api(`/api/state?${params.toString()}`));
-      if (announce) showToast('State refreshed');
+      const payload = await api(endpoint);
+      const isCurrent = viewRequestRef.current.get(view)?.token === requestToken && activeViewRef.current === view;
+      if (isCurrent) {
+        setData((current) => mergeViewData(current, payload));
+        setLoadedViews((current) => ({ ...current, [view]: true }));
+      }
+      if (announce && isCurrent) showToast(`${viewTitles[view] || 'View'} refreshed`);
+      return payload;
     })();
-    stateRequestRef.current = { key: requestKey, promise: request };
+    viewRequestRef.current.set(view, { key: requestKey, token: requestToken, promise: request });
     try {
       return await request;
     } catch (error) {
@@ -505,9 +551,12 @@ export default function App() {
       } else {
         showToast(error.message, true);
       }
+      return null;
     } finally {
-      if (stateRequestRef.current?.promise === request) stateRequestRef.current = null;
-      if (manageLoading) setLoading(false);
+      if (viewRequestRef.current.get(view)?.token === requestToken) {
+        viewRequestRef.current.delete(view);
+        if (manageLoading) setLoading(false);
+      }
     }
   }
 
@@ -528,15 +577,20 @@ export default function App() {
     if (logsRequestRef.current?.key === requestKey) return logsRequestRef.current.promise;
 
     if (manageLoading) setLogsLoading(true);
+    const requestToken = Symbol(requestKey);
     const request = api(`/api/logs?${params.toString()}`);
-    logsRequestRef.current = { key: requestKey, promise: request };
+    logsRequestRef.current = { key: requestKey, token: requestToken, promise: request };
     try {
       const result = await request;
-      setLogResult(result);
-      if (result.page && result.page !== nextPage) {
-        setLogPage(result.page);
+      const isCurrent = logsRequestRef.current?.token === requestToken && activeViewRef.current === 'logs';
+      if (isCurrent) {
+        setLogResult(result);
+        setLoadedViews((current) => ({ ...current, logs: true }));
+        if (result.page && result.page !== nextPage) {
+          setLogPage(result.page);
+        }
       }
-      if (announce) showToast('Logs refreshed');
+      if (announce && isCurrent) showToast('Logs refreshed');
       return result;
     } catch (error) {
       if (error.status === 401) {
@@ -548,8 +602,10 @@ export default function App() {
       }
       return null;
     } finally {
-      if (logsRequestRef.current?.promise === request) logsRequestRef.current = null;
-      if (manageLoading) setLogsLoading(false);
+      if (logsRequestRef.current?.token === requestToken) {
+        logsRequestRef.current = null;
+        if (manageLoading) setLogsLoading(false);
+      }
     }
   }
 
@@ -557,9 +613,10 @@ export default function App() {
     setLoading(true);
     try {
       const status = await api('/api/auth/setup', { method: 'POST', body: payload });
+      setLoadedViews({});
       setData(createEmptyData());
       setAuth({ loading: false, ...status });
-      await loadState(false, false);
+      await loadViewData('dashboard', { manageLoading: false });
       if (status.user?.totpSetupSecret) {
         setModal({ type: 'totpSetup', user: status.user });
       }
@@ -575,9 +632,10 @@ export default function App() {
     setLoading(true);
     try {
       const status = await api('/api/auth/login', { method: 'POST', body: payload });
+      setLoadedViews({});
       setData(createEmptyData());
       setAuth({ loading: false, ...status });
-      await loadState(false, false);
+      await loadViewData('dashboard', { manageLoading: false });
       showToast('Signed in');
     } catch (error) {
       showToast(error.message, true);
@@ -590,6 +648,7 @@ export default function App() {
   async function logout() {
     await api('/api/auth/logout', { method: 'POST' });
     setAuth({ loading: false, authenticated: false, setupRequired: false, user: null });
+    setLoadedViews({});
     setData(null);
     setActiveView('dashboard');
   }
@@ -637,7 +696,7 @@ export default function App() {
         updateDataItem('sites', site.id, saved);
       } catch (error) {
         showToast(error.message, true);
-        await loadState(false, false);
+        await loadViewData('sites', { manageLoading: false, force: true });
       }
     });
   }
@@ -655,7 +714,7 @@ export default function App() {
         showToast(enabled ? 'Under Attack Mode enabled' : 'Under Attack Mode disabled');
       } catch (error) {
         showToast(error.message, true);
-        await loadState(false, false);
+        await loadViewData('sites', { manageLoading: false, force: true });
       }
     });
   }
@@ -668,7 +727,7 @@ export default function App() {
         updateDataItem('rules', rule.id, saved);
       } catch (error) {
         showToast(error.message, true);
-        await loadState(false, false);
+        await loadViewData('rules', { manageLoading: false, force: true });
       }
     });
   }
@@ -681,7 +740,7 @@ export default function App() {
         updateDataItem('ipGroups', group.id, saved);
       } catch (error) {
         showToast(error.message, true);
-        await loadState(false, false);
+        await loadViewData('ipGroups', { manageLoading: false, force: true });
       }
     });
   }
@@ -694,7 +753,7 @@ export default function App() {
         updateDataItem('accessRules', rule.id, saved);
       } catch (error) {
         showToast(error.message, true);
-        await loadState(false, false);
+        await loadViewData('access', { manageLoading: false, force: true });
       }
     });
   }
@@ -802,7 +861,7 @@ export default function App() {
         body: payload
       });
       setModal(null);
-      await loadState();
+      await loadViewData('sites', { force: true });
       showToast('Site saved and Nginx reloaded');
     } catch (error) {
       showToast(error.message, true);
@@ -832,7 +891,7 @@ export default function App() {
         }
       });
       setModal(null);
-      await loadState();
+      await loadViewData('sites', { force: true });
       showToast('HTTP Flood settings saved and Nginx reloaded');
     } catch (error) {
       showToast(error.message, true);
@@ -853,7 +912,7 @@ export default function App() {
         }
       });
       setModal(null);
-      await loadState();
+      await loadViewData('sites', { force: true });
       showToast('Bot Protect settings saved and Nginx reloaded');
     } catch (error) {
       showToast(error.message, true);
@@ -874,7 +933,7 @@ export default function App() {
         }
       });
       setModal(null);
-      await loadState();
+      await loadViewData('sites', { force: true });
       showToast('Geo Block settings saved and Nginx reloaded');
     } catch (error) {
       showToast(error.message, true);
@@ -894,7 +953,7 @@ export default function App() {
         body: payload
       });
       setModal(null);
-      await loadState();
+      await loadViewData('rules', { force: true });
       showToast('Rule saved');
     } catch (error) {
       showToast(error.message, true);
@@ -917,7 +976,7 @@ export default function App() {
         body: payload
       });
       setModal(null);
-      await loadState();
+      await loadViewData('certificates', { force: true });
       showToast('Certificate saved');
     } catch (error) {
       showToast(error.message, true);
@@ -940,7 +999,7 @@ export default function App() {
         body: payload
       });
       setModal(null);
-      await loadState();
+      await loadViewData('ipGroups', { force: true });
       showToast('IP group saved');
     } catch (error) {
       showToast(error.message, true);
@@ -951,7 +1010,7 @@ export default function App() {
   async function syncIpGroup(group) {
     await withActionPending(`ip-group:${group.id}:sync`, async () => {
       const saved = await api(`/api/ip-groups/${group.id}/sync`, { method: 'POST' });
-      await loadState(false, false);
+      await loadViewData('ipGroups', { manageLoading: false, force: true });
       showToast(
         saved.lastSyncStatus === 'failed'
           ? saved.lastSyncMessage || 'IP group sync failed'
@@ -985,7 +1044,7 @@ export default function App() {
         body: payload
       });
       setModal(null);
-      await loadState();
+      await loadViewData('access', { force: true });
       showToast('Access rule saved');
     } catch (error) {
       showToast(error.message, true);
@@ -997,7 +1056,7 @@ export default function App() {
     if (!window.confirm(`Delete ${site.name}?`)) return;
     try {
       await api(`/api/sites/${site.id}`, { method: 'DELETE' });
-      await loadState();
+      await loadViewData('sites', { force: true });
       showToast('Site deleted');
     } catch (error) {
       showToast(error.message, true);
@@ -1007,7 +1066,7 @@ export default function App() {
   async function deleteRule(rule) {
     if (!window.confirm(`Delete ${rule.name}?`)) return;
     await api(`/api/rules/${rule.id}`, { method: 'DELETE' });
-    await loadState();
+    await loadViewData('rules', { force: true });
     showToast('Rule deleted');
   }
 
@@ -1015,7 +1074,7 @@ export default function App() {
     if (!window.confirm(`Delete ${certificate.name}?`)) return;
     try {
       await api(`/api/certificates/${certificate.id}`, { method: 'DELETE' });
-      await loadState();
+      await loadViewData('certificates', { force: true });
       showToast('Certificate deleted');
     } catch (error) {
       showToast(error.message, true);
@@ -1025,14 +1084,14 @@ export default function App() {
   async function deleteIpGroup(group) {
     if (!window.confirm(`Delete ${group.name}?`)) return;
     await api(`/api/ip-groups/${group.id}`, { method: 'DELETE' });
-    await loadState();
+    await loadViewData('ipGroups', { force: true });
     showToast('IP group deleted');
   }
 
   async function deleteAccessRule(rule) {
     if (!window.confirm(`Delete ${rule.name}?`)) return;
     await api(`/api/access-rules/${rule.id}`, { method: 'DELETE' });
-    await loadState();
+    await loadViewData('access', { force: true });
     showToast('Access rule deleted');
   }
 
@@ -1041,7 +1100,6 @@ export default function App() {
     await api('/api/logs', { method: 'DELETE' });
     setLogPage(1);
     setLogResult({ logs: [], total: 0, page: 1, pages: 1, domains: [] });
-    await loadState();
     if (activeView === 'logs') {
       await loadLogs({ page: 1 }, false, false);
     }
@@ -1053,7 +1111,7 @@ export default function App() {
     await api('/api/stats', { method: 'DELETE' });
     setLogPage(1);
     setLogResult({ logs: [], total: 0, page: 1, pages: 1, domains: [] });
-    await loadState();
+    await loadViewData('dashboard', { force: true });
     showToast('Statistics reset');
   }
 
@@ -1062,7 +1120,7 @@ export default function App() {
       await loadLogs({}, true, true);
       return;
     }
-    await loadState(true);
+    await loadViewData(activeView, { announce: true, force: true });
   }
 
   async function copyText(value) {
@@ -1120,7 +1178,6 @@ export default function App() {
         method: 'POST',
         body: { test: true, reload: true }
       });
-      await loadState(false, false);
       showToast(result.ok ? 'Global defaults saved and Nginx reloaded' : 'Global defaults saved, but Nginx reload failed', !result.ok);
     } catch (error) {
       showToast(error.message, true);
@@ -1157,7 +1214,18 @@ export default function App() {
         method: id ? 'PUT' : 'POST',
         body: payload
       });
-      await loadState();
+      const { totpSetupSecret, totpSetupUri, ...publicSaved } = saved;
+      setData((current) => {
+        if (!current) return current;
+        const users = current.users || [];
+        const exists = users.some((item) => item.id === saved.id);
+        return {
+          ...current,
+          users: exists
+            ? users.map((item) => (item.id === saved.id ? publicSaved : item))
+            : [...users, publicSaved]
+        };
+      });
       if (saved.totpSetupSecret) {
         setModal({ type: 'totpSetup', user: saved });
       } else {
@@ -1173,12 +1241,15 @@ export default function App() {
   async function deleteUser(user) {
     if (!window.confirm(`Delete ${user.username}?`)) return;
     await api(`/api/users/${user.id}`, { method: 'DELETE' });
-    await loadState();
+    setData((current) => (
+      current ? { ...current, users: (current.users || []).filter((item) => item.id !== user.id) } : current
+    ));
     showToast('User deleted');
   }
 
   const content = useMemo(() => {
     if (!data) return <LoadingPanel />;
+    if (!loadedViews[activeView]) return <LoadingPanel />;
     const props = {
       data,
       filter,
@@ -1234,7 +1305,7 @@ export default function App() {
     if (activeView === 'logs') return <LogsView {...props} />;
     if (activeView === 'settings') return <SettingsView {...props} />;
     return <DashboardView {...props} />;
-  }, [activeView, data, filter, auth, pendingActions, logsLoading, logResult, logSiteId, logVerdict, logPage, logPageSize, dashboardSiteId, dashboardPeriodDays]);
+  }, [activeView, data, loadedViews, filter, auth, pendingActions, logsLoading, logResult, logSiteId, logVerdict, logPage, logPageSize, dashboardSiteId, dashboardPeriodDays]);
 
   if (auth.loading) {
     return <LoadingPanel />;

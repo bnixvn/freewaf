@@ -416,6 +416,11 @@ class Store:
         with self.lock:
             return deepcopy(self._state())
 
+    def get_state_fields(self, *fields: str) -> dict:
+        with self.lock:
+            state = self._state()
+            return {field: deepcopy(state.get(field)) for field in fields}
+
     def persist(self) -> None:
         with self.lock:
             payload = json.dumps(self._state(), indent=2, ensure_ascii=True)

@@ -27,6 +27,7 @@ from freewaf.server import (
     render_challenge_page,
     ip_items_from_reference_text,
     secure_link_token,
+    state_slice_payload,
     sync_ip_group_reference,
     verify_challenge_nonce,
 )
@@ -50,6 +51,57 @@ MIIB
 
 
 class CertificateServerTests(unittest.TestCase):
+    def test_state_slice_payload_returns_only_view_dependencies(self):
+        state = {
+            "sites": [{"id": "site-a", "name": "Site A"}],
+            "rules": [{"id": "rule-a", "name": "Rule A"}],
+            "accessRules": [{"id": "access-a", "name": "Access A"}],
+            "ipGroups": [{"id": "group-a", "name": "Group A"}],
+            "certificates": [
+                {
+                    "id": "cert-a",
+                    "name": "Cert A",
+                    "source": "cloudflare",
+                    "cloudflareApiToken": "secret-token",
+                    "cloudflareCredentialsFile": "/tmp/cloudflare.ini",
+                }
+            ],
+            "users": [{"id": "user-a", "username": "admin", "passwordHash": "secret-hash"}],
+            "settings": {
+                "panel": {"logoUrl": "https://example.test/logo.svg"},
+                "applicationDefaults": {"proxy": {"gzip": True}},
+            },
+        }
+        store = mock.Mock()
+        store.get_state.return_value = state
+        store.get_state_fields.side_effect = lambda *fields: {field: state.get(field) for field in fields}
+
+        with mock.patch("freewaf.server.combined_stats", return_value={"total": 12, "siteStats": []}) as stats:
+            dashboard = state_slice_payload(store, "dashboard", {"siteId": ["site-a"], "periodDays": ["1"]})
+            sites = state_slice_payload(store, "sites")
+
+        self.assertEqual(set(dashboard), {"sites", "stats", "settings"})
+        self.assertEqual(dashboard["settings"], {"panel": state["settings"]["panel"]})
+        stats.assert_any_call(
+            store,
+            {"sites": state["sites"], "settings": state["settings"]},
+            site_id="site-a",
+            retention_days=1,
+        )
+        self.assertEqual(set(sites), {"sites", "certificates", "settings"})
+        self.assertNotIn("cloudflareApiToken", sites["certificates"][0])
+        self.assertNotIn("cloudflareCredentialsFile", sites["certificates"][0])
+
+        self.assertEqual(set(state_slice_payload(store, "rules")), {"rules", "sites"})
+        self.assertEqual(set(state_slice_payload(store, "access")), {"accessRules", "sites", "ipGroups"})
+        self.assertEqual(set(state_slice_payload(store, "ip-groups")), {"ipGroups"})
+        self.assertEqual(set(state_slice_payload(store, "certificates")), {"certificates"})
+
+        settings = state_slice_payload(store, "settings")
+        self.assertEqual(set(settings), {"settings", "users", "certificates"})
+        self.assertNotIn("passwordHash", settings["users"][0])
+        self.assertNotIn("cloudflareApiToken", settings["certificates"][0])
+
     def test_apply_nginx_rolls_back_generated_bundle_when_test_fails(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -693,11 +745,11 @@ class LogPaginationTests(unittest.TestCase):
         self.assertEqual(enriched[0]["country"], {"code": "US", "name": "United States"})
         self.assertNotIn("country", logs[0])
 
-    def test_combined_stats_logs_uses_dedicated_scan_limit(self):
+    def test_combined_stats_logs_uses_recent_log_limit(self):
         store = mock.Mock()
         store.get_logs.return_value = []
 
-        with mock.patch.dict(os.environ, {"STATS_LOG_SCAN_LIMIT": "1234", "STATS_LOG_SCAN_MAX": "5000"}):
+        with mock.patch.dict(os.environ, {"STATS_RECENT_LOG_LIMIT": "1234", "STATS_RECENT_LOG_MAX": "5000"}):
             with mock.patch("freewaf.server.parse_nginx_logs", return_value=[]) as parse_logs:
                 combined_stats_logs(store)
 
