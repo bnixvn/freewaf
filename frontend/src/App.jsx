@@ -371,6 +371,8 @@ export default function App() {
   const [dashboardSiteId, setDashboardSiteId] = useState('');
   const [dashboardPeriodDays, setDashboardPeriodDays] = useState('7');
   const [navOpen, setNavOpen] = useState(false);
+  const stateRequestRef = useRef(null);
+  const logsRequestRef = useRef(null);
 
   useEffect(() => {
     if (!navOpen) return undefined;
@@ -481,12 +483,18 @@ export default function App() {
   }
 
   async function loadState(announce = false, manageLoading = true) {
+    const params = new URLSearchParams({ periodDays: dashboardPeriodDays });
+    if (dashboardSiteId) params.set('siteId', dashboardSiteId);
+    const requestKey = params.toString();
+    if (stateRequestRef.current?.key === requestKey) return stateRequestRef.current.promise;
     if (manageLoading) setLoading(true);
-    try {
-      const params = new URLSearchParams({ logLimit: '1000', periodDays: dashboardPeriodDays });
-      if (dashboardSiteId) params.set('siteId', dashboardSiteId);
+    const request = (async () => {
       setData(await api(`/api/state?${params.toString()}`));
       if (announce) showToast('State refreshed');
+    })();
+    stateRequestRef.current = { key: requestKey, promise: request };
+    try {
+      return await request;
     } catch (error) {
       if (error.status === 401) {
         const status = await api('/api/auth/status').catch(() => ({ authenticated: false, setupRequired: false, user: null }));
@@ -496,6 +504,7 @@ export default function App() {
         showToast(error.message, true);
       }
     } finally {
+      if (stateRequestRef.current?.promise === request) stateRequestRef.current = null;
       if (manageLoading) setLoading(false);
     }
   }
@@ -513,10 +522,14 @@ export default function App() {
     if (nextSiteId) params.set('siteId', nextSiteId);
     if (nextVerdict) params.set('verdict', nextVerdict);
     if (nextSearch.trim()) params.set('search', nextSearch.trim());
+    const requestKey = params.toString();
+    if (logsRequestRef.current?.key === requestKey) return logsRequestRef.current.promise;
 
     if (manageLoading) setLogsLoading(true);
+    const request = api(`/api/logs?${params.toString()}`);
+    logsRequestRef.current = { key: requestKey, promise: request };
     try {
-      const result = await api(`/api/logs?${params.toString()}`);
+      const result = await request;
       setLogResult(result);
       if (result.page && result.page !== nextPage) {
         setLogPage(result.page);
@@ -533,6 +546,7 @@ export default function App() {
       }
       return null;
     } finally {
+      if (logsRequestRef.current?.promise === request) logsRequestRef.current = null;
       if (manageLoading) setLogsLoading(false);
     }
   }

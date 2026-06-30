@@ -300,6 +300,46 @@ class NginxLogTailCacheTests(unittest.TestCase):
                 log_file.write_text("", encoding="utf-8")
                 self.assertEqual(parse_nginx_logs(root, 100), [])
 
+    def test_site_log_parser_ignores_recompressed_rotations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            main_log = root / "freewaf_access.log"
+            site_dir = root / "sites"
+            site_dir.mkdir()
+            active_log = site_dir / "accesslog_site_demo"
+            daily_log = site_dir / "accesslog_site_demo-20260630"
+            broken_rotation = site_dir / "accesslog_site_demo-20260625.gz-20260628"
+            ignored_error_log = site_dir / "errorlog_site_demo"
+            payload = {
+                "time": "2026-06-12T00:00:00+00:00",
+                "remote_addr": "203.0.113.1",
+                "host": "demo.test",
+                "method": "GET",
+                "uri": "/",
+                "status": 200,
+                "request_time": 0.01,
+                "verdict": "allow",
+                "reason": "Allowed",
+                "user_agent": "ua",
+                "referer": "",
+            }
+            main_log.write_text("", encoding="utf-8")
+            active_log.write_text(json.dumps({**payload, "uri": "/active"}) + "\n", encoding="utf-8")
+            daily_log.write_text(json.dumps({**payload, "uri": "/daily"}) + "\n", encoding="utf-8")
+            broken_rotation.write_text(json.dumps({**payload, "uri": "/broken"}) + "\n", encoding="utf-8")
+            ignored_error_log.write_text(json.dumps({**payload, "uri": "/error"}) + "\n", encoding="utf-8")
+
+            with mock.patch.dict(
+                os.environ,
+                {"NGINX_ACCESS_LOG": str(main_log), "NGINX_SITE_LOG_DIR": str(site_dir)},
+                clear=False,
+            ):
+                with nginx_module._LOG_TAIL_LOCK:
+                    nginx_module._LOG_TAIL_CACHE.clear()
+
+                paths = {entry["path"] for entry in parse_nginx_logs(root, 10)}
+                self.assertEqual(paths, {"/active", "/daily"})
+
     def test_high_volume_logs_are_not_capped_below_caller_limit(self):
         # Regression: an earlier cap of 5000 entries silently truncated the
         # cache even when callers asked for more, so dashboard stat counters
@@ -309,7 +349,12 @@ class NginxLogTailCacheTests(unittest.TestCase):
             log_file = root / "freewaf_access.log"
             with mock.patch.dict(
                 os.environ,
-                {"NGINX_ACCESS_LOG": str(log_file), "NGINX_SITE_LOG_DIR": str(root / "sites")},
+                {
+                    "NGINX_ACCESS_LOG": str(log_file),
+                    "NGINX_SITE_LOG_DIR": str(root / "sites"),
+                    "FREEWAF_LOG_TAIL_MAX_ENTRIES": "8000",
+                    "FREEWAF_LOG_TAIL_MAX_BYTES": "4194304",
+                },
                 clear=False,
             ):
                 with nginx_module._LOG_TAIL_LOCK:
@@ -343,9 +388,8 @@ class NginxLogTailCacheTests(unittest.TestCase):
                 self.assertGreater(blocked, 3000)
 
     def test_small_log_read_does_not_cap_later_stats_window(self):
-        # /api/state reads a small log window for the table before building the
-        # dashboard stats. The first read must not shrink the cache below the
-        # later stats scan window.
+        # A small log table read must not prevent a later wider read from
+        # reloading a larger tail window when the caller asks for it.
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             log_file = root / "freewaf_access.log"
@@ -354,7 +398,8 @@ class NginxLogTailCacheTests(unittest.TestCase):
                 {
                     "NGINX_ACCESS_LOG": str(log_file),
                     "NGINX_SITE_LOG_DIR": str(root / "sites"),
-                    "STATS_LOG_SCAN_LIMIT": "7000",
+                    "FREEWAF_LOG_TAIL_MAX_ENTRIES": "8000",
+                    "FREEWAF_LOG_TAIL_MAX_BYTES": "4194304",
                 },
                 clear=False,
             ):

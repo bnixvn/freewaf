@@ -374,17 +374,14 @@ _LOG_TAIL_CACHE: dict[str, dict] = {}
 _LOG_TAIL_LOCK = threading.Lock()
 _LOG_INCREMENTAL_SCAN_CACHE: dict[str, dict[str, dict]] = {}
 _LOG_INCREMENTAL_SCAN_LOCK = threading.Lock()
-# Floor below which the cache must keep enough entries for dashboard stats even
-# when the first caller asks for fewer, so a paginated log read cannot
-# accidentally cap later stat counters. Hard ceiling guards memory; both are
-# env-overridable for operators running very high-traffic edges.
-_LOG_TAIL_DEFAULT_MIN_ENTRIES = 50000
+# Keep the UI tail cache small. Dashboard counters use the incremental scanner
+# below, so retaining tens of thousands of parsed rows per file only burns RAM.
+_LOG_TAIL_DEFAULT_MIN_ENTRIES = 1000
+_SITE_ACCESS_LOG_PATTERN = re.compile(r"^accesslog_site_[A-Za-z0-9_-]+(?:-\d{8})?$")
 
 
 def _log_tail_min_entries() -> int:
     raw = os.environ.get("FREEWAF_LOG_TAIL_MIN_ENTRIES", "").strip()
-    if not raw:
-        raw = os.environ.get("STATS_LOG_SCAN_LIMIT", "").strip()
     try:
         value = int(raw) if raw else _LOG_TAIL_DEFAULT_MIN_ENTRIES
     except ValueError:
@@ -395,19 +392,23 @@ def _log_tail_min_entries() -> int:
 def _log_tail_max_entries() -> int:
     raw = os.environ.get("FREEWAF_LOG_TAIL_MAX_ENTRIES", "").strip()
     try:
-        value = int(raw) if raw else 250_000
+        value = int(raw) if raw else 10_000
     except ValueError:
-        value = 250_000
+        value = 10_000
     return max(_log_tail_min_entries(), value)
 
 
 def _log_tail_max_bytes() -> int:
     raw = os.environ.get("FREEWAF_LOG_TAIL_MAX_BYTES", "").strip()
     try:
-        value = int(raw) if raw else 64 * 1024 * 1024  # 64 MiB cold-read cap on first scan
+        value = int(raw) if raw else 16 * 1024 * 1024
     except ValueError:
-        value = 64 * 1024 * 1024
+        value = 16 * 1024 * 1024
     return max(1024 * 1024, value)
+
+
+def is_active_site_access_log(path: Path) -> bool:
+    return bool(_SITE_ACCESS_LOG_PATTERN.match(path.name))
 
 
 def _log_file_signature(log_file: Path) -> tuple:
@@ -458,6 +459,9 @@ def _read_log_tail(log_file: Path, limit: int) -> list[dict]:
     """Return the most recent ``limit`` parsed entries for a single file using
     an inode/size aware tail cache so subsequent calls only read newly
     appended bytes."""
+    requested_limit = int(limit)
+    if requested_limit <= 0:
+        return []
     key = str(log_file)
     signature = _log_file_signature(log_file)
     if not signature:
@@ -477,14 +481,22 @@ def _read_log_tail(log_file: Path, limit: int) -> list[dict]:
         cached_seq = cached.get("seq") if cached else 0
         cached_entries = list(cached.get("entries") or []) if cached else []
         cached_partial = cached.get("partial") if cached else b""
+        cached_trimmed = bool(cached.get("trimmed")) if cached else False
 
     rotated = cached is None or cached_inode != inode or size < cached_size
-    start_offset = 0 if rotated else cached_size
-    entries = [] if rotated else cached_entries
-    sequence = 0 if rotated else cached_seq
-    partial = b"" if rotated else cached_partial
+    needs_wider_tail = (
+        not rotated
+        and size == cached_size
+        and cached_trimmed
+        and len(cached_entries) < min(requested_limit, hard_max)
+    )
+    start_offset = 0 if rotated or needs_wider_tail else cached_size
+    entries = [] if rotated or needs_wider_tail else cached_entries
+    sequence = 0 if rotated or needs_wider_tail else cached_seq
+    partial = b"" if rotated or needs_wider_tail else cached_partial
+    trimmed = False if rotated or needs_wider_tail else cached_trimmed
 
-    if rotated and size > _log_tail_max_bytes():
+    if (rotated or needs_wider_tail) and size > _log_tail_max_bytes():
         # Skip ahead to the last chunk; we only need the tail anyway.
         start_offset = size - _log_tail_max_bytes()
 
@@ -528,6 +540,7 @@ def _read_log_tail(log_file: Path, limit: int) -> list[dict]:
         # Trim to cap so cache stays bounded.
         if len(entries) > cap:
             entries = entries[-cap:]
+            trimmed = True
 
     with _LOG_TAIL_LOCK:
         _LOG_TAIL_CACHE[key] = {
@@ -536,11 +549,12 @@ def _read_log_tail(log_file: Path, limit: int) -> list[dict]:
             "seq": sequence,
             "entries": entries,
             "partial": partial,
+            "trimmed": trimmed,
         }
 
     if not entries:
         return []
-    return list(entries[-int(limit):])
+    return list(entries[-requested_limit:])
 
 
 def parse_nginx_logs(root_dir: Path, limit: int = 500) -> list[dict]:
@@ -557,7 +571,7 @@ def nginx_log_files(root_dir: Path) -> list[Path]:
     log_files = [nginx_access_log_file(root_dir)]
     site_log_dir = nginx_site_log_dir(root_dir)
     if site_log_dir.exists():
-        log_files.extend(sorted(p for p in site_log_dir.glob("accesslog_*") if p.suffix != ".gz"))
+        log_files.extend(sorted(p for p in site_log_dir.glob("accesslog_*") if is_active_site_access_log(p)))
     return log_files
 
 

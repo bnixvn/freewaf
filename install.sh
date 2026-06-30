@@ -307,6 +307,11 @@ IP_GROUP_EXTERNALIZE_COUNT=5000
 IP_GROUP_EXTERNALIZE_BYTES=262144
 STATS_LOG_SCAN_LIMIT=50000
 STATS_LOG_SCAN_MAX=250000
+STATS_RECENT_LOG_LIMIT=1000
+STATS_RECENT_LOG_MAX=10000
+FREEWAF_LOG_TAIL_MIN_ENTRIES=1000
+FREEWAF_LOG_TAIL_MAX_ENTRIES=10000
+FREEWAF_LOG_TAIL_MAX_BYTES=16777216
 STATS_RETENTION_DAYS=7
 GEOIP_DB_FILE=/var/lib/freewaf/geoip/dbip-country-lite.csv.gz
 EOF
@@ -324,6 +329,8 @@ ${APP_DIR}/logs/freewaf_access.log ${APP_DIR}/logs/freewaf/accesslog_* ${APP_DIR
     compress
     delaycompress
     dateext
+    olddir ${APP_DIR}/logs/freewaf/rotated
+    createolddir 0750 www-data adm
     create 0640 www-data adm
     sharedscripts
     postrotate

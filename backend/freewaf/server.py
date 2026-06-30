@@ -67,6 +67,7 @@ STATS_AGGREGATE_BUCKET_MS = 5 * 60 * 1000
 STATS_AGGREGATE_LOCK = threading.RLock()
 STATS_AGGREGATE_CACHE_VERSION = 4
 STATS_AGGREGATE_CACHE = {"files": {}, "countryCache": {}, "loadedCacheName": ""}
+STATS_AGGREGATE_CACHE_NAME = "stats:aggregate"
 
 
 def main() -> None:
@@ -221,11 +222,8 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
 
             if parsed.path == "/api/state":
                 state = store.get_state()
-                limit = parse_int((query.get("logLimit") or ["200"])[0], 200)
                 site_id = str((query.get("siteId") or query.get("site_id") or [""])[0]).strip()
                 period_days = dashboard_period_days((query.get("periodDays") or query.get("period_days") or [""])[0])
-                logs = combined_logs(store, clamp(limit, 1, 1000))
-                state["logs"] = logs
                 state["stats"] = combined_stats(store, state, site_id=site_id, retention_days=period_days)
                 state["runtime"] = runtime_payload(state, admin_port, demo_origin_port, demo_enabled)
                 state["users"] = [public_user(user) for user in state.get("users", [])]
@@ -1200,7 +1198,7 @@ def combined_logs(store: Store, limit: int) -> list[dict]:
 
 
 def combined_stats_logs(store: Store) -> list[dict]:
-    limit = stats_scan_limit()
+    limit = recent_stats_log_limit()
     logs = [*parse_nginx_logs(ROOT_DIR, limit), *store.get_logs(limit)]
     return sorted(logs, key=lambda entry: entry.get("at") or "", reverse=True)[:limit]
 
@@ -1216,25 +1214,28 @@ def combined_stats(store: Store, state: dict | None = None, site_id: str = "", r
 
 def nginx_stats_summary(retention_days: int | None = None) -> dict:
     retention_days = normalize_stats_retention_days(retention_days) if retention_days is not None else stats_retention_days()
+    aggregate_retention_days = stats_retention_days()
+    retention_days = min(retention_days, aggregate_retention_days)
     now_ms = int(time.time() * 1000)
     retention_start_ms = now_ms - retention_days * 24 * 60 * 60 * 1000
-    cache_name = f"stats:{retention_days}"
+    aggregate_start_ms = now_ms - aggregate_retention_days * 24 * 60 * 60 * 1000
 
     with STATS_AGGREGATE_LOCK:
-        load_stats_aggregate_cache(cache_name, retention_days)
-        STATS_AGGREGATE_CACHE["retentionDays"] = retention_days
+        load_stats_aggregate_cache(STATS_AGGREGATE_CACHE_NAME, aggregate_retention_days)
+        STATS_AGGREGATE_CACHE["retentionDays"] = aggregate_retention_days
 
         def on_reset(path: str) -> None:
             STATS_AGGREGATE_CACHE["files"].pop(path, None)
 
         def on_entry(path: str, entry: dict) -> None:
-            aggregate_stats_entry(STATS_AGGREGATE_CACHE, path, entry, retention_start_ms)
+            aggregate_stats_entry(STATS_AGGREGATE_CACHE, path, entry, aggregate_start_ms)
 
-        scanner_state = scan_nginx_log_entries(ROOT_DIR, cache_name, on_entry, on_reset)
+        scanner_state = scan_nginx_log_entries(ROOT_DIR, STATS_AGGREGATE_CACHE_NAME, on_entry, on_reset)
         STATS_AGGREGATE_CACHE["scannerState"] = scanner_state
-        prune_stats_aggregate(STATS_AGGREGATE_CACHE, retention_start_ms)
+        prune_stats_aggregate(STATS_AGGREGATE_CACHE, aggregate_start_ms)
         summary = collapse_stats_aggregate(STATS_AGGREGATE_CACHE, retention_start_ms)
-        save_stats_aggregate_cache(cache_name, retention_days, scanner_state)
+        summary["retentionDays"] = retention_days
+        save_stats_aggregate_cache(STATS_AGGREGATE_CACHE_NAME, aggregate_retention_days, scanner_state)
         return summary
 
 
@@ -1531,6 +1532,12 @@ def stats_scan_limit() -> int:
     default_limit = parse_int(os.environ.get("STATS_LOG_SCAN_LIMIT"), 50000)
     maximum = parse_int(os.environ.get("STATS_LOG_SCAN_MAX"), 250000)
     return clamp(default_limit, 1, max(1, maximum))
+
+
+def recent_stats_log_limit() -> int:
+    default_limit = parse_int(os.environ.get("STATS_RECENT_LOG_LIMIT"), 1000)
+    maximum = parse_int(os.environ.get("STATS_RECENT_LOG_MAX"), 10000)
+    return clamp(default_limit, 0, max(0, maximum))
 
 
 def stats_retention_days() -> int:
