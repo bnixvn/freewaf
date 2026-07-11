@@ -757,6 +757,55 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("modsecurity on;", enabled_config)
         self.assertIn("modsecurity_rules_file /etc/freewaf/modsecurity/cms-only.conf;", enabled_config)
 
+    def test_native_bot_and_http_flood_do_not_force_modsecurity(self):
+        state = make_state(
+            sites=[
+                {
+                    "id": "site-native",
+                    "name": "Native",
+                    "hostnames": ["native.example.test"],
+                    "origin": "http://127.0.0.1:9090",
+                    "ports": ["80"],
+                    "mode": "block",
+                    "enabled": True,
+                    "features": {"httpFlood": True, "botProtection": True},
+                    "botProtection": {
+                        "antiBotChallenge": True,
+                        "rateChallenge": {
+                            "enabled": True,
+                            "windowSeconds": 10,
+                            "challengeCount": 30,
+                            "blockCount": 60,
+                            "blockMinutes": 10,
+                        },
+                    },
+                    "acl": {
+                        "enabled": True,
+                        "rateLimitMode": "custom",
+                        "accessLimit": {
+                            "enabled": True,
+                            "period": 10,
+                            "count": 200,
+                            "blockCount": 500,
+                            "action": "challenge_v1",
+                            "blockMin": 60,
+                        },
+                    },
+                }
+            ],
+        )
+
+        with mock.patch.dict(os.environ, {"NGINX_HAS_MODSECURITY": "true"}, clear=False):
+            config = generate_nginx_config(state)
+
+        self.assertNotIn("modsecurity on;", config)
+        self.assertNotIn("modsecurity_rules_file", config)
+        self.assertNotIn("freewaf_site_native_bot_count", config)
+        self.assertNotIn("freewaf_site_native_flood_count", config)
+        self.assertIn("map $http_user_agent $sfl_bad_bot_ua", config)
+        self.assertIn("limit_req_zone $sfl_acl_key_site_native zone=sfl_acl_site_native:10m rate=20r/s;", config)
+        self.assertIn("set $sfl_challenge 1;", config)
+
     def test_site_settings_override_application_defaults_for_transport_and_modsecurity(self):
         settings = json.loads(json.dumps(DEFAULT_SETTINGS))
         settings["applicationDefaults"] = {
@@ -1053,6 +1102,7 @@ class NginxGeneratorTests(unittest.TestCase):
                     "listen": 8080,
                     "mode": "block",
                     "enabled": True,
+                    "modSecurity": {"enabled": True, "ruleset": "cms"},
                     "features": {"botProtection": True},
                     "botProtection": {
                         "antiBotChallenge": True,
@@ -1072,7 +1122,7 @@ class NginxGeneratorTests(unittest.TestCase):
             os.environ,
             {
                 "NGINX_HAS_MODSECURITY": "true",
-                "NGINX_MODSECURITY_BASE_RULES_FILE": "/etc/freewaf/modsecurity/base.conf",
+                "NGINX_MODSECURITY_CMS_RULES_FILE": "/etc/freewaf/modsecurity/cms-only.conf",
             },
             clear=False,
         ):
@@ -1090,7 +1140,7 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertNotIn("freewaf_challenge=passed", config)
         self.assertIn("Bot protection matched scanner headers", config)
         self.assertIn("Bot protection protected login path", config)
-        self.assertIn("modsecurity_rules_file /etc/freewaf/modsecurity/base.conf;", config)
+        self.assertIn("modsecurity_rules_file /etc/freewaf/modsecurity/cms-only.conf;", config)
         self.assertIn("REQUEST_HEADERS:User-Agent", config)
         self.assertIn("REQUEST_HEADERS:Accept-Language", config)
         self.assertIn("initcol:global=freewaf_site_demo_bot_%{REMOTE_ADDR}_%{tx.freewaf_site_demo_bot_ua_hash}", config)
@@ -1120,6 +1170,7 @@ class NginxGeneratorTests(unittest.TestCase):
                     "listen": 8080,
                     "mode": "block",
                     "enabled": True,
+                    "modSecurity": {"enabled": True, "ruleset": "cms"},
                     "features": {"httpFlood": True, "botProtection": True},
                     "underAttack": {"enabled": True},
                     "botProtection": {
@@ -1145,7 +1196,7 @@ class NginxGeneratorTests(unittest.TestCase):
             os.environ,
             {
                 "NGINX_HAS_MODSECURITY": "true",
-                "NGINX_MODSECURITY_BASE_RULES_FILE": "/etc/freewaf/modsecurity/base.conf",
+                "NGINX_MODSECURITY_CMS_RULES_FILE": "/etc/freewaf/modsecurity/cms-only.conf",
             },
             clear=False,
         ):
@@ -1183,6 +1234,7 @@ class NginxGeneratorTests(unittest.TestCase):
                     "listen": 8080,
                     "mode": "block",
                     "enabled": True,
+                    "modSecurity": {"enabled": True, "ruleset": "cms"},
                     "features": {"httpFlood": True, "botProtection": True},
                     "underAttack": {"enabled": True},
                     "botProtection": {
@@ -1210,7 +1262,7 @@ class NginxGeneratorTests(unittest.TestCase):
             os.environ,
             {
                 "NGINX_HAS_MODSECURITY": "true",
-                "NGINX_MODSECURITY_BASE_RULES_FILE": "/etc/freewaf/modsecurity/base.conf",
+                "NGINX_MODSECURITY_CMS_RULES_FILE": "/etc/freewaf/modsecurity/cms-only.conf",
             },
             clear=False,
         ):
@@ -1242,6 +1294,7 @@ class NginxGeneratorTests(unittest.TestCase):
                     "listen": 8080,
                     "mode": "block",
                     "enabled": True,
+                    "modSecurity": {"enabled": True, "ruleset": "cms"},
                     "features": {"httpFlood": True, "botProtection": False},
                     "acl": {
                         "enabled": True,
@@ -1261,13 +1314,13 @@ class NginxGeneratorTests(unittest.TestCase):
             os.environ,
             {
                 "NGINX_HAS_MODSECURITY": "true",
-                "NGINX_MODSECURITY_BASE_RULES_FILE": "/etc/freewaf/modsecurity/base.conf",
+                "NGINX_MODSECURITY_CMS_RULES_FILE": "/etc/freewaf/modsecurity/cms-only.conf",
             },
             clear=False,
         ):
             config = generate_nginx_config(state)
 
-        self.assertIn("modsecurity_rules_file /etc/freewaf/modsecurity/base.conf;", config)
+        self.assertIn("modsecurity_rules_file /etc/freewaf/modsecurity/cms-only.conf;", config)
         self.assertIn('SecRule IP:freewaf_site_demo_flood_count "@gt 500"', config)
         self.assertIn('SecRule IP:freewaf_site_demo_flood_blocked "@eq 1"', config)
         self.assertIn("expirevar:ip.freewaf_site_demo_flood_blocked=3600", config)
@@ -1512,6 +1565,7 @@ class NginxGeneratorTests(unittest.TestCase):
                     "listen": 8080,
                     "mode": "block",
                     "enabled": True,
+                    "modSecurity": {"enabled": True, "ruleset": "cms"},
                     "features": {"httpFlood": True, "botProtection": True},
                     "botProtection": {
                         "antiBotChallenge": True,

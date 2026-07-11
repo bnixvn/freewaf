@@ -1605,25 +1605,16 @@ def site_modsecurity(site: dict, defaults: dict | None = None) -> dict:
 
 def render_modsecurity_directives(site: dict) -> list[str]:
     config = site.get("modSecurity") if isinstance(site.get("modSecurity"), dict) else {}
-    bot_rate_required = bot_rate_challenge_required(site)
-    http_flood_required = http_flood_cooldown_required(site)
-    if not config.get("enabled") and not bot_rate_required and not http_flood_required:
+    if not config.get("enabled"):
         return []
     if os.environ.get("NGINX_HAS_MODSECURITY", "false").lower() != "true":
-        lines = []
-        if config.get("enabled"):
-            lines.append("    # ModSecurity is enabled for this application, but NGINX_HAS_MODSECURITY is not true.")
-        if bot_rate_required:
-            lines.append("    # Bot Protect rate thresholds require ModSecurity, but NGINX_HAS_MODSECURITY is not true.")
-        if http_flood_required:
-            lines.append("    # HTTP Flood temporary block thresholds require ModSecurity, but NGINX_HAS_MODSECURITY is not true.")
-        lines.append("")
-        return lines
+        return [
+            "    # ModSecurity is enabled for this application, but NGINX_HAS_MODSECURITY is not true.",
+            "",
+        ]
 
     ruleset = str(config.get("ruleset") or "cms").lower()
-    if not config.get("enabled"):
-        rules_file = os.environ.get("NGINX_MODSECURITY_BASE_RULES_FILE", "/etc/freewaf/modsecurity/base.conf")
-    elif ruleset == "cms":
+    if ruleset == "cms":
         rules_file = os.environ.get("NGINX_MODSECURITY_CMS_RULES_FILE", "/etc/freewaf/modsecurity/cms-only.conf")
     elif ruleset == "owasp":
         rules_file = os.environ.get("NGINX_MODSECURITY_OWASP_RULES_FILE", "/etc/freewaf/modsecurity/owasp-crs.conf")
@@ -1666,10 +1657,12 @@ def http_flood_cooldown_required(site: dict) -> bool:
 
 
 def render_bot_rate_modsecurity_rules(site: dict, state: dict | None = None, indent: str = "        ") -> list[str]:
+    config = site.get("modSecurity") if isinstance(site.get("modSecurity"), dict) else {}
     protection = site_bot_protection(site)
     rate = protection.get("rateChallenge") or {}
     if (
-        not protection.get("antiBotChallenge")
+        not config.get("enabled")
+        or not protection.get("antiBotChallenge")
         or not rate.get("enabled")
         or os.environ.get("NGINX_HAS_MODSECURITY", "false").lower() != "true"
     ):
@@ -1777,7 +1770,12 @@ def bot_rate_block_minutes(rate: dict) -> int:
 
 
 def render_http_flood_modsecurity_rules(site: dict, state: dict | None = None, indent: str = "        ") -> list[str]:
-    if not http_flood_cooldown_required(site) or os.environ.get("NGINX_HAS_MODSECURITY", "false").lower() != "true":
+    config = site.get("modSecurity") if isinstance(site.get("modSecurity"), dict) else {}
+    if (
+        not config.get("enabled")
+        or not http_flood_cooldown_required(site)
+        or os.environ.get("NGINX_HAS_MODSECURITY", "false").lower() != "true"
+    ):
         return []
 
     limit = active_acl_access_limit(site) or {}
