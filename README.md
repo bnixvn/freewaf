@@ -263,10 +263,14 @@ The installer creates:
 
 ```text
 /etc/freewaf/modsecurity/base.conf
+/etc/freewaf/modsecurity/cms-custom.conf
+/etc/freewaf/modsecurity/cms-only.conf
 /etc/freewaf/modsecurity/comodo.conf
 /etc/freewaf/modsecurity/owasp-crs.conf
 /var/log/nginx/freewaf_modsecurity_audit.log
 ```
+
+By default, `owasp-crs.conf` and the Comodo fallback use a CMS-focused profile. It keeps CRS coverage for WordPress/PHP CMS attack families such as LFI, RFI, RCE, PHP, XSS, and SQLi, plus FreeWAF custom rules for sensitive WordPress, WHMCS, Laravel, and CodeIgniter paths. Broad CRS scanner, protocol, multipart, Java/Node-specific, and response-leakage rule groups are intentionally not included to keep memory usage predictable on small VPS instances.
 
 Applications can run ModSecurity in `Block` or `Detection Only` mode. Start new or sensitive applications in Detection Only mode, review the audit log, then switch to Block.
 
@@ -325,6 +329,8 @@ GEOIP_DB_FILE=/var/lib/freewaf/geoip/dbip-country-lite.csv.gz
 ```
 
 The installer also writes `/etc/logrotate.d/freewaf` so Nginx access logs are rotated daily and retained for 7 days.
+
+The installer enables `/etc/systemd/system/freewaf-healthcheck.timer`, which checks `https://127.0.0.1:7001/api/health` every minute and restarts `freewaf.service` if the panel stops responding. Nginx also receives a small systemd restart override so traffic service can recover after OOM or process failures.
 
 After changing environment variables:
 

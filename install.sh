@@ -5,6 +5,9 @@ APP_DIR="${FREEWAF_APP_DIR:-/opt/freewaf}"
 ENV_DIR="${FREEWAF_ENV_DIR:-/etc/freewaf}"
 ENV_FILE="${ENV_DIR}/freewaf.env"
 SERVICE_FILE="/etc/systemd/system/freewaf.service"
+HEALTHCHECK_SCRIPT="/usr/local/sbin/freewaf-healthcheck"
+HEALTHCHECK_SERVICE="/etc/systemd/system/freewaf-healthcheck.service"
+HEALTHCHECK_TIMER="/etc/systemd/system/freewaf-healthcheck.timer"
 NGINX_INCLUDE="/etc/nginx/conf.d/freewaf.conf"
 LOGROTATE_FILE="/etc/logrotate.d/freewaf"
 CERTBOT_DEPLOY_HOOK="/etc/letsencrypt/renewal-hooks/deploy/freewaf-nginx-reload"
@@ -228,18 +231,40 @@ SecTmpDir /var/cache/modsecurity
 SecDataDir /var/cache/modsecurity
 EOF
 
-  printf 'Include %s\n' "${modsec_dir}/base.conf" > "${modsec_dir}/owasp-crs.conf"
+  cat > "${modsec_dir}/cms-custom.conf" <<'EOF'
+# FreeWAF focused CMS rules for WordPress, WHMCS, Laravel, and CodeIgniter.
+SecRule REQUEST_URI "@rx (?i)(?:^|/)(?:wp-config\.php|xmlrpc\.php|wp-admin/install\.php|wp-admin/setup-config\.php|wp-content/(?:debug\.log|uploads/.*\.php)|\.env|\.git/|composer\.(?:json|lock)|vendor/phpunit|storage/(?:logs|framework|debugbar)|bootstrap/cache|application/(?:config|logs|cache)|system/|writable/logs|configuration\.php)(?:$|[?/#])" "id:760001,phase:1,deny,status:403,log,msg:'FreeWAF CMS sensitive path access'"
+SecRule ARGS_NAMES|ARGS|REQUEST_COOKIES "@rx (?i)(?:wp-config\.php|php://(?:input|filter)|expect://|phar://|storage/logs|vendor/phpunit|/etc/passwd|\.env)" "id:760002,phase:2,deny,status:403,log,msg:'FreeWAF CMS sensitive reference in input'"
+SecRule REQUEST_URI "@rx (?i)(?:/wp-login\.php|/wp-admin/|/wp-json/|/xmlrpc\.php|/admin(?:/|$)|/clientarea\.php|/cart\.php|/index\.php)" "id:760003,phase:1,pass,nolog,setvar:tx.freewaf_cms_path=1"
+SecRule REQUEST_HEADERS:User-Agent "@rx (?i)(?:wpscan|sqlmap|nikto|acunetix|nuclei|masscan|zgrab|python-requests)" "id:760004,phase:1,deny,status:403,log,msg:'FreeWAF CMS scanner user-agent'"
+EOF
+
+  printf 'Include %s\n' "${modsec_dir}/base.conf" > "${modsec_dir}/cms-only.conf"
   if [ -f "$owasp_setup" ] && [ -d "$owasp_rules_dir" ]; then
-    printf 'Include %s\n' "$owasp_setup" >> "${modsec_dir}/owasp-crs.conf"
+    printf 'Include %s\n' "$owasp_setup" >> "${modsec_dir}/cms-only.conf"
     if [ -f /etc/modsecurity/crs/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf ]; then
-      printf 'Include %s\n' /etc/modsecurity/crs/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf >> "${modsec_dir}/owasp-crs.conf"
+      printf 'Include %s\n' /etc/modsecurity/crs/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf >> "${modsec_dir}/cms-only.conf"
     fi
-    printf 'Include %s\n' "${owasp_rules_dir}/*.conf" >> "${modsec_dir}/owasp-crs.conf"
-    if [ -f /etc/modsecurity/crs/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf ]; then
-      printf 'Include %s\n' /etc/modsecurity/crs/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf >> "${modsec_dir}/owasp-crs.conf"
-    fi
+    for rule_file in \
+      REQUEST-901-INITIALIZATION.conf \
+      REQUEST-903.9002-WORDPRESS-EXCLUSION-RULES.conf \
+      REQUEST-905-COMMON-EXCEPTIONS.conf \
+      REQUEST-930-APPLICATION-ATTACK-LFI.conf \
+      REQUEST-931-APPLICATION-ATTACK-RFI.conf \
+      REQUEST-932-APPLICATION-ATTACK-RCE.conf \
+      REQUEST-933-APPLICATION-ATTACK-PHP.conf \
+      REQUEST-941-APPLICATION-ATTACK-XSS.conf \
+      REQUEST-942-APPLICATION-ATTACK-SQLI.conf \
+      REQUEST-949-BLOCKING-EVALUATION.conf; do
+      if [ -f "${owasp_rules_dir}/${rule_file}" ]; then
+        printf 'Include %s\n' "${owasp_rules_dir}/${rule_file}" >> "${modsec_dir}/cms-only.conf"
+      fi
+    done
+    printf 'Include %s\n' "${modsec_dir}/cms-custom.conf" >> "${modsec_dir}/cms-only.conf"
+    cp "${modsec_dir}/cms-only.conf" "${modsec_dir}/owasp-crs.conf"
   else
     log "OWASP CRS package layout is incomplete; check ${owasp_setup} and ${owasp_rules_dir}"
+    cp "${modsec_dir}/base.conf" "${modsec_dir}/owasp-crs.conf"
   fi
 
   if [ -n "$COMODO_RULES_FILE" ] && [ -f "$COMODO_RULES_FILE" ]; then
@@ -391,14 +416,60 @@ Type=simple
 WorkingDirectory=${APP_DIR}
 EnvironmentFile=${ENV_FILE}
 ExecStart=/usr/bin/python3 ${APP_DIR}/backend/run.py
-Restart=on-failure
-RestartSec=3
+Restart=always
+RestartSec=3s
+TimeoutStartSec=120s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+FinalKillSignal=SIGKILL
 
 [Install]
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
   systemctl enable freewaf
+}
+
+write_healthcheck() {
+  log "Writing FreeWAF healthcheck"
+  cat > "$HEALTHCHECK_SCRIPT" <<EOF
+#!/bin/sh
+set -eu
+URL="\${FREEWAF_HEALTH_URL:-https://127.0.0.1:${ADMIN_PORT}/api/health}"
+if /usr/bin/curl -skfsS --connect-timeout 2 --max-time 8 "\$URL" >/dev/null; then
+  exit 0
+fi
+/usr/bin/systemd-cat -t freewaf-healthcheck -p warning echo "FreeWAF panel healthcheck failed; restarting freewaf.service"
+/usr/bin/systemctl restart freewaf.service
+EOF
+  chmod 0755 "$HEALTHCHECK_SCRIPT"
+
+  cat > "$HEALTHCHECK_SERVICE" <<EOF
+[Unit]
+Description=FreeWAF panel healthcheck
+After=network-online.target freewaf.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${HEALTHCHECK_SCRIPT}
+EOF
+
+  cat > "$HEALTHCHECK_TIMER" <<EOF
+[Unit]
+Description=Run FreeWAF panel healthcheck every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=15s
+Unit=freewaf-healthcheck.service
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now freewaf-healthcheck.timer
 }
 
 write_nginx_include() {
@@ -408,6 +479,13 @@ write_nginx_include() {
 # FreeWAF generated configuration is included inside nginx http {}.
 include ${APP_DIR}/nginx/generated/freewaf.conf;
 EOF
+  install -d -m 0755 /etc/systemd/system/nginx.service.d
+  cat > /etc/systemd/system/nginx.service.d/freewaf-restart.conf <<'EOF'
+[Service]
+Restart=on-failure
+RestartSec=5s
+EOF
+  systemctl daemon-reload
   nginx -t
   systemctl enable nginx
   systemctl reload nginx || systemctl restart nginx
@@ -460,6 +538,7 @@ main() {
   write_certbot_deploy_hook
   refresh_nginx_config
   write_systemd
+  write_healthcheck
   write_nginx_include
   start_service
   print_done
