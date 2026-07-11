@@ -508,7 +508,6 @@ export default function App() {
       if (status.authenticated) {
         setData((current) => current || createEmptyData());
         setAuth({ loading: false, ...status });
-        await loadViewData('dashboard', { manageLoading: false });
       } else {
         setData(null);
         setAuth({ loading: false, ...status });
@@ -616,7 +615,6 @@ export default function App() {
       setLoadedViews({});
       setData(createEmptyData());
       setAuth({ loading: false, ...status });
-      await loadViewData('dashboard', { manageLoading: false });
       if (status.user?.totpSetupSecret) {
         setModal({ type: 'totpSetup', user: status.user });
       }
@@ -635,7 +633,6 @@ export default function App() {
       setLoadedViews({});
       setData(createEmptyData());
       setAuth({ loading: false, ...status });
-      await loadViewData('dashboard', { manageLoading: false });
       showToast('Signed in');
     } catch (error) {
       showToast(error.message, true);
