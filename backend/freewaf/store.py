@@ -45,7 +45,7 @@ ACL_ACTIONS = {"allow", "block", "challenge_v1", "monitor"}
 ACL_RATE_LIMIT_MODES = {"global", "custom"}
 APPLICATION_TYPES = {"reverse_proxy", "static_files", "redirect"}
 MODSECURITY_MODES = {"on", "detection_only"}
-MODSECURITY_RULESETS = {"comodo", "owasp"}
+MODSECURITY_RULESETS = {"cms", "comodo", "owasp"}
 ACCESS_CONDITION_TARGETS = {"source_ip", "uri", "host", "user_agent", "method"}
 ACCESS_CONDITION_OPERATORS = {
     "equals",
@@ -1524,11 +1524,11 @@ def normalize_proxy_config(value, tls: dict, redirect_status_code=None) -> dict:
 def normalize_modsecurity_config(value, site_mode: str = "block") -> dict:
     source = value if isinstance(value, dict) else {}
     mode = str(source.get("mode") or ("detection_only" if site_mode == "monitor" else "on")).lower()
-    ruleset = str(source.get("ruleset") or "comodo").lower()
+    ruleset = str(source.get("ruleset") or "cms").lower()
     return {
-        "enabled": normalize_bool(source.get("enabled"), True),
+        "enabled": normalize_bool(source.get("enabled"), False),
         "mode": mode if mode in MODSECURITY_MODES else "on",
-        "ruleset": ruleset if ruleset in MODSECURITY_RULESETS else "comodo",
+        "ruleset": ruleset if ruleset in MODSECURITY_RULESETS else "cms",
         "requestBodyLimit": min(
             max(normalize_positive_int(source.get("requestBodyLimit") or source.get("request_body_limit"), 13107200), 131072),
             1073741824,

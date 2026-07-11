@@ -1592,13 +1592,13 @@ def site_proxy(site: dict, defaults: dict | None = None) -> dict:
 def site_modsecurity(site: dict, defaults: dict | None = None) -> dict:
     config = site.get("modSecurity") if isinstance(site.get("modSecurity"), dict) else {}
     defaults = defaults if isinstance(defaults, dict) else {}
-    merged = {**config, **defaults}
+    merged = {**defaults, **config}
     mode = str(merged.get("mode") or "on").lower()
-    ruleset = str(merged.get("ruleset") or "comodo").lower()
+    ruleset = str(merged.get("ruleset") or "cms").lower()
     return {
-        "enabled": merged.get("enabled") is not False,
+        "enabled": bool(merged.get("enabled")),
         "mode": mode if mode in {"on", "detection_only"} else "on",
-        "ruleset": ruleset if ruleset in {"comodo", "owasp"} else "comodo",
+        "ruleset": ruleset if ruleset in {"cms", "comodo", "owasp"} else "cms",
         "requestBodyLimit": min(max(int(merged.get("requestBodyLimit") or 13107200), 131072), 1073741824),
     }
 
@@ -1620,9 +1620,11 @@ def render_modsecurity_directives(site: dict) -> list[str]:
         lines.append("")
         return lines
 
-    ruleset = str(config.get("ruleset") or "comodo").lower()
+    ruleset = str(config.get("ruleset") or "cms").lower()
     if not config.get("enabled"):
         rules_file = os.environ.get("NGINX_MODSECURITY_BASE_RULES_FILE", "/etc/freewaf/modsecurity/base.conf")
+    elif ruleset == "cms":
+        rules_file = os.environ.get("NGINX_MODSECURITY_CMS_RULES_FILE", "/etc/freewaf/modsecurity/cms-only.conf")
     elif ruleset == "owasp":
         rules_file = os.environ.get("NGINX_MODSECURITY_OWASP_RULES_FILE", "/etc/freewaf/modsecurity/owasp-crs.conf")
     else:

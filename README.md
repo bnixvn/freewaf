@@ -19,7 +19,7 @@ A fresh VPS with root access is recommended. If the server already has custom Ng
 - Python backend: stores state, serves the API, generates Nginx config, and can run `nginx -t` or reload Nginx.
 - React dashboard: manages applications, certificates, IP groups, access rules, users, logs, and settings.
 - Nginx: performs reverse proxy and WAF enforcement on public ports.
-- ModSecurity: inspects request bodies and enforces Comodo-compatible or OWASP CRS rules before proxying.
+- Optional ModSecurity: deep-inspects request bodies and CMS payloads with a focused profile before proxying.
 - systemd: runs the admin panel as the `freewaf` service.
 
 Default install paths:
@@ -255,7 +255,7 @@ Detection rules support these targets:
 - method
 - ip
 
-Native Nginx handles URI, method, IP, and common headers. ModSecurity performs deep POST, JSON, multipart, and other request body inspection before a request reaches the upstream.
+Native Nginx handles IP, URI, header, method, rate limit, bot/basic challenge, and SafeLine-style edge rules. ModSecurity is optional per application and is intended for deep request-body inspection, SQLi, XSS, and PHP/CMS payloads before a request reaches the upstream.
 
 ## ModSecurity and Comodo Rules
 
@@ -273,6 +273,7 @@ The installer creates:
 By default, `owasp-crs.conf` and the Comodo fallback use a CMS-focused profile. It keeps CRS coverage for WordPress/PHP CMS attack families such as LFI, RFI, RCE, PHP, XSS, and SQLi, plus FreeWAF custom rules for sensitive WordPress, WHMCS, Laravel, and CodeIgniter paths. Broad CRS scanner, protocol, multipart, Java/Node-specific, and response-leakage rule groups are intentionally not included to keep memory usage predictable on small VPS instances.
 
 Applications can run ModSecurity in `Block` or `Detection Only` mode. Start new or sensitive applications in Detection Only mode, review the audit log, then switch to Block.
+ModSecurity is not required for every application. Leave it disabled for simple reverse proxies and enable the CMS profile only where POST/body or CMS payload inspection is needed.
 
 The actual Comodo/CWAF rules package is not redistributed by FreeWAF. Set `FREEWAF_COMODO_RULES_FILE` while installing, or update `/etc/freewaf/modsecurity/comodo.conf` to include the vendor-provided entry file.
 
@@ -307,6 +308,7 @@ NGINX_RELOAD_CMD="/usr/sbin/nginx -s reload"
 NGINX_AUTO_WRITE=false
 NGINX_STATIC_ROOT=/opt/freewaf/public/static
 NGINX_HAS_MODSECURITY=true
+NGINX_MODSECURITY_CMS_RULES_FILE=/etc/freewaf/modsecurity/cms-only.conf
 NGINX_MODSECURITY_COMODO_RULES_FILE=/etc/freewaf/modsecurity/comodo.conf
 NGINX_MODSECURITY_OWASP_RULES_FILE=/etc/freewaf/modsecurity/owasp-crs.conf
 CERTBOT_CMD=/usr/bin/certbot

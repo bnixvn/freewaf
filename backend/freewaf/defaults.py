@@ -42,9 +42,9 @@ DEFAULT_SETTINGS = {
             "proxySslServerName": True,
         },
         "modSecurity": {
-            "enabled": True,
+            "enabled": False,
             "mode": "on",
-            "ruleset": "comodo",
+            "ruleset": "cms",
             "requestBodyLimit": 13107200,
         },
     },
@@ -665,9 +665,9 @@ def create_default_state(now: str | None = None) -> dict:
                     "proxySslServerName": True,
                 },
                 "modSecurity": {
-                    "enabled": True,
+                    "enabled": False,
                     "mode": "on",
-                    "ruleset": "comodo",
+                    "ruleset": "cms",
                     "requestBodyLimit": 13107200,
                 },
                 "redirect": {

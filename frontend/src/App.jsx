@@ -150,9 +150,9 @@ const defaultSite = {
   proxyXForwardedProto: '$scheme',
   proxyXForwardedHost: '$http_host',
   proxySslServerName: 'true',
-  modSecurityEnabled: 'true',
+  modSecurityEnabled: 'false',
   modSecurityMode: 'on',
-  modSecurityRuleset: 'comodo',
+  modSecurityRuleset: 'cms',
   modSecurityRequestBodyLimit: '13107200',
   aclEnabled: 'true',
   aclRateLimitMode: 'custom',
@@ -197,9 +197,9 @@ const defaultApplicationDefaults = {
   proxySslServerName: 'true',
   clientIpSource: 'socket',
   clientIpHeaderName: 'X-Forwarded-For',
-  modSecurityEnabled: 'true',
+  modSecurityEnabled: 'false',
   modSecurityMode: 'on',
-  modSecurityRuleset: 'comodo',
+  modSecurityRuleset: 'cms',
   modSecurityRequestBodyLimit: '13107200'
 };
 
@@ -814,7 +814,7 @@ export default function App() {
         modSecurity: {
           enabled: boolValue(site.modSecurityEnabled),
           mode: site.modSecurityMode === 'detection_only' ? 'detection_only' : 'on',
-          ruleset: site.modSecurityRuleset === 'owasp' ? 'owasp' : 'comodo',
+          ruleset: normalizeModSecurityRuleset(site.modSecurityRuleset),
           requestBodyLimit: Number(site.modSecurityRequestBodyLimit || 13107200)
         },
         acl: {
@@ -2581,6 +2581,7 @@ function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaul
                     value={applicationForm.modSecurityRuleset}
                     onChange={(value) => updateApplication('modSecurityRuleset', value)}
                     options={[
+                      { value: 'cms', label: 'CMS Deep Inspection' },
                       { value: 'comodo', label: 'Comodo WAF Rules' },
                       { value: 'owasp', label: 'OWASP Core Rule Set' }
                     ]}
@@ -3408,9 +3409,9 @@ function SiteModal({ site, certificates, onClose, onSave }) {
     proxyXForwardedProto: site?.proxy?.xForwardedProto || defaultSite.proxyXForwardedProto,
     proxyXForwardedHost: site?.proxy?.xForwardedHost || defaultSite.proxyXForwardedHost,
     proxySslServerName: String(site?.proxy?.proxySslServerName ?? true),
-    modSecurityEnabled: String(site?.modSecurity?.enabled ?? true),
+    modSecurityEnabled: String(site?.modSecurity?.enabled ?? false),
     modSecurityMode: site?.modSecurity?.mode || defaultSite.modSecurityMode,
-    modSecurityRuleset: site?.modSecurity?.ruleset || defaultSite.modSecurityRuleset,
+    modSecurityRuleset: normalizeModSecurityRuleset(site?.modSecurity?.ruleset || defaultSite.modSecurityRuleset),
     modSecurityRequestBodyLimit: String(site?.modSecurity?.requestBodyLimit ?? defaultSite.modSecurityRequestBodyLimit),
     aclEnabled: String(site?.acl?.enabled ?? true),
     aclRateLimitMode: site?.acl?.rateLimitMode || defaultSite.aclRateLimitMode,
@@ -4415,6 +4416,10 @@ function boolValue(value) {
   return value === true || value === 'true';
 }
 
+function normalizeModSecurityRuleset(value) {
+  return ['cms', 'comodo', 'owasp'].includes(value) ? value : 'cms';
+}
+
 function normalizeUpstreamsPayload(value, applicationType) {
   if (Array.isArray(value)) {
     return value.map((item) => String(item).trim()).filter(Boolean);
@@ -4792,9 +4797,9 @@ function applicationDefaultsFormFromSettings(applicationDefaults, clientIp = {})
     proxySslServerName: String(proxy.proxySslServerName ?? true),
     clientIpSource: clientIp.source || 'socket',
     clientIpHeaderName: clientIp.headerName || 'X-Forwarded-For',
-    modSecurityEnabled: String(modSecurity.enabled ?? true),
+    modSecurityEnabled: String(modSecurity.enabled ?? false),
     modSecurityMode: modSecurity.mode === 'detection_only' ? 'detection_only' : 'on',
-    modSecurityRuleset: modSecurity.ruleset === 'owasp' ? 'owasp' : 'comodo',
+    modSecurityRuleset: normalizeModSecurityRuleset(modSecurity.ruleset || defaultApplicationDefaults.modSecurityRuleset),
     modSecurityRequestBodyLimit: String(modSecurity.requestBodyLimit ?? 13107200)
   };
 }
@@ -4819,7 +4824,7 @@ function applicationDefaultsPayload(form) {
     modSecurity: {
       enabled: boolValue(form.modSecurityEnabled),
       mode: form.modSecurityMode === 'detection_only' ? 'detection_only' : 'on',
-      ruleset: form.modSecurityRuleset === 'owasp' ? 'owasp' : 'comodo',
+      ruleset: normalizeModSecurityRuleset(form.modSecurityRuleset),
       requestBodyLimit: positiveInt(form.modSecurityRequestBodyLimit, 13107200)
     }
   };

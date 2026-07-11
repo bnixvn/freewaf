@@ -709,7 +709,55 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("proxy_set_header X-Forwarded-Proto https;", config)
         self.assertIn("proxy_set_header X-Forwarded-Host $host;", config)
 
-    def test_application_defaults_override_site_transport_and_modsecurity(self):
+    def test_modsecurity_is_optional_and_uses_cms_profile_when_enabled(self):
+        disabled_state = make_state(
+            sites=[
+                {
+                    "id": "site-native",
+                    "name": "Native",
+                    "hostnames": ["native.example.test"],
+                    "origin": "http://127.0.0.1:9090",
+                    "ports": ["80"],
+                    "mode": "block",
+                    "enabled": True,
+                }
+            ],
+        )
+        enabled_state = make_state(
+            sites=[
+                {
+                    "id": "site-cms",
+                    "name": "CMS",
+                    "hostnames": ["cms.example.test"],
+                    "origin": "http://127.0.0.1:9090",
+                    "ports": ["80"],
+                    "modSecurity": {
+                        "enabled": True,
+                        "ruleset": "cms",
+                    },
+                    "mode": "block",
+                    "enabled": True,
+                }
+            ],
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "NGINX_HAS_MODSECURITY": "true",
+                "NGINX_MODSECURITY_CMS_RULES_FILE": "/etc/freewaf/modsecurity/cms-only.conf",
+            },
+            clear=False,
+        ):
+            disabled_config = generate_nginx_config(disabled_state)
+            enabled_config = generate_nginx_config(enabled_state)
+
+        self.assertNotIn("modsecurity on;", disabled_config)
+        self.assertNotIn("modsecurity_rules_file", disabled_config)
+        self.assertIn("modsecurity on;", enabled_config)
+        self.assertIn("modsecurity_rules_file /etc/freewaf/modsecurity/cms-only.conf;", enabled_config)
+
+    def test_site_settings_override_application_defaults_for_transport_and_modsecurity(self):
         settings = json.loads(json.dumps(DEFAULT_SETTINGS))
         settings["applicationDefaults"] = {
             "proxy": {
@@ -791,9 +839,9 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("proxy_set_header X-Forwarded-For $sfl_client_ip;", config)
         self.assertIn("proxy_set_header X-Forwarded-Proto https;", config)
         self.assertIn("proxy_set_header X-Forwarded-Host $host;", config)
-        self.assertIn("modsecurity on;", config)
-        self.assertIn("modsecurity_rules_file /etc/freewaf/modsecurity/owasp-crs.conf;", config)
-        self.assertIn("modsecurity_rules 'SecRequestBodyLimit 8388608';", config)
+        self.assertNotIn("modsecurity on;", config)
+        self.assertNotIn("modsecurity_rules_file /etc/freewaf/modsecurity/owasp-crs.conf;", config)
+        self.assertNotIn("modsecurity_rules 'SecRequestBodyLimit 8388608';", config)
 
     def test_brotli_true_requires_detected_nginx_module(self):
         state = make_state(settings=make_settings(proxy={"brotli": True}))
