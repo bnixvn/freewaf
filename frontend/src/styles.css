@@ -2789,6 +2789,42 @@ td {
   color: #a0a7ae;
 }
 
+.system-update-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.72fr) minmax(0, 1.28fr);
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
+.system-update-summary {
+  display: grid;
+  gap: 8px;
+}
+
+.system-update-summary div {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcfd;
+}
+
+.system-update-summary span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.system-update-summary strong {
+  overflow-wrap: anywhere;
+}
+
+.system-update-log {
+  min-width: 0;
+}
+
 .nginx-modal-body {
   display: grid;
   gap: 12px;
@@ -2796,6 +2832,7 @@ td {
 }
 
 .config-preview,
+.system-update-log pre,
 .command-result pre {
   max-width: 100%;
   overflow: auto;
@@ -2812,6 +2849,11 @@ td {
 
 .config-preview {
   min-height: 360px;
+}
+
+.system-update-log pre {
+  min-height: 220px;
+  max-height: 360px;
 }
 
 .command-result {
@@ -2926,6 +2968,7 @@ td {
   .sfl-kpi-grid,
   .sfl-donut-grid,
   .sfl-detail-grid,
+  .system-update-grid,
   .settings-grid {
     grid-template-columns: 1fr;
   }

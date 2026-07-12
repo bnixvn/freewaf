@@ -16,6 +16,7 @@ DEMO_ORIGIN_PORT="${DEMO_ORIGIN_PORT:-9090}"
 ENABLE_DEMO_ORIGIN="${ENABLE_DEMO_ORIGIN:-true}"
 REPO_URL="${FREEWAF_REPO_URL:-}"
 REPO_BRANCH="${FREEWAF_REPO_BRANCH:-main}"
+SKIP_SERVICE_RESTART="${FREEWAF_SKIP_SERVICE_RESTART:-false}"
 ENABLE_MODSECURITY="${FREEWAF_ENABLE_MODSECURITY:-true}"
 COMODO_RULES_FILE="${FREEWAF_COMODO_RULES_FILE:-}"
 NGINX_HAS_MODSECURITY=false
@@ -541,7 +542,11 @@ main() {
   write_systemd
   write_healthcheck
   write_nginx_include
-  start_service
+  if [ "$SKIP_SERVICE_RESTART" = "true" ]; then
+    log "Skipping FreeWAF service restart because FREEWAF_SKIP_SERVICE_RESTART=true"
+  else
+    start_service
+  fi
   print_done
 }
 

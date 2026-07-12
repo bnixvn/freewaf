@@ -25,6 +25,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Trash2,
+  UploadCloud,
   Upload,
   UserPlus,
   X
@@ -404,6 +405,7 @@ export default function App() {
   const [logResult, setLogResult] = useState({ logs: [], total: 0, page: 1, pages: 1, domains: [], siteOptions: [] });
   const [dashboardSiteId, setDashboardSiteId] = useState('');
   const [dashboardPeriodDays, setDashboardPeriodDays] = useState('7');
+  const [systemUpdate, setSystemUpdate] = useState(null);
   const [navOpen, setNavOpen] = useState(false);
   const [loadedViews, setLoadedViews] = useState({});
   const activeViewRef = useRef(activeView);
@@ -500,6 +502,18 @@ export default function App() {
       document.removeEventListener('visibilitychange', onVisible);
     };
   }, [auth.authenticated, auth.loading, activeView, filter, logSiteId, logVerdict, logPage, logPageSize, modal]);
+
+  useEffect(() => {
+    if (!auth.authenticated || auth.loading || (activeView !== 'settings' && !systemUpdate?.running)) {
+      return undefined;
+    }
+    loadSystemUpdateStatus(false);
+    const timer = window.setInterval(() => {
+      if (document.hidden && !systemUpdate?.running) return;
+      loadSystemUpdateStatus(false);
+    }, systemUpdate?.running ? 2000 : 15000);
+    return () => window.clearInterval(timer);
+  }, [auth.authenticated, auth.loading, activeView, systemUpdate?.running]);
 
   async function loadAuth() {
     setLoading(true);
@@ -1149,6 +1163,30 @@ export default function App() {
     }
   }
 
+  async function loadSystemUpdateStatus(showErrors = true) {
+    try {
+      const status = await api('/api/system/update');
+      setSystemUpdate(status);
+      return status;
+    } catch (error) {
+      if (!showErrors) return null;
+      showToast(error.message, true);
+      throw error;
+    }
+  }
+
+  async function startSystemUpdate() {
+    try {
+      const status = await api('/api/system/update', { method: 'POST', body: {} });
+      setSystemUpdate(status);
+      showToast('FreeWAF update started');
+      return status;
+    } catch (error) {
+      showToast(error.message, true);
+      throw error;
+    }
+  }
+
   async function savePanelSettings(panel) {
     try {
       const saved = await api('/api/settings', {
@@ -1268,6 +1306,9 @@ export default function App() {
       copyText,
       previewNginx,
       applyNginx,
+      systemUpdate,
+      loadSystemUpdateStatus,
+      startSystemUpdate,
       savePanelSettings,
       saveApplicationDefaults,
       saveChallengePage,
@@ -1302,7 +1343,7 @@ export default function App() {
     if (activeView === 'logs') return <LogsView {...props} />;
     if (activeView === 'settings') return <SettingsView {...props} />;
     return <DashboardView {...props} />;
-  }, [activeView, data, loadedViews, filter, auth, pendingActions, logsLoading, logResult, logSiteId, logVerdict, logPage, logPageSize, dashboardSiteId, dashboardPeriodDays]);
+  }, [activeView, data, loadedViews, filter, auth, pendingActions, logsLoading, logResult, logSiteId, logVerdict, logPage, logPageSize, dashboardSiteId, dashboardPeriodDays, systemUpdate]);
 
   if (auth.loading) {
     return <LoadingPanel />;
@@ -2423,12 +2464,28 @@ function LogsView({
   );
 }
 
-function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaults, saveChallengePage, deleteUser, previewNginx, applyNginx, auth, logout }) {
+function SettingsView({
+  data,
+  setModal,
+  savePanelSettings,
+  saveApplicationDefaults,
+  saveChallengePage,
+  deleteUser,
+  previewNginx,
+  applyNginx,
+  systemUpdate,
+  loadSystemUpdateStatus,
+  startSystemUpdate,
+  auth,
+  logout
+}) {
   const panel = data.settings?.panel || {};
   const applicationDefaults = data.settings?.applicationDefaults || {};
   const clientIp = data.settings?.clientIp || {};
   const challengePage = data.settings?.challengePage || {};
   const [pendingAction, setPendingAction] = useState('');
+  const updateStatus = systemUpdate || { status: 'idle', running: false, commands: [], log: '', message: 'No update has run yet.' };
+  const updateStatusClass = updateStatus.status === 'succeeded' ? 'allow' : updateStatus.status === 'failed' ? 'block' : 'low';
   const [panelForm, setPanelForm] = useState(() => ({
     httpsEnabled: String(panel.httpsEnabled ?? false),
     certificateId: panel.certificateId || '',
@@ -2693,6 +2750,62 @@ function SettingsView({ data, setModal, savePanelSettings, saveApplicationDefaul
             </tbody>
           </table>
         </div>
+      </section>
+
+      <section className="panel system-update-panel">
+        <div className="panel-heading">
+          <div>
+            <h2>System Update</h2>
+            <p>Pull the latest FreeWAF release and rebuild the panel.</p>
+          </div>
+          <span className={`status ${updateStatusClass}`}>{updateStatus.running ? 'running' : updateStatus.status}</span>
+        </div>
+        <div className="system-update-grid">
+          <div className="system-update-summary">
+            <div>
+              <span>Mode</span>
+              <strong>{updateStatus.mode || 'unknown'}</strong>
+            </div>
+            <div>
+              <span>Current step</span>
+              <strong>{updateStatus.currentStep || 'Idle'}</strong>
+            </div>
+            <div>
+              <span>Started</span>
+              <strong>{formatDateTime(updateStatus.startedAt)}</strong>
+            </div>
+            <div>
+              <span>Finished</span>
+              <strong>{formatDateTime(updateStatus.finishedAt)}</strong>
+            </div>
+          </div>
+          <div className="system-update-log">
+            <pre>{updateStatus.log || updateStatus.message || 'No update log yet.'}</pre>
+          </div>
+        </div>
+        <div className="settings-actions">
+          <LoadingButton
+            type="button"
+            pending={pendingAction === 'systemUpdate' || Boolean(updateStatus.running)}
+            pendingText={updateStatus.running ? 'Updating...' : 'Starting...'}
+            className="tool-button primary"
+            disabled={Boolean(pendingAction && pendingAction !== 'systemUpdate')}
+            onClick={() => runLocalAction('systemUpdate', startSystemUpdate)}
+          >
+            <UploadCloud size={18} /> Update FreeWAF
+          </LoadingButton>
+          <LoadingButton
+            type="button"
+            pending={pendingAction === 'systemUpdateRefresh'}
+            pendingText="Refreshing..."
+            className="tool-button"
+            disabled={Boolean(updateStatus.running)}
+            onClick={() => runLocalAction('systemUpdateRefresh', loadSystemUpdateStatus)}
+          >
+            <RefreshCw size={18} /> Refresh Status
+          </LoadingButton>
+        </div>
+        <p className="form-note">Update restarts the FreeWAF service after the job finishes.</p>
       </section>
 
       <section className="panel">
@@ -4373,6 +4486,19 @@ async function api(path, options = {}) {
 
 function formatTime(value) {
   return new Date(value).toLocaleString([], {
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
+}
+
+function formatDateTime(value) {
+  if (!value) return 'Not yet';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Not yet';
+  return date.toLocaleString([], {
     month: 'short',
     day: '2-digit',
     hour: '2-digit',

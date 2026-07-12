@@ -25,6 +25,7 @@ from freewaf.server import (
     AUDIT_LOG_FILE,
     _redact_audit_value,
     append_audit_log,
+    build_system_update_plan,
     make_pow_salt,
     pow_difficulty_bits,
     read_audit_log,
@@ -197,6 +198,49 @@ class LoginThrottleHelperTests(unittest.TestCase):
         self.assertGreaterEqual(server_module.LOGIN_THROTTLE_IP_LIMIT, 1)
         self.assertGreaterEqual(server_module.LOGIN_THROTTLE_USER_LIMIT, server_module.LOGIN_THROTTLE_IP_LIMIT)
         self.assertGreaterEqual(server_module.LOGIN_THROTTLE_WINDOW_SECONDS, 60)
+
+
+class SystemUpdatePlanTests(unittest.TestCase):
+    def test_git_checkout_uses_fixed_pull_build_and_nginx_steps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root_dir = Path(directory)
+            (root_dir / ".git").mkdir()
+            (root_dir / "frontend").mkdir()
+
+            plan = build_system_update_plan(root_dir)
+
+        self.assertEqual(plan["mode"], "git")
+        labels = [step["label"] for step in plan["steps"]]
+        self.assertEqual(
+            labels,
+            [
+                "git pull --ff-only",
+                "npm ci",
+                "npm run build",
+                "refresh generated Nginx config",
+                "test Nginx config",
+                "reload Nginx",
+            ],
+        )
+
+    def test_non_git_install_uses_configured_repo_and_skips_service_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root_dir = Path(directory)
+            with mock.patch.dict(os.environ, {"FREEWAF_UPDATE_REPO_URL": "https://github.com/bnixvn/freewaf.git", "FREEWAF_UPDATE_BRANCH": "main"}, clear=False):
+                plan = build_system_update_plan(root_dir)
+
+        self.assertEqual(plan["mode"], "installer")
+        self.assertEqual(plan["steps"][0]["command"][:3], ["git", "clone", "--depth"])
+        install_step = plan["steps"][1]
+        self.assertEqual(install_step["command"], ["bash", "install.sh"])
+        self.assertEqual(install_step["env"]["FREEWAF_APP_DIR"], str(root_dir))
+        self.assertEqual(install_step["env"]["FREEWAF_SKIP_SERVICE_RESTART"], "true")
+
+    def test_unapproved_update_repo_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.dict(os.environ, {"FREEWAF_UPDATE_REPO_URL": "https://example.com/evil.git"}, clear=False):
+                with self.assertRaisesRegex(RuntimeError, "FREEWAF_UPDATE_REPO_URL"):
+                    build_system_update_plan(Path(directory))
 
 
 class NginxLogTailCacheTests(unittest.TestCase):

@@ -13,6 +13,7 @@ import shlex
 import shutil
 import ssl
 import subprocess
+import sys
 import tempfile
 import uuid
 import threading
@@ -69,6 +70,14 @@ STATS_AGGREGATE_LOCK = threading.RLock()
 STATS_AGGREGATE_CACHE_VERSION = 4
 STATS_AGGREGATE_CACHE = {"files": {}, "countryCache": {}, "loadedCacheName": ""}
 STATS_AGGREGATE_CACHE_NAME = "stats:aggregate"
+UPDATE_STATUS_FILE = ROOT_DIR / "logs" / "update-status.json"
+UPDATE_LOG_FILE = ROOT_DIR / "logs" / "update.log"
+UPDATE_STATUS_LOCK = threading.RLock()
+UPDATE_JOB_LOCK = threading.Lock()
+UPDATE_LOG_TAIL_BYTES = 48 * 1024
+UPDATE_STALE_SECONDS = 60 * 60
+UPDATE_REPO_URL = "https://github.com/bnixvn/freewaf.git"
+UPDATE_BRANCH = "main"
 
 
 def main() -> None:
@@ -288,6 +297,10 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 )
                 return
 
+            if parsed.path == "/api/system/update":
+                self.send_json(200, system_update_status())
+                return
+
             if parsed.path == "/api/audit-log":
                 limit = parse_int((query.get("limit") or ["200"])[0], 200)
                 self.send_json(200, {"entries": read_audit_log(clamp(limit, 1, 1000))})
@@ -414,6 +427,11 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     result = apply_nginx(store, payload)
                     self.record_audit(action="nginx.apply", target="nginx", status=200, payload=payload, extra={"ok": bool(result.get("ok"))})
                     self.send_json(200, result)
+                    return
+                if self.path == "/api/system/update":
+                    result, status_code = start_system_update()
+                    self.record_audit(action="system.update", target="system", status=status_code, payload={}, extra={"status": result.get("status"), "running": result.get("running")})
+                    self.send_json(status_code, result)
                     return
                 self.send_json(404, {"error": "Not found"})
             except StoreError as error:
@@ -948,6 +966,297 @@ def apply_nginx_or_raise(store: Store) -> dict:
                 messages.append(value)
     message = "\n".join(dict.fromkeys(messages)) or "Nginx config update failed"
     raise StoreError(500, message)
+
+
+def system_update_status() -> dict:
+    status = read_update_status()
+    status["log"] = read_update_log_tail()
+    status.setdefault("running", False)
+    status.setdefault("status", "idle")
+    status.setdefault("startedAt", "")
+    status.setdefault("finishedAt", "")
+    status.setdefault("returnCode", None)
+    status.setdefault("mode", "unknown")
+    status.setdefault("commands", [])
+    return status
+
+
+def start_system_update() -> tuple[dict, int]:
+    with UPDATE_JOB_LOCK:
+        current = read_update_status()
+        if update_is_running(current):
+            current["log"] = read_update_log_tail()
+            current["message"] = current.get("message") or "Update is already running."
+            return current, 202
+
+        job_id = uuid.uuid4().hex
+        status = {
+            "id": job_id,
+            "running": True,
+            "status": "running",
+            "startedAt": utc_timestamp(),
+            "finishedAt": "",
+            "returnCode": None,
+            "mode": "pending",
+            "commands": [],
+            "currentStep": "Preparing update",
+            "message": "Update started",
+        }
+        reset_update_log(job_id)
+        write_update_status(status)
+        thread = threading.Thread(target=run_system_update_job, args=(job_id,), daemon=True)
+        thread.start()
+
+    status["log"] = read_update_log_tail()
+    status["log"] = read_update_log_tail()
+    return status, 202
+
+
+def run_system_update_job(job_id: str) -> None:
+    status = read_update_status()
+    try:
+        plan = build_system_update_plan(ROOT_DIR)
+        status.update(
+            {
+                "mode": plan["mode"],
+                "commands": [step["label"] for step in plan["steps"]],
+                "message": "Running update",
+            }
+        )
+        write_update_status(status)
+        append_update_log(f"Mode: {plan['mode']}")
+
+        for step in plan["steps"]:
+            status["currentStep"] = step["label"]
+            write_update_status(status)
+            result = run_update_step(step)
+            if result["returnCode"] != 0:
+                raise RuntimeError(f"{step['label']} failed with exit code {result['returnCode']}")
+
+        restart_label = schedule_freewaf_restart()
+        status.update(
+            {
+                "running": False,
+                "status": "succeeded",
+                "finishedAt": utc_timestamp(),
+                "returnCode": 0,
+                "currentStep": restart_label,
+                "message": "Update completed. FreeWAF restart has been scheduled.",
+            }
+        )
+        append_update_log(restart_label)
+        write_update_status(status)
+    except Exception as error:
+        status.update(
+            {
+                "running": False,
+                "status": "failed",
+                "finishedAt": utc_timestamp(),
+                "returnCode": 1,
+                "message": str(error),
+            }
+        )
+        append_update_log(f"ERROR: {error}")
+        write_update_status(status)
+
+
+def build_system_update_plan(root_dir: Path) -> dict:
+    if (root_dir / ".git").exists():
+        steps = [
+            update_step("git pull --ff-only", ["git", "pull", "--ff-only"], root_dir),
+            update_step("npm ci", ["npm", "ci"], root_dir / "frontend"),
+            update_step("npm run build", ["npm", "run", "build"], root_dir / "frontend"),
+            update_step(
+                "refresh generated Nginx config",
+                [
+                    sys.executable,
+                    "-c",
+                    "from pathlib import Path; from freewaf.nginx import write_nginx_config; from freewaf.store import Store, resolve_data_file; root=Path.cwd(); store=Store(resolve_data_file(root)); store.init(); print(write_nginx_config(root, store.get_state()))",
+                ],
+                root_dir,
+                {"PYTHONPATH": str(root_dir / "backend")},
+            ),
+            nginx_command_step("test Nginx config", os.environ.get("NGINX_TEST_CMD", "nginx -t"), root_dir),
+            nginx_command_step("reload Nginx", os.environ.get("NGINX_RELOAD_CMD", "nginx -s reload"), root_dir),
+        ]
+        return {"mode": "git", "steps": steps}
+
+    repo_url = os.environ.get("FREEWAF_UPDATE_REPO_URL", UPDATE_REPO_URL).strip() or UPDATE_REPO_URL
+    repo_branch = os.environ.get("FREEWAF_UPDATE_BRANCH", UPDATE_BRANCH).strip() or UPDATE_BRANCH
+    if not is_allowed_update_repo(repo_url):
+        raise RuntimeError("FREEWAF_UPDATE_REPO_URL must be the configured FreeWAF GitHub repository")
+
+    clone_dir = Path(tempfile.mkdtemp(prefix="freewaf-update."))
+    checkout_dir = clone_dir / "freewaf"
+    steps = [
+        update_step(
+            f"git clone {repo_branch}",
+            ["git", "clone", "--depth", "1", "--branch", repo_branch, repo_url, str(checkout_dir)],
+            root_dir,
+        ),
+        update_step(
+            "install latest FreeWAF",
+            ["bash", "install.sh"],
+            checkout_dir,
+            {
+                "FREEWAF_APP_DIR": str(root_dir),
+                "FREEWAF_REPO_URL": repo_url,
+                "FREEWAF_REPO_BRANCH": repo_branch,
+                "FREEWAF_SKIP_SERVICE_RESTART": "true",
+            },
+        ),
+    ]
+    return {"mode": "installer", "steps": steps}
+
+
+def update_step(label: str, command: list[str], cwd: Path, env: dict | None = None) -> dict:
+    return {
+        "label": label,
+        "command": command,
+        "cwd": str(cwd),
+        "env": env or {},
+    }
+
+
+def nginx_command_step(label: str, command: str | None, cwd: Path) -> dict:
+    if not command:
+        raise RuntimeError(f"{label} command is not configured")
+    return update_step(label, shlex.split(command), cwd)
+
+
+def run_update_step(step: dict) -> dict:
+    append_update_log(f"$ {step['label']}")
+    env = os.environ.copy()
+    env.update(step.get("env") or {})
+    process = subprocess.Popen(
+        step["command"],
+        cwd=step["cwd"],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert process.stdout is not None
+    for line in process.stdout:
+        append_update_log(line.rstrip("\n"))
+    return_code = process.wait()
+    append_update_log(f"exit {return_code}")
+    return {"returnCode": return_code}
+
+
+def schedule_freewaf_restart() -> str:
+    command = os.environ.get("FREEWAF_UPDATE_RESTART_CMD", "systemctl restart freewaf").strip()
+    if not command:
+        return "FreeWAF service restart skipped because FREEWAF_UPDATE_RESTART_CMD is empty."
+    if os.name == "nt":
+        return "FreeWAF service restart skipped on this platform."
+
+    subprocess.Popen(
+        ["sh", "-c", f"sleep 1; {command}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return "FreeWAF service restart scheduled."
+
+
+def read_update_status() -> dict:
+    with UPDATE_STATUS_LOCK:
+        try:
+            status = json.loads(UPDATE_STATUS_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {
+                "running": False,
+                "status": "idle",
+                "startedAt": "",
+                "finishedAt": "",
+                "returnCode": None,
+                "mode": "unknown",
+                "commands": [],
+                "currentStep": "",
+                "message": "No update has run yet.",
+            }
+        if status.get("running") and update_started_at_age(status) > UPDATE_STALE_SECONDS:
+            status.update(
+                {
+                    "running": False,
+                    "status": "failed",
+                    "finishedAt": utc_timestamp(),
+                    "returnCode": 1,
+                    "message": "Update status expired before completion. Check update log and service journal.",
+                }
+            )
+            try:
+                UPDATE_STATUS_FILE.write_text(json.dumps(status, ensure_ascii=True, indent=2), encoding="utf-8")
+            except OSError:
+                pass
+        return status
+
+
+def write_update_status(status: dict) -> None:
+    with UPDATE_STATUS_LOCK:
+        UPDATE_STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        UPDATE_STATUS_FILE.write_text(json.dumps(status, ensure_ascii=True, indent=2), encoding="utf-8")
+
+
+def reset_update_log(job_id: str) -> None:
+    UPDATE_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    UPDATE_LOG_FILE.write_text(f"FreeWAF update job {job_id}\n", encoding="utf-8")
+
+
+def append_update_log(line: str) -> None:
+    try:
+        UPDATE_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with UPDATE_LOG_FILE.open("a", encoding="utf-8", errors="replace") as handle:
+            handle.write(f"{utc_timestamp()} {line}\n")
+    except OSError:
+        pass
+
+
+def read_update_log_tail() -> str:
+    try:
+        with UPDATE_LOG_FILE.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - UPDATE_LOG_TAIL_BYTES))
+            return handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def is_allowed_update_repo(repo_url: str) -> bool:
+    allowed = {
+        UPDATE_REPO_URL,
+        "https://github.com/bnixvn/freewaf",
+        "git@github.com:bnixvn/freewaf.git",
+    }
+    configured = os.environ.get("FREEWAF_UPDATE_ALLOWED_REPOS", "")
+    for item in configured.split(","):
+        item = item.strip()
+        if item:
+            allowed.add(item)
+    return repo_url in allowed
+
+
+def update_is_running(status: dict) -> bool:
+    return bool(status.get("running")) and update_started_at_age(status) <= UPDATE_STALE_SECONDS
+
+
+def update_started_at_age(status: dict) -> float:
+    started_at = status.get("startedAt")
+    if not started_at:
+        return 0
+    try:
+        started = datetime.strptime(str(started_at), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return UPDATE_STALE_SECONDS + 1
+    return max(0.0, (datetime.now(timezone.utc) - started).total_seconds())
+
+
+def utc_timestamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def public_user(user: dict | None, include_totp_secret: bool = False) -> dict | None:
