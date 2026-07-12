@@ -2830,12 +2830,13 @@ def geoip_db_file() -> Path:
 
 
 def geoip_attribution() -> dict:
-    available = geoip_reader() is not None
+    path = geoip_db_file()
+    available = path.exists() and path.is_file()
     return {
         "available": available,
         "provider": "DB-IP",
         "url": "https://db-ip.com",
-        "database": str(geoip_db_file()),
+        "database": str(path),
     }
 
 

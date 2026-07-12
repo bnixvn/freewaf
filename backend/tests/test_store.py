@@ -10,7 +10,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from freewaf.defaults import BUILTIN_RULES, VERIFIED_AI_BOT_PROVIDERS, managed_verified_bot_providers
-from freewaf.store import Store, StoreError, build_stats, country_for_ip, normalize_state
+from freewaf.store import Store, StoreError, build_stats, country_for_ip, geoip_attribution, normalize_state
 
 
 class StoreTests(unittest.TestCase):
@@ -161,6 +161,18 @@ class StoreTests(unittest.TestCase):
                 country = country_for_ip("8.8.8.8")
 
         self.assertEqual(country["code"], "US")
+
+    def test_geoip_attribution_does_not_open_database(self):
+        with tempfile.TemporaryDirectory() as directory:
+            geoip_file = Path(directory) / "dbip-country-lite.csv.gz"
+            geoip_file.write_text("", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"GEOIP_DB_FILE": str(geoip_file)}):
+                with mock.patch("freewaf.store.geoip_reader") as geoip_reader:
+                    attribution = geoip_attribution()
+
+        geoip_reader.assert_not_called()
+        self.assertTrue(attribution["available"])
+        self.assertEqual(attribution["database"], str(geoip_file))
 
     def test_certbot_certificate_state_is_normalized(self):
         state = normalize_state(
