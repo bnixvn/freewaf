@@ -52,6 +52,7 @@ from .store import (
     hll_merge,
     hll_new,
     match_log_site,
+    normalize_country,
     normalize_ip_items,
     resolve_data_file,
     visitor_identity,
@@ -1414,7 +1415,7 @@ def aggregate_stats_entry(cache: dict, path: str, entry: dict, retention_start_m
     file_summary = cache["files"].setdefault(path, {"buckets": {}})
     bucket = file_summary["buckets"].setdefault(bucket_at, {"hosts": {}})
     counts = bucket["hosts"].setdefault(host, new_stats_counts())
-    update_stats_counts(counts, entry, cache["countryCache"])
+    update_stats_counts(counts, entry, cache["countryCache"], allow_geoip=False)
 
 
 def new_stats_counts() -> dict:
@@ -1434,7 +1435,7 @@ def new_stats_counts() -> dict:
     }
 
 
-def update_stats_counts(counts: dict, entry: dict, country_cache: dict) -> None:
+def update_stats_counts(counts: dict, entry: dict, country_cache: dict, allow_geoip: bool = True) -> None:
     counts["total"] += 1
     verdict = entry.get("verdict")
     if verdict == "block":
@@ -1457,9 +1458,12 @@ def update_stats_counts(counts: dict, entry: dict, country_cache: dict) -> None:
     ip = entry_ip(entry)
     hll_add(counts["uniqueIpSketch"], ip)
     hll_add(counts["visitorSketch"], visitor_identity(entry))
-    if ip not in country_cache:
+    country = entry.get("country") if isinstance(entry.get("country"), dict) else {}
+    if country.get("name") or country.get("code"):
+        country_cache[ip] = normalize_country(country.get("name"), country.get("code"))
+    elif ip not in country_cache and allow_geoip:
         country_cache[ip] = country_for_ip(ip)
-    country = country_cache[ip]
+    country = country_cache.get(ip) or normalize_country("Unknown", "ZZ")
     country_key = f"{country['code']}\0{country['name']}"
     increment_named_stats(counts["countries"], country_key, country, verdict)
 

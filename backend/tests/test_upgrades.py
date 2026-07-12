@@ -200,6 +200,21 @@ class LoginThrottleHelperTests(unittest.TestCase):
 
 
 class NginxLogTailCacheTests(unittest.TestCase):
+    def test_stats_aggregate_does_not_cold_load_geoip(self):
+        import freewaf.server as server_module
+
+        counts = server_module.new_stats_counts()
+        with mock.patch("freewaf.server.country_for_ip") as country_for_ip:
+            server_module.update_stats_counts(
+                counts,
+                {"ip": "8.8.8.8", "userAgent": "Mozilla/5.0", "verdict": "allow"},
+                {},
+                allow_geoip=False,
+            )
+
+        country_for_ip.assert_not_called()
+        self.assertEqual(counts["countries"]["ZZ\0Unknown"]["count"], 1)
+
     def test_stats_cache_persists_country_cache(self):
         import freewaf.server as server_module
 
