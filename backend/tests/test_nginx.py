@@ -425,6 +425,15 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("[SafeLine 65641] Apache Log4j remote execution vulnerability", config)
         self.assertIn("[SafeLine 65585] Nginx range filter overflow (CVE-2017-7529)", config)
 
+    def test_saltstack_rule_does_not_block_whmcs_login_as_client(self):
+        rule = next(rule for rule in SAFELINE_COMPATIBILITY_RULES if rule["id"] == "builtin-safeline-65619")
+        pattern = re.compile(rule["pattern"], re.IGNORECASE)
+
+        self.assertIsNone(pattern.search("/clientarea.php?action=productdetails&id=1&client=local&fun=LoginAsClient"))
+        self.assertIsNone(pattern.search("/admin/clientssummary.php?userid=1&loginasclient=1&client=local&fun=LoginAsClient"))
+        self.assertIsNotNone(pattern.search("/run?client=local&fun=cmd.run"))
+        self.assertIsNotNone(pattern.search("/events"))
+
     def test_monitor_site_does_not_block_matching_rules(self):
         state = make_state(
             sites=[
@@ -1111,7 +1120,7 @@ class NginxGeneratorTests(unittest.TestCase):
                             "enabled": True,
                             "windowSeconds": 10,
                             "challengeCount": 300,
-                            "blockCount": 700,
+                            "blockCount": 500,
                             "blockMinutes": 30,
                         },
                     },
@@ -1144,7 +1153,7 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("REQUEST_HEADERS:User-Agent", config)
         self.assertIn("REQUEST_HEADERS:Accept-Language", config)
         self.assertIn("initcol:global=freewaf_site_demo_bot_%{REMOTE_ADDR}_%{tx.freewaf_site_demo_bot_ua_hash}", config)
-        self.assertIn('SecRule GLOBAL:freewaf_site_demo_bot_count "@gt 700"', config)
+        self.assertIn('SecRule GLOBAL:freewaf_site_demo_bot_count "@gt 500"', config)
         self.assertIn("expirevar:global.freewaf_site_demo_bot_blocked=1800", config)
         self.assertIn('SecRule GLOBAL:freewaf_site_demo_bot_count "@gt 300"', config)
         self.assertNotIn('SecRule IP:freewaf_site_demo_bot_count', config)
@@ -1184,7 +1193,7 @@ class NginxGeneratorTests(unittest.TestCase):
                             "enabled": True,
                             "windowSeconds": 10,
                             "challengeCount": 300,
-                            "blockCount": 700,
+                            "blockCount": 500,
                             "blockMinutes": 30,
                         },
                     },
@@ -1250,7 +1259,7 @@ class NginxGeneratorTests(unittest.TestCase):
                             "enabled": True,
                             "windowSeconds": 10,
                             "challengeCount": 300,
-                            "blockCount": 700,
+                            "blockCount": 500,
                             "blockMinutes": 30,
                         },
                     },

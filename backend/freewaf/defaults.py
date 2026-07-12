@@ -80,7 +80,7 @@ DEFAULT_BOT_RATE_CHALLENGE = {
     "enabled": False,
     "windowSeconds": 10,
     "challengeCount": 300,
-    "blockCount": 700,
+    "blockCount": 500,
     "blockMinutes": 30,
 }
 
@@ -414,7 +414,7 @@ _APACHE_OF_BIZ_PATTERN = r"(?:/(?:webtools|control)/control/(?:forgotPassword|Pr
 _APACHE_AXIS_PATTERN = r"(?:/axis2?/services/(?:AdminService|Version|.*\.jws)|/axis/.*(?:AdminService|happyaxis)|/services/.*(?:xsd=|wsdl))"
 _APACHE_UNOMI_PATTERN = r"(?:/context\.json|/cxs/.*(?:execute|script|groovy)|/graphql|/unomi/)"
 _ZABBIX_PATTERN = r"(?:/zabbix/(?:scripts_exec\.php|host_screen\.php|jsrpc\.php|api_jsonrpc\.php).*?(?:scriptid|execute|system\.run)|/api_jsonrpc\.php.*system\.run)"
-_SALTSTACK_PATTERN = r"(?:/(?:run|events|hook/.*|login|minions)(?:$|\?)|client=(?:local|runner)&fun=|salt-api)"
+_SALTSTACK_PATTERN = r"(?:/(?:run|events|hook/.*|login|minions)(?:$|[/?]).*(?:client=(?:local|runner)&fun=)?|salt-api)"
 _IIS_PATTERN = r"(?:/[^?]+\.(?:asp|aspx|cer|asa|cdx|htr)(?:;|%3b|/|%2f)|~[0-9]\.(?:asp|aspx|txt)|\*~1\*|::\$INDEX_ALLOCATION)"
 _APACHE_SHIRO_PATTERN = _SHIRO_PATTERN
 

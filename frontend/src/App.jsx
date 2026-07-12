@@ -231,7 +231,7 @@ const defaultBotRateChallenge = {
   enabled: false,
   windowSeconds: 10,
   challengeCount: 300,
-  blockCount: 700,
+  blockCount: 500,
   blockMinutes: 30
 };
 

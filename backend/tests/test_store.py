@@ -423,7 +423,7 @@ class StoreTests(unittest.TestCase):
         self.assertFalse(protection["rateChallenge"]["enabled"])
         self.assertEqual(protection["rateChallenge"]["windowSeconds"], 10)
         self.assertEqual(protection["rateChallenge"]["challengeCount"], 300)
-        self.assertEqual(protection["rateChallenge"]["blockCount"], 700)
+        self.assertEqual(protection["rateChallenge"]["blockCount"], 500)
         self.assertEqual(protection["rateChallenge"]["blockMinutes"], 30)
 
     def test_verified_ai_bot_options_are_normalized_per_site(self):
