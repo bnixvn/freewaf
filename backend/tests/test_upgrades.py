@@ -244,7 +244,7 @@ class SystemUpdatePlanTests(unittest.TestCase):
 
 
 class NginxLogTailCacheTests(unittest.TestCase):
-    def test_stats_aggregate_does_not_cold_load_geoip(self):
+    def test_stats_counts_can_skip_geoip_when_requested(self):
         import freewaf.server as server_module
 
         counts = server_module.new_stats_counts()
@@ -258,6 +258,33 @@ class NginxLogTailCacheTests(unittest.TestCase):
 
         country_for_ip.assert_not_called()
         self.assertEqual(counts["countries"]["ZZ\0Unknown"]["count"], 1)
+
+    def test_stats_aggregate_resolves_geoip_countries(self):
+        import freewaf.server as server_module
+
+        cache = {"files": {}, "countryCache": {}}
+        with mock.patch(
+            "freewaf.server.country_for_ip",
+            return_value={"code": "US", "name": "United States"},
+        ) as country_for_ip:
+            server_module.aggregate_stats_entry(
+                cache,
+                "access.log",
+                {
+                    "at": "2026-06-12T00:00:00+00:00",
+                    "host": "demo.test",
+                    "ip": "8.8.8.8",
+                    "userAgent": "Mozilla/5.0",
+                    "verdict": "allow",
+                },
+                0,
+            )
+
+        country_for_ip.assert_called_once_with("8.8.8.8")
+        bucket = next(iter(cache["files"]["access.log"]["buckets"].values()))
+        counts = bucket["hosts"]["demo.test"]
+        self.assertEqual(counts["countries"]["US\0United States"]["count"], 1)
+        self.assertEqual(cache["countryCache"]["8.8.8.8"], {"code": "US", "name": "United States"})
 
     def test_stats_cache_persists_country_cache(self):
         import freewaf.server as server_module

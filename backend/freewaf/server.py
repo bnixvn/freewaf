@@ -67,7 +67,7 @@ LOGIN_THROTTLE_IP_LIMIT = 5
 LOGIN_THROTTLE_USER_LIMIT = 10
 STATS_AGGREGATE_BUCKET_MS = 5 * 60 * 1000
 STATS_AGGREGATE_LOCK = threading.RLock()
-STATS_AGGREGATE_CACHE_VERSION = 4
+STATS_AGGREGATE_CACHE_VERSION = 5
 STATS_AGGREGATE_CACHE = {"files": {}, "countryCache": {}, "loadedCacheName": ""}
 STATS_AGGREGATE_CACHE_NAME = "stats:aggregate"
 UPDATE_STATUS_FILE = ROOT_DIR / "logs" / "update-status.json"
@@ -1724,7 +1724,7 @@ def aggregate_stats_entry(cache: dict, path: str, entry: dict, retention_start_m
     file_summary = cache["files"].setdefault(path, {"buckets": {}})
     bucket = file_summary["buckets"].setdefault(bucket_at, {"hosts": {}})
     counts = bucket["hosts"].setdefault(host, new_stats_counts())
-    update_stats_counts(counts, entry, cache["countryCache"], allow_geoip=False)
+    update_stats_counts(counts, entry, cache["countryCache"])
 
 
 def new_stats_counts() -> dict:
