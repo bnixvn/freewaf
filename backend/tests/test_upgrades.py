@@ -200,6 +200,35 @@ class LoginThrottleHelperTests(unittest.TestCase):
 
 
 class NginxLogTailCacheTests(unittest.TestCase):
+    def test_stats_cache_persists_country_cache(self):
+        import freewaf.server as server_module
+
+        with tempfile.TemporaryDirectory() as directory:
+            cache_file = Path(directory) / "stats-cache.json"
+            with mock.patch.dict(os.environ, {"STATS_CACHE_FILE": str(cache_file)}, clear=False):
+                server_module.STATS_AGGREGATE_CACHE.update(
+                    {
+                        "files": {},
+                        "countryCache": {
+                            "8.8.8.8": {"code": "US", "name": "United States"},
+                            "bad": "not-a-country",
+                        },
+                        "scannerState": {},
+                        "loadedCacheName": "stats:aggregate",
+                    }
+                )
+                server_module.save_stats_aggregate_cache("stats:aggregate", 7, {})
+
+                server_module.STATS_AGGREGATE_CACHE.update(
+                    {"files": {}, "countryCache": {}, "scannerState": {}, "loadedCacheName": ""}
+                )
+                server_module.load_stats_aggregate_cache("stats:aggregate", 7)
+
+            self.assertEqual(
+                server_module.STATS_AGGREGATE_CACHE["countryCache"],
+                {"8.8.8.8": {"code": "US", "name": "United States"}},
+            )
+
     def test_tail_only_reads_new_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

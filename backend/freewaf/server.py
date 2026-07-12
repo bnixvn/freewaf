@@ -1362,6 +1362,12 @@ def load_stats_aggregate_cache(cache_name: str, retention_days: int) -> None:
         files[file_path] = {"buckets": buckets}
     scanner_state = payload.get("scannerState") if isinstance(payload.get("scannerState"), dict) else {}
     STATS_AGGREGATE_CACHE["files"] = files
+    country_cache = payload.get("countryCache") if isinstance(payload.get("countryCache"), dict) else {}
+    STATS_AGGREGATE_CACHE["countryCache"] = {
+        str(ip): country
+        for ip, country in country_cache.items()
+        if isinstance(country, dict)
+    }
     STATS_AGGREGATE_CACHE["scannerState"] = scanner_state
     seed_nginx_log_scan_cache(cache_name, scanner_state)
 
@@ -1382,6 +1388,7 @@ def save_stats_aggregate_cache(cache_name: str, retention_days: int, scanner_sta
         "retentionDays": retention_days,
         "savedAt": utc_now(),
         "files": files,
+        "countryCache": dict(list((STATS_AGGREGATE_CACHE.get("countryCache") or {}).items())[:200000]),
         "scannerState": scanner_state,
     }
     try:
