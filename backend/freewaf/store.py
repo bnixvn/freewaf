@@ -339,6 +339,21 @@ class Store:
 
         changed = self.state != raw_state
         now = utc_now()
+
+        # Migration: upgrade accessLimit for WordPress-compatible defaults
+        for site in self.state.get("sites", []):
+            acl = site.get("acl")
+            if not isinstance(acl, dict):
+                continue
+            access = acl.get("accessLimit")
+            if not isinstance(access, dict):
+                continue
+            if access.get("count") == 200 and access.get("period") == 10:
+                access["count"] = 500
+                access["blockCount"] = max(access.get("blockCount", 1200), 1200)
+                site["updatedAt"] = now
+                changed = True
+
         existing = {rule["id"]: rule for rule in self.state["rules"]}
         for rule in BUILTIN_RULES:
             stored_rule = existing.get(rule["id"])
@@ -1573,7 +1588,7 @@ def normalize_acl_config(value, enabled_value=None) -> dict:
         "waitingRoom": normalize_bool(source.get("waitingRoom") if "waitingRoom" in source else source.get("waiting_room"), False),
         "accessLimit": normalize_acl_limit(
             source.get("accessLimit") or source.get("access_limit"),
-            {"enabled": True, "period": 10, "count": 200, "blockCount": 500, "action": "challenge_v1", "blockMin": 60},
+            {"enabled": True, "period": 10, "count": 500, "blockCount": 1200, "action": "challenge_v1", "blockMin": 60},
         ),
         "attackLimit": normalize_acl_limit(
             source.get("attackLimit") or source.get("attack_limit"),

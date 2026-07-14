@@ -366,7 +366,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(acl["rateLimitMode"], "global")
         self.assertTrue(acl["waitingRoom"])
         self.assertEqual(acl["accessLimit"]["action"], "challenge_v1")
-        self.assertEqual(acl["accessLimit"]["blockCount"], 500)
+        self.assertEqual(acl["accessLimit"]["blockCount"], 1200)
 
     def test_bot_protection_options_are_normalized(self):
         state = normalize_state(
@@ -541,8 +541,8 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(site["modSecurity"]["ruleset"], "owasp")
         self.assertEqual(site["modSecurity"]["requestBodyLimit"], 8388608)
         self.assertTrue(site["acl"]["enabled"])
-        self.assertEqual(site["acl"]["accessLimit"]["count"], 200)
-        self.assertEqual(site["acl"]["accessLimit"]["blockCount"], 500)
+        self.assertEqual(site["acl"]["accessLimit"]["count"], 500)
+        self.assertEqual(site["acl"]["accessLimit"]["blockCount"], 1200)
 
     def test_access_rule_insert_position_first_moves_rule_to_top(self):
         with tempfile.TemporaryDirectory() as directory:
