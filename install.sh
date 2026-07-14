@@ -9,6 +9,8 @@ HEALTHCHECK_SCRIPT="/usr/local/sbin/freewaf-healthcheck"
 HEALTHCHECK_SERVICE="/etc/systemd/system/freewaf-healthcheck.service"
 HEALTHCHECK_TIMER="/etc/systemd/system/freewaf-healthcheck.timer"
 NGINX_INCLUDE="/etc/nginx/conf.d/freewaf.conf"
+NGINX_UPLOAD_LIMIT_INCLUDE="/etc/nginx/conf.d/00-upload-size.conf"
+NGINX_CLIENT_MAX_BODY_SIZE="${FREEWAF_NGINX_CLIENT_MAX_BODY_SIZE:-512M}"
 LOGROTATE_FILE="/etc/logrotate.d/freewaf"
 CERTBOT_DEPLOY_HOOK="/etc/letsencrypt/renewal-hooks/deploy/freewaf-nginx-reload"
 ADMIN_PORT="${ADMIN_PORT:-7001}"
@@ -477,6 +479,9 @@ EOF
 write_nginx_include() {
   log "Writing Nginx include ${NGINX_INCLUDE}"
   install -d -m 0755 /etc/nginx/conf.d
+  cat > "$NGINX_UPLOAD_LIMIT_INCLUDE" <<EOF
+client_max_body_size ${NGINX_CLIENT_MAX_BODY_SIZE};
+EOF
   cat > "$NGINX_INCLUDE" <<EOF
 # FreeWAF generated configuration is included inside nginx http {}.
 include ${APP_DIR}/nginx/generated/freewaf.conf;
