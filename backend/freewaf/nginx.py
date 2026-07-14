@@ -907,31 +907,60 @@ def render_challenge_maps() -> list[str]:
     ]
 
 
+def render_wordpress_rate_limit_bypass_maps() -> list[str]:
+    return [
+        'map "$request_method:$uri" $sfl_wordpress_static_rate_bypass {',
+        "    default 0;",
+        r"    ~*^(?:GET|HEAD):/(?:wp-content/(?:uploads|themes|plugins|cache)/|wp-includes/(?:css|js|images|fonts)/|wp-admin/(?:css|js|images)/) 1;",
+        "}",
+        "map $uri $sfl_wordpress_editor_rate_bypass {",
+        "    default 0;",
+        r"    ~*^/wp-admin/(?:admin-ajax|async-upload|load-(?:scripts|styles)|post(?:-new)?|site-editor|widgets|customize|edit|media-new|upload|admin)\.php$ 1;",
+        r"    ~*^/wp-json(?:/|$) 1;",
+        "}",
+        "map $args $sfl_wordpress_rest_route_rate_bypass {",
+        "    default 0;",
+        r"    ~*(?:^|&)rest_route=/ 1;",
+        "}",
+        "map $http_cookie $sfl_wordpress_logged_in_rate_bypass {",
+        "    default 0;",
+        r"    ~*wordpress_logged_in_ 1;",
+        "}",
+        'map "$sfl_wordpress_static_rate_bypass:$sfl_wordpress_editor_rate_bypass:$sfl_wordpress_rest_route_rate_bypass:$sfl_wordpress_logged_in_rate_bypass" $sfl_wordpress_rate_bypass {',
+        "    default 0;",
+        r"    ~^1: 1;",
+        r"    ~^0:1:[^:]+:1$ 1;",
+        r"    ~^0:[^:]+:1:1$ 1;",
+        "}",
+        "",
+    ]
+
+
 def render_global_rate_limit_zones(rate_limit: dict, verified_bot_bypass: bool = False) -> list[str]:
     rate = nginx_rate(rate_limit)
-    ip_key = "$sfl_client_ip"
-    fingerprint_key = '"$sfl_client_ip|$request_method|$http_user_agent"'
-    lines = []
+    lines = render_wordpress_rate_limit_bypass_maps()
+    bypass_source = "$sfl_wordpress_rate_bypass"
+    bypass_rules = ['    1 "";']
     if verified_bot_bypass:
-        lines.extend(
-            [
-                "map $sfl_verified_rate_bypass $sfl_global_rate_key {",
-                "    default $sfl_client_ip;",
-                '    1 "";',
-                "}",
-                "map $sfl_verified_rate_bypass $sfl_global_rate_fingerprint_key {",
-                '    default "$sfl_client_ip|$request_method|$http_user_agent";',
-                '    1 "";',
-                "}",
-                "",
-            ]
-        )
-        ip_key = "$sfl_global_rate_key"
-        fingerprint_key = "$sfl_global_rate_fingerprint_key"
+        bypass_source = '"$sfl_verified_rate_bypass:$sfl_wordpress_rate_bypass"'
+        bypass_rules = ['    ~^1: "";', '    ~^[^:]+:1$ "";']
+    lines.extend(
+        [
+            f"map {bypass_source} $sfl_global_rate_key {{",
+            "    default $sfl_client_ip;",
+            *bypass_rules,
+            "}",
+            f"map {bypass_source} $sfl_global_rate_fingerprint_key {{",
+            '    default "$sfl_client_ip|$request_method|$http_user_agent";',
+            *bypass_rules,
+            "}",
+            "",
+        ]
+    )
     return [
         *lines,
-        f"limit_req_zone {ip_key} zone=freewaf_rate:10m rate={rate};",
-        f"limit_req_zone {fingerprint_key} zone=freewaf_rate_fingerprint:10m rate={rate};",
+        f"limit_req_zone $sfl_global_rate_key zone=freewaf_rate:10m rate={rate};",
+        f"limit_req_zone $sfl_global_rate_fingerprint_key zone=freewaf_rate_fingerprint:10m rate={rate};",
     ]
 
 

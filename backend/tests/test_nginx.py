@@ -1160,7 +1160,7 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("status:461", config)
         self.assertIn('REQUEST_COOKIES:freewaf_challenge "@rx .+"', config)
         self.assertGreater(config.find("freewaf_site_demo_bot_count"), config.find("    location / {"))
-        self.assertIn('limit_req_zone "$sfl_client_ip|$request_method|$http_user_agent" zone=freewaf_rate_fingerprint', config)
+        self.assertIn("limit_req_zone $sfl_global_rate_fingerprint_key zone=freewaf_rate_fingerprint", config)
 
     def test_verified_search_engine_bots_use_official_ip_and_user_agent_match(self):
         google = VERIFIED_BOT_PROVIDERS["google"]
@@ -1218,7 +1218,9 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("geo $sfl_client_ip $sfl_verified_bing_ip", config)
         self.assertIn("40.77.167.0/24 1;", config)
         self.assertIn('map "$sfl_verified_google_bot|$sfl_verified_bing_bot" $sfl_verified_search_bot {', config)
-        self.assertIn("map $sfl_verified_rate_bypass $sfl_global_rate_key", config)
+        self.assertIn('map "$sfl_verified_rate_bypass:$sfl_wordpress_rate_bypass" $sfl_global_rate_key', config)
+        self.assertIn('    ~^1: "";', config)
+        self.assertIn('    ~^[^:]+:1$ "";', config)
         self.assertIn("set $sfl_verified_rate_bypass 1;", config)
         self.assertIn("limit_req_zone $sfl_global_rate_key zone=freewaf_rate:10m", config)
         self.assertIn("if ($sfl_verified_search_bot = 1)", config)
@@ -1286,7 +1288,7 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn('map "$sfl_verified_ai_openai_user_bot|$sfl_verified_ai_anthropic_user_bot" $sfl_verified_ai_bot_site_demo {', config)
         self.assertIn("if ($sfl_verified_ai_bot_site_demo = 1)", config)
         self.assertIn("set $sfl_verified_rate_bypass 1;", config)
-        self.assertIn("map $sfl_verified_rate_bypass $sfl_global_rate_key", config)
+        self.assertIn('map "$sfl_verified_rate_bypass:$sfl_wordpress_rate_bypass" $sfl_global_rate_key', config)
         self.assertIn('SecRule REMOTE_ADDR "@ipMatch 104.210.139.192/28"', config)
         self.assertIn("(?i:(?:ChatGPT-User))", config)
         self.assertNotIn("$sfl_verified_search_bot = 1", config)
@@ -1497,9 +1499,38 @@ class NginxGeneratorTests(unittest.TestCase):
         )
         config = generate_nginx_config(state)
 
-        self.assertIn("limit_req_zone $sfl_client_ip zone=freewaf_rate:10m", config)
-        self.assertIn("limit_req zone=freewaf_rate burst=120 nodelay;", config)
+        self.assertIn("map $sfl_wordpress_rate_bypass $sfl_global_rate_key", config)
+        self.assertIn("limit_req_zone $sfl_global_rate_key zone=freewaf_rate:10m", config)
+        self.assertIn("limit_req zone=freewaf_rate burst=600 nodelay;", config)
         self.assertNotIn("zone=sfl_acl_site_demo", config)
+
+    def test_http_flood_global_mode_bypasses_wordpress_editor_and_static_paths(self):
+        state = make_state(
+            sites=[
+                {
+                    "id": "site-demo",
+                    "name": "Demo",
+                    "hostnames": ["localhost"],
+                    "origin": "http://127.0.0.1:9090",
+                    "listen": 8080,
+                    "mode": "block",
+                    "enabled": True,
+                    "features": {"httpFlood": True, "botProtection": False},
+                }
+            ]
+        )
+        config = generate_nginx_config(state)
+
+        self.assertIn("map \"$request_method:$uri\" $sfl_wordpress_static_rate_bypass", config)
+        self.assertIn("wp-content/(?:uploads|themes|plugins|cache)", config)
+        self.assertIn("map $uri $sfl_wordpress_editor_rate_bypass", config)
+        self.assertIn("wp-admin/(?:admin-ajax|async-upload|load-(?:scripts|styles)|post", config)
+        self.assertIn("~*^/wp-json(?:/|$) 1;", config)
+        self.assertIn("map $args $sfl_wordpress_rest_route_rate_bypass", config)
+        self.assertIn("wordpress_logged_in_", config)
+        self.assertIn('    1 "";', config)
+        self.assertIn("limit_req_zone $sfl_global_rate_key zone=freewaf_rate:10m", config)
+        self.assertIn("limit_req_zone $sfl_global_rate_fingerprint_key zone=freewaf_rate_fingerprint:10m", config)
 
     def test_waiting_room_queues_without_nodelay(self):
         state = make_state(

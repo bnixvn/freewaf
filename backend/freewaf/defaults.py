@@ -19,7 +19,7 @@ DEFAULT_SETTINGS = {
     "rateLimit": {
         "enabled": True,
         "windowMs": 60000,
-        "max": 120,
+        "max": 600,
     },
     "clientIp": {
         "source": "socket",

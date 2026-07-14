@@ -897,7 +897,7 @@ export default function App() {
           },
           features: {
             ...currentFeatures,
-            httpFlood: true
+            httpFlood: flood.enabled
           }
         }
       });
@@ -3112,14 +3112,23 @@ function HttpFloodModal({ site, settings, onClose, onSave }) {
   }
 
   const accessDisabled = form.rateLimitMode === 'global';
+  const floodDisabled = !boolValue(form.enabled);
 
   return (
     <Modal title="HTTP Flood" onClose={onClose} className="http-flood-modal">
       <form onSubmit={submit} className="http-flood-form">
         <div className="flood-control-row">
           <span className="flood-accent" />
+          <strong>HTTP Flood</strong>
+          <Switch checked={boolValue(form.enabled)} onChange={(checked) => update('enabled', String(checked))} />
+          <Info size={16} />
+          <span className="muted">Turns Nginx HTTP flood rate limiting on or off for this application.</span>
+        </div>
+
+        <div className="flood-control-row">
+          <span className="flood-accent" />
           <strong>Waiting Room</strong>
-          <Switch checked={boolValue(form.waitingRoom)} onChange={(checked) => update('waitingRoom', String(checked))} />
+          <Switch checked={boolValue(form.waitingRoom)} onChange={(checked) => update('waitingRoom', String(checked))} disabled={floodDisabled} />
           <Info size={16} />
           <span className="muted">Queues excess visitors inside Nginx burst handling instead of sending them immediately.</span>
         </div>
@@ -3128,8 +3137,8 @@ function HttpFloodModal({ site, settings, onClose, onSave }) {
           <span className="flood-accent" />
           <strong>Rate Limiting</strong>
           <div className="flood-segmented">
-            <button type="button" className={form.rateLimitMode === 'global' ? 'active' : ''} onClick={() => update('rateLimitMode', 'global')}>Use Global</button>
-            <button type="button" className={form.rateLimitMode === 'custom' ? 'active' : ''} onClick={() => update('rateLimitMode', 'custom')}>Customize</button>
+            <button type="button" className={form.rateLimitMode === 'global' ? 'active' : ''} onClick={() => update('rateLimitMode', 'global')} disabled={floodDisabled}>Use Global</button>
+            <button type="button" className={form.rateLimitMode === 'custom' ? 'active' : ''} onClick={() => update('rateLimitMode', 'custom')} disabled={floodDisabled}>Customize</button>
           </div>
           <Info size={16} />
           <span className="muted">Limits traffic by source IP and by IP plus request header fingerprint.</span>
@@ -3146,7 +3155,7 @@ function HttpFloodModal({ site, settings, onClose, onSave }) {
             summary={accessLimitSummary(form, settings)}
             editing={editing === 'access'}
             onEdit={editAccess}
-            disabled={accessDisabled}
+            disabled={floodDisabled || accessDisabled}
           >
             <LimitEditFields prefix="access" form={form} updateLimit={updateLimit} includeBlockCount />
           </FloodLimitCard>
@@ -3160,6 +3169,7 @@ function HttpFloodModal({ site, settings, onClose, onSave }) {
             summary={attackLimitSummary(form)}
             editing={editing === 'attack'}
             onEdit={() => setEditing(editing === 'attack' ? '' : 'attack')}
+            disabled={floodDisabled}
           >
             <LimitEditFields prefix="attack" form={form} updateLimit={updateLimit} />
           </FloodLimitCard>
@@ -3173,6 +3183,7 @@ function HttpFloodModal({ site, settings, onClose, onSave }) {
             summary={errorLimitSummary(form)}
             editing={editing === 'error'}
             onEdit={() => setEditing(editing === 'error' ? '' : 'error')}
+            disabled={floodDisabled}
           >
             <LimitEditFields prefix="error" form={form} updateLimit={updateLimit} includeStatusCodes />
           </FloodLimitCard>
@@ -3461,11 +3472,11 @@ function FloodSection({ title, action, children }) {
 function FloodLimitCard({ title, enabled, onToggle, summary, editing, onEdit, disabled = false, children }) {
   return (
     <article className={`flood-limit-card ${disabled ? 'disabled' : ''}`}>
-      <Switch checked={enabled} onChange={onToggle} />
+      <Switch checked={enabled} onChange={onToggle} disabled={disabled} />
       <div className="flood-limit-content">
         <div className="flood-limit-top">
           <strong>{title}</strong>
-          <button type="button" className="link-button" onClick={onEdit}>{disabled ? 'Customize' : 'Edit'}</button>
+          <button type="button" className="link-button" onClick={onEdit} disabled={disabled}>{disabled ? 'Customize' : 'Edit'}</button>
         </div>
         <p>{summary}</p>
         {editing && <div className="flood-edit-grid">{children}</div>}
@@ -4814,7 +4825,9 @@ function httpFloodFormFromSite(site, settings) {
   const attack = acl.attackLimit || {};
   const error = acl.errorLimit || {};
   const global = globalRateLimit(settings);
+  const features = normalizedSiteFeatures(site);
   return {
+    enabled: String(features.httpFlood),
     rateLimitMode: acl.rateLimitMode || 'custom',
     waitingRoom: String(acl.waitingRoom ?? false),
     accessEnabled: String(access.enabled ?? true),
@@ -4839,6 +4852,7 @@ function httpFloodFormFromSite(site, settings) {
 
 function httpFloodPayload(form) {
   return {
+    enabled: boolValue(form.enabled),
     rateLimitMode: form.rateLimitMode === 'global' ? 'global' : 'custom',
     waitingRoom: boolValue(form.waitingRoom),
     accessLimit: floodLimitPayload(form, 'access'),
@@ -4868,7 +4882,7 @@ function globalRateLimit(settings) {
   const rate = settings?.rateLimit || {};
   return {
     enabled: rate.enabled !== false,
-    count: positiveInt(rate.max, 120),
+    count: positiveInt(rate.max, 600),
     period: Math.max(1, Math.round(positiveInt(rate.windowMs, 60000) / 1000))
   };
 }
