@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 from .defaults import (
     DEFAULT_BOT_LOGIN_PATH_PATTERNS,
     DEFAULT_BOT_RATE_CHALLENGE,
+    LEGACY_WHMCS_LOGIN_PATH_PATTERNS,
     VERIFIED_AI_BOT_PROVIDERS,
     VERIFIED_BOT_PROVIDERS,
     challenge_secret,
@@ -2376,7 +2377,11 @@ def site_bot_protection(site: dict) -> dict:
     anti_bot = enabled and source.get("antiBotChallenge") is not False
     login = source.get("loginChallenge") if isinstance(source.get("loginChallenge"), dict) else {}
     rate = source.get("rateChallenge") if isinstance(source.get("rateChallenge"), dict) else {}
-    login_patterns = [str(item).strip() for item in (login.get("pathPatterns") or DEFAULT_BOT_LOGIN_PATH_PATTERNS) if str(item).strip()]
+    login_patterns = [
+        pattern
+        for pattern in [str(item).strip() for item in (login.get("pathPatterns") or DEFAULT_BOT_LOGIN_PATH_PATTERNS) if str(item).strip()]
+        if pattern not in LEGACY_WHMCS_LOGIN_PATH_PATTERNS
+    ]
     challenge_count = max(1, parse_int(rate.get("challengeCount")) or DEFAULT_BOT_RATE_CHALLENGE["challengeCount"])
     block_count = max(challenge_count + 1, parse_int(rate.get("blockCount")) or DEFAULT_BOT_RATE_CHALLENGE["blockCount"])
     block_minutes = parse_int(rate.get("blockMinutes") or rate.get("blockMin")) or DEFAULT_BOT_RATE_CHALLENGE["blockMinutes"]

@@ -19,6 +19,7 @@ from freewaf.server import (
     combined_logs_page,
     combined_stats,
     combined_stats_logs,
+    dashboard_period_days,
     enrich_log_countries,
     make_admin_handler,
     prepare_certificate_payload,
@@ -101,6 +102,11 @@ class CertificateServerTests(unittest.TestCase):
         self.assertEqual(set(settings), {"settings", "users", "certificates"})
         self.assertNotIn("passwordHash", settings["users"][0])
         self.assertNotIn("cloudflareApiToken", settings["certificates"][0])
+
+    def test_dashboard_period_defaults_to_one_day(self):
+        self.assertEqual(dashboard_period_days(""), 1)
+        self.assertEqual(dashboard_period_days("1"), 1)
+        self.assertEqual(dashboard_period_days("7"), 7)
 
     def test_apply_nginx_rolls_back_generated_bundle_when_test_fails(self):
         with tempfile.TemporaryDirectory() as temp_dir:

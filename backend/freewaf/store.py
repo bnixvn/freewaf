@@ -27,6 +27,7 @@ from .defaults import (
     DEFAULT_BOT_LOGIN_PATH_PATTERNS,
     DEFAULT_BOT_RATE_CHALLENGE,
     DEFAULT_SETTINGS,
+    LEGACY_WHMCS_LOGIN_PATH_PATTERNS,
     VERIFIED_AI_BOT_PROVIDERS,
     VERIFIED_BOT_PROVIDERS,
     create_default_state,
@@ -1741,6 +1742,7 @@ def normalize_bot_login_challenge_config(value, anti_bot_enabled: bool) -> dict:
             break
     patterns = normalize_string_list(path_values if path_values is not None else DEFAULT_BOT_LOGIN_PATH_PATTERNS)
     patterns = [pattern.replace("\x00", "").strip() for pattern in patterns if pattern.replace("\x00", "").strip()]
+    patterns = [pattern for pattern in patterns if pattern not in LEGACY_WHMCS_LOGIN_PATH_PATTERNS]
     return {
         "enabled": normalize_bool(source.get("enabled"), anti_bot_enabled) and bool(patterns),
         "pathPatterns": patterns[:64],

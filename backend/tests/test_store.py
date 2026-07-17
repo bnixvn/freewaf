@@ -420,11 +420,42 @@ class StoreTests(unittest.TestCase):
         protection = state["sites"][0]["botProtection"]
         self.assertTrue(protection["loginChallenge"]["enabled"])
         self.assertTrue(any("wp-login" in pattern for pattern in protection["loginChallenge"]["pathPatterns"]))
+        self.assertFalse(any("clientarea" in pattern for pattern in protection["loginChallenge"]["pathPatterns"]))
         self.assertFalse(protection["rateChallenge"]["enabled"])
         self.assertEqual(protection["rateChallenge"]["windowSeconds"], 10)
         self.assertEqual(protection["rateChallenge"]["challengeCount"], 300)
         self.assertEqual(protection["rateChallenge"]["blockCount"], 500)
         self.assertEqual(protection["rateChallenge"]["blockMinutes"], 30)
+
+    def test_legacy_whmcs_client_area_login_challenge_pattern_is_removed(self):
+        state = normalize_state(
+            {
+                "sites": [
+                    {
+                        "id": "site-demo",
+                        "name": "Demo",
+                        "hostnames": ["example.test"],
+                        "origin": "http://127.0.0.1:9090",
+                        "features": {"botProtection": True},
+                        "botProtection": {
+                            "antiBotChallenge": True,
+                            "loginChallenge": {
+                                "enabled": True,
+                                "pathPatterns": [
+                                    r"^/wp-login\.php(?:\?|$)",
+                                    r"^/clientarea\.php(?:\?|$)",
+                                ],
+                            },
+                        },
+                    }
+                ],
+                "rules": [],
+            }
+        )
+
+        patterns = state["sites"][0]["botProtection"]["loginChallenge"]["pathPatterns"]
+        self.assertIn(r"^/wp-login\.php(?:\?|$)", patterns)
+        self.assertNotIn(r"^/clientarea\.php(?:\?|$)", patterns)
 
     def test_verified_ai_bot_options_are_normalized_per_site(self):
         valid_provider = next(iter(VERIFIED_AI_BOT_PROVIDERS))

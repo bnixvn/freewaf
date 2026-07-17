@@ -89,9 +89,9 @@ function createEmptyData() {
   };
 }
 
-function viewDataEndpoint(view, dashboardSiteId = '', dashboardPeriodDays = '7') {
+function viewDataEndpoint(view, dashboardSiteId = '', dashboardPeriodDays = '1') {
   if (view === 'dashboard') {
-    const params = new URLSearchParams({ periodDays: dashboardPeriodDays || '7' });
+    const params = new URLSearchParams({ periodDays: dashboardPeriodDays || '1' });
     if (dashboardSiteId) params.set('siteId', dashboardSiteId);
     return `/api/dashboard?${params.toString()}`;
   }
@@ -222,7 +222,6 @@ const defaultBotLoginPathPatterns = [
   '^/wp-admin/?(?:\\?|$)',
   '^/(?:admin|administrator)(?:/login)?/?(?:\\?|$)',
   '^/(?:login|user/login|account/login)(?:/|\\?|$)',
-  '^/clientarea\\.php(?:\\?|$)',
   '^/cart\\.php(?:\\?[^#]*\\ba=login\\b|$)',
   '^/index\\.php/(?:login|admin)(?:/|\\?|$)',
   '^/admin/index\\.php(?:\\?|$)'
@@ -404,7 +403,7 @@ export default function App() {
   const [logPageSize, setLogPageSize] = useState(50);
   const [logResult, setLogResult] = useState({ logs: [], total: 0, page: 1, pages: 1, domains: [], siteOptions: [] });
   const [dashboardSiteId, setDashboardSiteId] = useState('');
-  const [dashboardPeriodDays, setDashboardPeriodDays] = useState('7');
+  const [dashboardPeriodDays, setDashboardPeriodDays] = useState('1');
   const [systemUpdate, setSystemUpdate] = useState(null);
   const [navOpen, setNavOpen] = useState(false);
   const [loadedViews, setLoadedViews] = useState({});
@@ -1639,7 +1638,7 @@ function DashboardView({ data, dashboardSiteId, setDashboardSiteId, dashboardPer
           </label>
           <label className="sfl-control-field">
             <span>Period</span>
-            <select className="sfl-select-control" value={dashboardPeriodDays || '7'} onChange={(event) => setDashboardPeriodDays(event.target.value)}>
+            <select className="sfl-select-control" value={dashboardPeriodDays || '1'} onChange={(event) => setDashboardPeriodDays(event.target.value)}>
               <option value="1">1 day</option>
               <option value="7">7 days</option>
             </select>

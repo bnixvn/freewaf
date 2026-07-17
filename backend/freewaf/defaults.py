@@ -70,11 +70,14 @@ DEFAULT_BOT_LOGIN_PATH_PATTERNS = [
     r"^/wp-admin/?(?:\?|$)",
     r"^/(?:admin|administrator)(?:/login)?/?(?:\?|$)",
     r"^/(?:login|user/login|account/login)(?:/|\?|$)",
-    r"^/clientarea\.php(?:\?|$)",
     r"^/cart\.php(?:\?[^#]*\ba=login\b|$)",
     r"^/index\.php/(?:login|admin)(?:/|\?|$)",
     r"^/admin/index\.php(?:\?|$)",
 ]
+
+LEGACY_WHMCS_LOGIN_PATH_PATTERNS = {
+    r"^/clientarea\.php(?:\?|$)",
+}
 
 DEFAULT_BOT_RATE_CHALLENGE = {
     "enabled": False,

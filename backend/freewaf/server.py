@@ -1951,8 +1951,8 @@ def normalize_stats_retention_days(value) -> int:
 def dashboard_period_days(value) -> int:
     raw = str(value or "").strip()
     if not raw:
-        return stats_retention_days()
-    return 1 if parse_int(raw, 7) == 1 else 7
+        return 1
+    return 1 if parse_int(raw, 1) == 1 else 7
 
 
 def log_domain(entry: dict) -> str:
