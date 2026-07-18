@@ -795,6 +795,9 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
             self.send_response(200)
             self.send_header("content-type", content_type)
             self.send_header("content-length", str(len(content)))
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
             self.end_headers()
             self.wfile.write(content)
 

@@ -248,6 +248,28 @@ class CertificateServerTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
+    def test_static_frontend_responses_disable_cache(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            dist = root / "frontend" / "dist"
+            dist.mkdir(parents=True)
+            (dist / "index.html").write_text("<!doctype html><title>FreeWAF</title>", encoding="utf-8")
+
+            with mock.patch.object(server_module, "FRONTEND_DIST", dist):
+                handler_cls = make_admin_handler(mock.Mock(), 7001, 9090, False, False)
+                server = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/", timeout=5) as response:
+                        self.assertEqual(response.headers["Cache-Control"], "no-store, no-cache, must-revalidate")
+                        self.assertEqual(response.headers["Pragma"], "no-cache")
+                        self.assertEqual(response.headers["Expires"], "0")
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    thread.join(timeout=5)
+
     def test_dashboard_stats_count_retention_window_beyond_scan_limit(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

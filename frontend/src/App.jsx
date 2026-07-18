@@ -406,6 +406,7 @@ export default function App() {
   const [dashboardSiteId, setDashboardSiteId] = useState('');
   const [dashboardPeriodDays, setDashboardPeriodDays] = useState('1');
   const [systemUpdate, setSystemUpdate] = useState(null);
+  const lastSystemUpdateStatusRef = useRef('');
   const [navOpen, setNavOpen] = useState(false);
   const [loadedViews, setLoadedViews] = useState({});
   const activeViewRef = useRef(activeView);
@@ -514,6 +515,17 @@ export default function App() {
     }, systemUpdate?.running ? 2000 : 15000);
     return () => window.clearInterval(timer);
   }, [auth.authenticated, auth.loading, activeView, systemUpdate?.running]);
+
+  useEffect(() => {
+    const status = systemUpdate?.status || '';
+    const running = Boolean(systemUpdate?.running);
+    const previousStatus = lastSystemUpdateStatusRef.current;
+    if (previousStatus === 'running' && !running && status === 'succeeded') {
+      window.location.reload();
+      return;
+    }
+    lastSystemUpdateStatusRef.current = status;
+  }, [systemUpdate?.status, systemUpdate?.running]);
 
   async function loadAuth() {
     setLoading(true);
