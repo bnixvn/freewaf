@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import hashlib
 import hmac
 import html
@@ -20,6 +21,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -272,13 +274,12 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     if not certificate:
                         self.send_json(404, {"error": "Certificate not found"})
                         return
-                    content = certificate_download_content(certificate)
-                    filename = f"{safe_file_stem(certificate_download_name(certificate))}.crt"
+                    content, filename = certificate_download_bundle(certificate)
                     self.record_audit(action="certificates.download", target="certificates", target_id=item_id, status=200)
                     self.send_binary(
                         200,
                         content,
-                        "application/x-pem-file",
+                        "application/zip",
                         headers={
                             "Content-Disposition": f'attachment; filename="{filename}"',
                             "X-Content-Type-Options": "nosniff",
@@ -2674,6 +2675,28 @@ def certificate_download_content(certificate: dict) -> bytes:
         return path.read_bytes()
     except OSError as error:
         raise StoreError(500, f"Cannot read certificate file {path}: {error}") from error
+
+
+def certificate_download_bundle(certificate: dict) -> tuple[bytes, str]:
+    cert_path = certificate_download_path(certificate)
+    key_path = resolve_reference(certificate.get("keyFile"))
+    if not key_path:
+        raise StoreError(400, "Private key file is not configured")
+    resolved_key = key_path.resolve(strict=False)
+    download_roots = certificate_download_roots()
+    if not any(is_relative_to(resolved_key, root) for root in download_roots):
+        raise StoreError(400, "Private key file is not downloadable")
+    if not resolved_key.exists() or not resolved_key.is_file():
+        raise StoreError(404, "Private key file not found")
+
+    buffer = io.BytesIO()
+    try:
+        with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as bundle:
+            bundle.writestr("fullchain.pem", cert_path.read_bytes())
+            bundle.writestr("privkey.pem", resolved_key.read_bytes())
+    except OSError as error:
+        raise StoreError(500, f"Cannot read certificate bundle: {error}") from error
+    return buffer.getvalue(), f"{safe_file_stem(certificate_download_name(certificate))}.zip"
 
 
 def certbot_files_exist(certificate: dict) -> bool:

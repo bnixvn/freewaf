@@ -1,8 +1,10 @@
 import json
+import io
 import os
 import sys
 import tempfile
 import threading
+import zipfile
 import urllib.error
 import urllib.request
 import unittest
@@ -83,6 +85,11 @@ class CertificateServerTests(unittest.TestCase):
             headers={"Cookie": cookie},
         )
         return urllib.request.urlopen(request, timeout=5)
+
+    def read_zip_response(self, response):
+        payload = response.read()
+        with zipfile.ZipFile(io.BytesIO(payload)) as bundle:
+            return payload, {name: bundle.read(name).decode("utf-8") for name in bundle.namelist()}
 
     def test_state_slice_payload_returns_only_view_dependencies(self):
         state = {
@@ -649,13 +656,16 @@ class CertificateServerTests(unittest.TestCase):
                 server = self.start_admin_server(store)
                 cookie = self.login_cookie(server)
                 with self.download_certificate(server, "cert-demo", cookie) as response:
-                    body = response.read().decode("utf-8")
+                    payload, files = self.read_zip_response(response)
 
             self.assertEqual(response.status, 200)
-            self.assertEqual(response.headers["content-type"], "application/x-pem-file")
-            self.assertIn('attachment; filename="demo.example.test.crt"', response.headers["Content-Disposition"])
-            self.assertIn("BEGIN CERTIFICATE", body)
-            self.assertNotIn("PRIVATE KEY", body)
+            self.assertEqual(response.headers["content-type"], "application/zip")
+            self.assertIn('attachment; filename="demo.example.test.zip"', response.headers["Content-Disposition"])
+            self.assertIn("fullchain.pem", files)
+            self.assertIn("privkey.pem", files)
+            self.assertIn("BEGIN CERTIFICATE", files["fullchain.pem"])
+            self.assertIn("PRIVATE KEY", files["privkey.pem"])
+            self.assertGreater(len(payload), 0)
 
     def test_download_certbot_and_cloudflare_certificates_from_live_dir(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -703,14 +713,15 @@ class CertificateServerTests(unittest.TestCase):
                 server = self.start_admin_server(store)
                 cookie = self.login_cookie(server)
                 with self.download_certificate(server, "certbot-demo", cookie) as response:
-                    certbot_body = response.read().decode("utf-8")
+                    _, certbot_files = self.read_zip_response(response)
                 with self.download_certificate(server, "cloudflare-demo", cookie) as response:
-                    cloudflare_body = response.read().decode("utf-8")
+                    _, cloudflare_files = self.read_zip_response(response)
 
-            self.assertIn("certbot", certbot_body)
-            self.assertIn("cloudflare", cloudflare_body)
-            self.assertNotIn("PRIVATE KEY", certbot_body + cloudflare_body)
-            self.assertNotIn("secret-token", certbot_body + cloudflare_body)
+            self.assertIn("BEGIN CERTIFICATE", certbot_files["fullchain.pem"])
+            self.assertIn("PRIVATE KEY", certbot_files["privkey.pem"])
+            self.assertIn("BEGIN CERTIFICATE", cloudflare_files["fullchain.pem"])
+            self.assertIn("PRIVATE KEY", cloudflare_files["privkey.pem"])
+            self.assertNotIn("secret-token", "".join(certbot_files.values()) + "".join(cloudflare_files.values()))
 
     def test_download_certbot_certificate_allows_archive_target(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -739,10 +750,10 @@ class CertificateServerTests(unittest.TestCase):
                 server = self.start_admin_server(store)
                 cookie = self.login_cookie(server)
                 with self.download_certificate(server, "certbot-symlink", cookie) as response:
-                    body = response.read().decode("utf-8")
+                    _, files = self.read_zip_response(response)
 
-            self.assertIn("archive", body)
-            self.assertNotIn("PRIVATE KEY", body)
+            self.assertIn("archive", files["fullchain.pem"])
+            self.assertIn("PRIVATE KEY", files["privkey.pem"])
 
     def test_download_certificate_returns_404_for_unknown_id(self):
         with tempfile.TemporaryDirectory() as temp_dir:

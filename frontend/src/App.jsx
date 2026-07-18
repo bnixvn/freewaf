@@ -1107,12 +1107,12 @@ export default function App() {
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `${certificateDownloadName(certificate)}.crt`;
+      link.download = `${certificateDownloadName(certificate)}.zip`;
       document.body.appendChild(link);
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
-      showToast('Certificate download started');
+      showToast('Certificate bundle download started');
     } catch (error) {
       showToast(error.message, true);
     }
