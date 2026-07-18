@@ -4,6 +4,7 @@ import {
   Activity,
   BarChart3,
   Copy,
+  Download,
   Edit3,
   Globe2,
   Info,
@@ -1091,6 +1092,32 @@ export default function App() {
     }
   }
 
+  async function downloadCertificate(certificate) {
+    if (!certificate?.id || !certificate.certFile) return;
+    try {
+      const response = await fetch(`/api/certificates/${certificate.id}/download`, {
+        method: 'GET',
+        cache: 'no-store'
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || response.statusText);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${certificateDownloadName(certificate)}.crt`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      showToast('Certificate download started');
+    } catch (error) {
+      showToast(error.message, true);
+    }
+  }
+
   async function deleteIpGroup(group) {
     if (!window.confirm(`Delete ${group.name}?`)) return;
     await api(`/api/ip-groups/${group.id}`, { method: 'DELETE' });
@@ -1297,6 +1324,7 @@ export default function App() {
       deleteSite,
       deleteRule,
       deleteCertificate,
+      downloadCertificate,
       deleteIpGroup,
       deleteAccessRule,
       syncIpGroup,
@@ -1948,7 +1976,7 @@ function CompactInsightColumn({ title, pill, rows, empty, maxValue, label, barVa
   );
 }
 
-function SitesView({ data, setModal, toggleSite, toggleUnderAttack, deleteSite, pendingActions }) {
+function SitesView({ data, setModal, toggleSite, toggleUnderAttack, deleteSite, downloadCertificate, pendingActions }) {
   return (
     <section className="panel">
       <div className="panel-heading">
@@ -1958,22 +1986,27 @@ function SitesView({ data, setModal, toggleSite, toggleUnderAttack, deleteSite, 
         </button>
       </div>
       <div className="application-grid">
-        {data.sites.map((site) => (
-          <ApplicationCard
-            key={site.id}
-            site={site}
-            stats={data.stats?.siteStats?.find((item) => item.siteId === site.id)}
-            onEdit={() => setModal({ type: 'site', site })}
-            onDelete={() => deleteSite(site)}
-            onToggle={(checked) => toggleSite(site, checked)}
-            onToggleUnderAttack={(checked) => toggleUnderAttack(site, checked)}
-            defensePending={Boolean(pendingActions[`site:${site.id}:enabled`])}
-            underAttackPending={Boolean(pendingActions[`site:${site.id}:underAttack`])}
-            onConfigureFlood={() => setModal({ type: 'httpFlood', site })}
-            onConfigureBot={() => setModal({ type: 'botProtect', site })}
-            onConfigureGeo={() => setModal({ type: 'geoBlock', site })}
-          />
-        ))}
+        {data.sites.map((site) => {
+          const certificate = data.certificates?.find((item) => item.id === site.tls?.certificateId);
+          return (
+            <ApplicationCard
+              key={site.id}
+              site={site}
+              certificate={certificate}
+              stats={data.stats?.siteStats?.find((item) => item.siteId === site.id)}
+              onEdit={() => setModal({ type: 'site', site })}
+              onDelete={() => deleteSite(site)}
+              onDownloadCertificate={() => downloadCertificate(certificate)}
+              onToggle={(checked) => toggleSite(site, checked)}
+              onToggleUnderAttack={(checked) => toggleUnderAttack(site, checked)}
+              defensePending={Boolean(pendingActions[`site:${site.id}:enabled`])}
+              underAttackPending={Boolean(pendingActions[`site:${site.id}:underAttack`])}
+              onConfigureFlood={() => setModal({ type: 'httpFlood', site })}
+              onConfigureBot={() => setModal({ type: 'botProtect', site })}
+              onConfigureGeo={() => setModal({ type: 'geoBlock', site })}
+            />
+          );
+        })}
       </div>
     </section>
   );
@@ -1981,9 +2014,11 @@ function SitesView({ data, setModal, toggleSite, toggleUnderAttack, deleteSite, 
 
 function ApplicationCard({
   site,
+  certificate,
   stats,
   onEdit,
   onDelete,
+  onDownloadCertificate,
   onToggle,
   onToggleUnderAttack,
   defensePending = false,
@@ -1999,6 +2034,7 @@ function ApplicationCard({
   const protocol = ports.some((port) => String(port).endsWith('_ssl')) ? 'HTTPS' : 'HTTP';
   const upstream = site.upstreams?.[0] || site.origin;
   const appType = applicationTypeLabel(site.applicationType);
+  const canDownloadCertificate = Boolean(certificate?.certFile) && (protocol === 'HTTPS' || site.tls?.enabled);
 
   return (
     <article className="application-card">
@@ -2034,6 +2070,11 @@ function ApplicationCard({
           <h3>{site.name}</h3>
           <div className="row-actions">
             <span className="pill">{appType}</span>
+            {canDownloadCertificate && (
+              <button className="table-action" onClick={onDownloadCertificate} title="Download SSL certificate" aria-label={`Download SSL certificate for ${domain}`}>
+                <Download size={17} />
+              </button>
+            )}
             <button className="link-button" onClick={onEdit}>DETAIL</button>
             <button className="table-action delete-action" onClick={onDelete} title="Delete application" aria-label="Delete application">
               <Trash2 size={17} />
@@ -2270,7 +2311,7 @@ function IpGroupsView({ data, setModal, toggleIpGroup, deleteIpGroup, syncIpGrou
   );
 }
 
-function CertificatesView({ data, setModal, deleteCertificate }) {
+function CertificatesView({ data, setModal, deleteCertificate, downloadCertificate }) {
   return (
     <section className="table-panel">
       <div className="panel-heading">
@@ -2301,6 +2342,9 @@ function CertificatesView({ data, setModal, deleteCertificate }) {
                 <td className="path-cell"><span className="code">{certificate.keyFile}</span></td>
                 <td>
                   <div className="row-actions">
+                    {certificate.certFile && (
+                      <button className="table-action" onClick={() => downloadCertificate(certificate)} title="Download public certificate" aria-label={`Download public certificate for ${certificate.name || certificate.id}`}><Download size={17} /></button>
+                    )}
                     <button className="table-action" onClick={() => setModal({ type: 'certificate', certificate })} title="Edit"><Edit3 size={17} /></button>
                     <button className="table-action" onClick={() => deleteCertificate(certificate)} title="Delete"><Trash2 size={17} /></button>
                   </div>
@@ -4577,6 +4621,13 @@ function normalizeListeningPortsPayload(value) {
 
 function textFromList(value) {
   return Array.isArray(value) ? value.join('\n') : String(value || '');
+}
+
+function certificateDownloadName(certificate) {
+  const domains = Array.isArray(certificate?.domains) ? certificate.domains : listFromText(certificate?.domains, /[\s,]+/);
+  const fallback = certificate?.name || certificate?.id || 'certificate';
+  const value = String(domains[0] || fallback).replace(/^\*\./, '');
+  return value.replace(/[^a-z0-9._-]+/gi, '_').replace(/^_+|_+$/g, '').slice(0, 80) || 'certificate';
 }
 
 function inlineList(items) {

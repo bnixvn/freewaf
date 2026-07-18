@@ -265,6 +265,30 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 self.send_json(200, state_slice_payload(store, "certificates", query))
                 return
 
+            resource, item_id, action = split_action_path(parsed.path)
+            if resource == "certificates" and action == "download":
+                try:
+                    certificate = next((item for item in store.get_state().get("certificates", []) if item["id"] == item_id), None)
+                    if not certificate:
+                        self.send_json(404, {"error": "Certificate not found"})
+                        return
+                    content = certificate_download_content(certificate)
+                    filename = f"{safe_file_stem(certificate_download_name(certificate))}.crt"
+                    self.record_audit(action="certificates.download", target="certificates", target_id=item_id, status=200)
+                    self.send_binary(
+                        200,
+                        content,
+                        "application/x-pem-file",
+                        headers={
+                            "Content-Disposition": f'attachment; filename="{filename}"',
+                            "X-Content-Type-Options": "nosniff",
+                        },
+                    )
+                    return
+                except StoreError as error:
+                    self.send_json(error.status, error_payload(error))
+                    return
+
             if parsed.path == "/api/settings":
                 self.send_json(200, state_slice_payload(store, "settings", query))
                 return
@@ -811,6 +835,23 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 self.send_header(key, value)
             self.end_headers()
             self.wfile.write(body)
+
+        def send_binary(self, status: int, content: bytes, content_type: str, headers=None):
+            header_items = response_headers(headers)
+            header_names = {str(key).lower() for key, _value in header_items}
+            self.send_response(status)
+            self.send_header("content-type", content_type)
+            self.send_header("content-length", str(len(content)))
+            if "cache-control" not in header_names:
+                self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            if "pragma" not in header_names:
+                self.send_header("Pragma", "no-cache")
+            if "expires" not in header_names:
+                self.send_header("Expires", "0")
+            for key, value in header_items:
+                self.send_header(key, value)
+            self.end_headers()
+            self.wfile.write(content)
 
         def send_empty(self, status: int, headers=None):
             self.send_response(status)
@@ -2605,9 +2646,55 @@ def certbot_certificate_name(certificate: dict) -> str:
     return domains[0].removeprefix("*.")
 
 
+def certificate_download_name(certificate: dict) -> str:
+    domains = normalize_payload_list(certificate.get("domains"))
+    if domains:
+        return domains[0].removeprefix("*.")
+    name = str(certificate.get("name") or "").strip()
+    if name:
+        return name
+    return str(certificate.get("id") or "certificate")
+
+
+def certificate_download_path(certificate: dict) -> Path:
+    path = resolve_reference(certificate.get("certFile"))
+    if not path:
+        raise StoreError(400, "Certificate file is not configured")
+    resolved = path.resolve(strict=False)
+    if not is_downloadable_certificate_path(resolved):
+        raise StoreError(400, "Certificate file is not downloadable")
+    if not resolved.exists() or not resolved.is_file():
+        raise StoreError(404, "Certificate file not found")
+    return resolved
+
+
+def certificate_download_content(certificate: dict) -> bytes:
+    path = certificate_download_path(certificate)
+    try:
+        return path.read_bytes()
+    except OSError as error:
+        raise StoreError(500, f"Cannot read certificate file {path}: {error}") from error
+
+
 def certbot_files_exist(certificate: dict) -> bool:
     paths = [resolve_reference(certificate.get(key)) for key in ("certFile", "keyFile")]
     return any(path and path.exists() for path in paths)
+
+
+def certificate_download_roots() -> list[Path]:
+    live_root = Path(os.environ.get("CERTBOT_LIVE_DIR", "/etc/letsencrypt/live"))
+    if not live_root.is_absolute():
+        live_root = ROOT_DIR / live_root
+    return [
+        certificate_dir().resolve(strict=False),
+        (ROOT_DIR / "nginx" / "certs").resolve(strict=False),
+        live_root.resolve(strict=False),
+    ]
+
+
+def is_downloadable_certificate_path(path: Path) -> bool:
+    resolved = path.resolve(strict=False)
+    return any(is_relative_to(resolved, root) for root in certificate_download_roots())
 
 
 def is_managed_certificate_path(path: Path) -> bool:
@@ -2839,7 +2926,7 @@ def split_resource_path(path: str) -> tuple[str, str]:
 def split_action_path(path: str) -> tuple[str, str, str]:
     parsed = urlparse(path)
     parts = [part for part in parsed.path.split("/") if part]
-    if len(parts) == 4 and parts[0] == "api" and parts[1] in {"ip-groups", "users"}:
+    if len(parts) == 4 and parts[0] == "api" and parts[1] in {"ip-groups", "users", "certificates"}:
         return parts[1], parts[2], parts[3]
     return "", "", ""
 

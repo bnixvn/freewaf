@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import threading
+import urllib.error
 import urllib.request
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -52,6 +53,37 @@ MIIB
 
 
 class CertificateServerTests(unittest.TestCase):
+    def start_admin_server(self, store):
+        handler_cls = make_admin_handler(store, 7001, 9090, False, False)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(lambda: self.stop_admin_server(server, thread))
+        return server
+
+    @staticmethod
+    def stop_admin_server(server, thread):
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    def login_cookie(self, server, username="admin", password="secret-pass"):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/api/auth/login",
+            data=json.dumps({"username": username, "password": password}).encode("utf-8"),
+            headers={"content-type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.headers["Set-Cookie"].split(";", 1)[0]
+
+    def download_certificate(self, server, certificate_id, cookie):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/api/certificates/{certificate_id}/download",
+            headers={"Cookie": cookie},
+        )
+        return urllib.request.urlopen(request, timeout=5)
+
     def test_state_slice_payload_returns_only_view_dependencies(self):
         state = {
             "sites": [{"id": "site-a", "name": "Site A"}],
@@ -588,6 +620,147 @@ class CertificateServerTests(unittest.TestCase):
             self.assertEqual(prepared["cloudflarePropagationSeconds"], 45)
             self.assertEqual(prepared["certFile"], str(live_dir / "cert-wild" / "fullchain.pem").replace("\\", "/"))
             self.assertEqual(prepared["keyFile"], str(live_dir / "cert-wild" / "privkey.pem").replace("\\", "/"))
+
+    def test_download_uploaded_certificate_returns_public_cert_only(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cert_dir = root / "certs"
+            cert_dir.mkdir()
+            cert_file = cert_dir / "demo.crt"
+            key_file = cert_dir / "demo.key"
+            cert_file.write_text(CERT_PEM, encoding="utf-8")
+            key_file.write_text(KEY_PEM, encoding="utf-8")
+
+            store = Store(root / "state.json")
+            store.init()
+            store.upsert_user({"username": "admin", "password": "secret-pass", "enabled": True})
+            store.upsert_certificate(
+                {
+                    "id": "cert-demo",
+                    "name": "Demo Cert",
+                    "source": "upload",
+                    "domains": ["demo.example.test"],
+                    "certFile": str(cert_file),
+                    "keyFile": str(key_file),
+                }
+            )
+
+            with mock.patch.dict(os.environ, {"NGINX_CERT_DIR": str(cert_dir)}, clear=False):
+                server = self.start_admin_server(store)
+                cookie = self.login_cookie(server)
+                with self.download_certificate(server, "cert-demo", cookie) as response:
+                    body = response.read().decode("utf-8")
+
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers["content-type"], "application/x-pem-file")
+            self.assertIn('attachment; filename="demo.example.test.crt"', response.headers["Content-Disposition"])
+            self.assertIn("BEGIN CERTIFICATE", body)
+            self.assertNotIn("PRIVATE KEY", body)
+
+    def test_download_certbot_and_cloudflare_certificates_from_live_dir(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            live_dir = root / "live"
+            certbot_dir = live_dir / "example.test"
+            cloudflare_dir = live_dir / "wild.example.test"
+            certbot_dir.mkdir(parents=True)
+            cloudflare_dir.mkdir(parents=True)
+            (certbot_dir / "fullchain.pem").write_text(CERT_PEM + "\ncertbot", encoding="utf-8")
+            (certbot_dir / "privkey.pem").write_text(KEY_PEM, encoding="utf-8")
+            (cloudflare_dir / "fullchain.pem").write_text(CERT_PEM + "\ncloudflare", encoding="utf-8")
+            (cloudflare_dir / "privkey.pem").write_text(KEY_PEM, encoding="utf-8")
+            credentials_file = root / "cloudflare.ini"
+            credentials_file.write_text("dns_cloudflare_api_token = secret-token\n", encoding="utf-8")
+
+            store = Store(root / "state.json")
+            store.init()
+            store.upsert_user({"username": "admin", "password": "secret-pass", "enabled": True})
+            store.upsert_certificate(
+                {
+                    "id": "certbot-demo",
+                    "name": "example.test",
+                    "source": "certbot",
+                    "domains": ["example.test"],
+                    "email": "ops@example.test",
+                    "certFile": str(certbot_dir / "fullchain.pem"),
+                    "keyFile": str(certbot_dir / "privkey.pem"),
+                }
+            )
+            store.upsert_certificate(
+                {
+                    "id": "cloudflare-demo",
+                    "name": "wild.example.test",
+                    "source": "cloudflare",
+                    "domains": ["*.example.test"],
+                    "email": "ops@example.test",
+                    "certFile": str(cloudflare_dir / "fullchain.pem"),
+                    "keyFile": str(cloudflare_dir / "privkey.pem"),
+                    "cloudflareCredentialsFile": str(credentials_file),
+                }
+            )
+
+            with mock.patch.dict(os.environ, {"CERTBOT_LIVE_DIR": str(live_dir)}, clear=False):
+                server = self.start_admin_server(store)
+                cookie = self.login_cookie(server)
+                with self.download_certificate(server, "certbot-demo", cookie) as response:
+                    certbot_body = response.read().decode("utf-8")
+                with self.download_certificate(server, "cloudflare-demo", cookie) as response:
+                    cloudflare_body = response.read().decode("utf-8")
+
+            self.assertIn("certbot", certbot_body)
+            self.assertIn("cloudflare", cloudflare_body)
+            self.assertNotIn("PRIVATE KEY", certbot_body + cloudflare_body)
+            self.assertNotIn("secret-token", certbot_body + cloudflare_body)
+
+    def test_download_certificate_returns_404_for_unknown_id(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = Store(Path(temp_dir) / "state.json")
+            store.init()
+            store.upsert_user({"username": "admin", "password": "secret-pass", "enabled": True})
+            server = self.start_admin_server(store)
+            cookie = self.login_cookie(server)
+
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                self.download_certificate(server, "missing", cookie)
+
+        self.assertEqual(context.exception.code, 404)
+        self.assertIn("Certificate not found", context.exception.read().decode("utf-8"))
+
+    def test_download_certificate_rejects_missing_unreadable_and_unsafe_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cert_dir = root / "certs"
+            cert_dir.mkdir()
+            outside_file = root / "outside.crt"
+            outside_file.write_text(CERT_PEM, encoding="utf-8")
+
+            store = Store(root / "state.json")
+            store.init()
+            store.upsert_user({"username": "admin", "password": "secret-pass", "enabled": True})
+            store._state()["certificates"] = [
+                {"id": "missing-config", "name": "Missing config", "source": "upload", "domains": ["missing-config.test"], "certFile": "", "keyFile": ""},
+                {"id": "missing-file", "name": "Missing file", "source": "upload", "domains": ["missing-file.test"], "certFile": str(cert_dir / "missing.crt"), "keyFile": str(cert_dir / "missing.key")},
+                {"id": "unsafe-file", "name": "Unsafe file", "source": "upload", "domains": ["unsafe-file.test"], "certFile": str(outside_file), "keyFile": ""},
+            ]
+            store.persist()
+
+            with mock.patch.dict(os.environ, {"NGINX_CERT_DIR": str(cert_dir)}, clear=False):
+                server = self.start_admin_server(store)
+                cookie = self.login_cookie(server)
+
+                with self.assertRaises(urllib.error.HTTPError) as missing_config:
+                    self.download_certificate(server, "missing-config", cookie)
+                with self.assertRaises(urllib.error.HTTPError) as missing_file:
+                    self.download_certificate(server, "missing-file", cookie)
+                with self.assertRaises(urllib.error.HTTPError) as unsafe_file:
+                    self.download_certificate(server, "unsafe-file", cookie)
+
+        self.assertEqual(missing_config.exception.code, 400)
+        self.assertIn("Certificate file is not configured", missing_config.exception.read().decode("utf-8"))
+        self.assertEqual(missing_file.exception.code, 404)
+        self.assertIn("Certificate file not found", missing_file.exception.read().decode("utf-8"))
+        self.assertEqual(unsafe_file.exception.code, 400)
+        self.assertIn("Certificate file is not downloadable", unsafe_file.exception.read().decode("utf-8"))
 
     def test_signed_challenge_nonce_and_edge_token_are_bound_to_context(self):
         context = {
