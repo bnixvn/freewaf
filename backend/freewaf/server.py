@@ -2685,10 +2685,14 @@ def certificate_download_roots() -> list[Path]:
     live_root = Path(os.environ.get("CERTBOT_LIVE_DIR", "/etc/letsencrypt/live"))
     if not live_root.is_absolute():
         live_root = ROOT_DIR / live_root
+    archive_root = Path(os.environ.get("CERTBOT_ARCHIVE_DIR", "/etc/letsencrypt/archive"))
+    if not archive_root.is_absolute():
+        archive_root = ROOT_DIR / archive_root
     return [
         certificate_dir().resolve(strict=False),
         (ROOT_DIR / "nginx" / "certs").resolve(strict=False),
         live_root.resolve(strict=False),
+        archive_root.resolve(strict=False),
     ]
 
 

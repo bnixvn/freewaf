@@ -712,6 +712,38 @@ class CertificateServerTests(unittest.TestCase):
             self.assertNotIn("PRIVATE KEY", certbot_body + cloudflare_body)
             self.assertNotIn("secret-token", certbot_body + cloudflare_body)
 
+    def test_download_certbot_certificate_allows_archive_target(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive_dir = root / "archive" / "example.test"
+            archive_dir.mkdir(parents=True)
+            (archive_dir / "fullchain1.pem").write_text(CERT_PEM + "\narchive", encoding="utf-8")
+            (archive_dir / "privkey1.pem").write_text(KEY_PEM, encoding="utf-8")
+
+            store = Store(root / "state.json")
+            store.init()
+            store.upsert_user({"username": "admin", "password": "secret-pass", "enabled": True})
+            store.upsert_certificate(
+                {
+                    "id": "certbot-symlink",
+                    "name": "example.test",
+                    "source": "certbot",
+                    "domains": ["example.test"],
+                    "email": "ops@example.test",
+                    "certFile": str(archive_dir / "fullchain1.pem"),
+                    "keyFile": str(archive_dir / "privkey1.pem"),
+                }
+            )
+
+            with mock.patch.dict(os.environ, {"CERTBOT_ARCHIVE_DIR": str(root / "archive")}, clear=False):
+                server = self.start_admin_server(store)
+                cookie = self.login_cookie(server)
+                with self.download_certificate(server, "certbot-symlink", cookie) as response:
+                    body = response.read().decode("utf-8")
+
+            self.assertIn("archive", body)
+            self.assertNotIn("PRIVATE KEY", body)
+
     def test_download_certificate_returns_404_for_unknown_id(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = Store(Path(temp_dir) / "state.json")
