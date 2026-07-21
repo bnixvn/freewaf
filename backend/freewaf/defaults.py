@@ -396,6 +396,10 @@ _RANDOM_QUERY_PARAMETER_PATTERN = (
 _WOOCOMMERCE_CART_CONFLICT_PATTERN = (
     r"(?:[?&]remove_item=[0-9a-f]{32}(?:&[^#\s]*)?&add-to-cart=\d+(?:$|[&#])|[?&]add-to-cart=\d+(?:&[^#\s]*)?&remove_item=[0-9a-f]{32}(?:$|[&#]))"
 )
+_LCS_ORDER_GIFT_PROBING_PATTERN = (
+    r"/gio-hang/(?=[^#\s]*[?&]lcs_or_gift_choice=1(?:$|[&#]))(?=[^#\s]*[?&]lcs_or_milestone_amount=\d+(?:$|[&#]))"
+    r"(?=[^#\s]*[?&]lcs_or_selected_choice=single_\d+(?:$|[&#]))(?=[^#\s]*[?&]lcs_or_selected_product=\d+(?:$|[&#]))"
+)
 _GHOSTSCRIPT_PATTERN = r"(?:(?:\.ps|\.eps|\.pdf)(?:$|\?|/)|-dSAFER|\.forceput|%pipe%|\.setdevice|/invalidaccess)"
 _JAVA_STRUTS_PATTERN = r"(?:(?:%24%7B|\$\{|%\{).*?(?:ognl|memberAccess|#context|#_memberAccess|com\.opensymphony|xwork|Runtime|getRuntime)|struts2|redirect(?:Action)?:)"
 _WEBLOGIC_PATTERN = r"(?:/(?:wls-wsat|_async|bea_wls_internal|uddiexplorer|console)(?:/|$)|/console/.*(?:%252e%252e%252f|com\.tangosol|MVEL|ShellSession|JNDI)|T3://|weblogic)"
@@ -446,6 +450,7 @@ SAFELINE_COMPATIBILITY_RULES = [
     _safeline_rule(131073, "Spring Framework Vulnerability", _SPRING_PATTERN, target="all", severity="critical"),
     _safeline_rule(65884, "Random query parameter probing", _RANDOM_QUERY_PARAMETER_PATTERN, severity="medium"),
     _safeline_rule(65885, "WooCommerce cart action conflict", _WOOCOMMERCE_CART_CONFLICT_PATTERN, severity="medium"),
+    _safeline_rule(65886, "LCS order gift probing", _LCS_ORDER_GIFT_PROBING_PATTERN, severity="medium"),
     _safeline_rule(65883, "RaspAP command Injection vulnerability (CVE-2021-33396)", r"(?:/ajax/networking/get_netcfg\.php|/hostapd_conf|/includes/provider\.php|interface=.*[;&|])", severity="critical"),
     _safeline_rule(65882, "Vite Arbitrary File Read Vulnerability (CVE-2025-31125)", r"(?:/@fs/(?:/)?(?:etc/passwd|proc/self/environ|[^?]*\.env)|/@id/__x00__|[?&](?:raw|import|url)\b.*(?:\.\./|%2e%2e))", severity="critical"),
     _safeline_rule(65881, "Vite Arbitrary File Read Vulnerability (CVE-2025-30208)", r"(?:/@fs/(?:/)?(?:etc/passwd|proc/self/environ|[^?]*\.env)|/@id/__x00__|[?&](?:raw|import|url)\b.*(?:\.\./|%2e%2e))", severity="critical"),

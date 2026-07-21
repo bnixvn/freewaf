@@ -344,6 +344,25 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("WooCommerce cart action conflict", config)
         self.assertIn("remove_item=[0-9a-f]{32}", config)
 
+    def test_blocks_lcs_order_gift_probing(self):
+        rule = next(rule for rule in SAFELINE_COMPATIBILITY_RULES if rule["id"] == "builtin-safeline-65886")
+        regex = re.compile(rule["pattern"], re.IGNORECASE)
+
+        malicious_uris = [
+            "/gio-hang/?lcs_or_gift_choice=1&lcs_or_milestone_amount=500000&lcs_or_selected_choice=single_71007&lcs_or_selected_product=71007&_wpnonce=67456d3002",
+            "/gio-hang/?lcs_or_gift_choice=1&lcs_or_milestone_amount=500000&lcs_or_selected_choice=single_71007&lcs_or_selected_product=71007&_wpnonce=6f74c97d42",
+            "/gio-hang/?_wpnonce=6f74c97d42&lcs_or_selected_product=71007&lcs_or_selected_choice=single_71007&lcs_or_milestone_amount=500000&lcs_or_gift_choice=1",
+        ]
+        for uri in malicious_uris:
+            self.assertRegex(uri, regex)
+
+        self.assertNotRegex("/gio-hang/?lcs_or_gift_choice=1&lcs_or_milestone_amount=500000&_wpnonce=6f74c97d42", regex)
+        self.assertNotRegex("/san-pham/foo/?lcs_or_gift_choice=1&lcs_or_milestone_amount=500000&lcs_or_selected_choice=single_71007&lcs_or_selected_product=71007", regex)
+
+        config = generate_nginx_config(make_state())
+        self.assertIn("LCS order gift probing", config)
+        self.assertIn("lcs_or_selected_choice=single_\\d+", config)
+
     def test_header_rules_inspect_operational_security_headers(self):
         config = generate_nginx_config(
             make_state(
