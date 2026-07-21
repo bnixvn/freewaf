@@ -326,6 +326,24 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("Random query parameter probing", config)
         self.assertIn("query-[0-9a-f]{8}", config)
 
+    def test_blocks_woocommerce_cart_action_conflict(self):
+        rule = next(rule for rule in SAFELINE_COMPATIBILITY_RULES if rule["id"] == "builtin-safeline-65885")
+        regex = re.compile(rule["pattern"], re.IGNORECASE)
+
+        malicious_uris = [
+            "/gio-hang/?remove_item=75e3e51d5955d166f937adbbe7ce877e&_wpnonce=6d7148f666&add-to-cart=43591",
+            "/gio-hang/?add-to-cart=43591&_wpnonce=6d7148f666&remove_item=75e3e51d5955d166f937adbbe7ce877e",
+        ]
+        for uri in malicious_uris:
+            self.assertRegex(uri, regex)
+
+        self.assertNotRegex("/gio-hang/?remove_item=75e3e51d5955d166f937adbbe7ce877e&_wpnonce=6d7148f666", regex)
+        self.assertNotRegex("/san-pham/foo/?add-to-cart=43591", regex)
+
+        config = generate_nginx_config(make_state())
+        self.assertIn("WooCommerce cart action conflict", config)
+        self.assertIn("remove_item=[0-9a-f]{32}", config)
+
     def test_header_rules_inspect_operational_security_headers(self):
         config = generate_nginx_config(
             make_state(
