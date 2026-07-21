@@ -390,6 +390,9 @@ _HTTP_SPLITTING_PATTERN = r"(?:%0a|%0d%0a|%0a%0d|\\r\\n)(?:set-cookie|location|c
 _GIT_REPOSITORY_PATTERN = r"(?:/(?:\.git)(?:/|%2f)(?:config|HEAD|index|objects|refs|logs)|(?:^|/)\.git(?:$|[/?])|git-upload-pack|git-receive-pack)"
 _LOG4J_PATTERN = r"(?:\$\{jndi:(?:ldap|rmi|dns|iiop|http):|%24%7Bjndi%3A|jndi%3A(?:ldap|rmi|dns))"
 _PHP_FASTCGI_PATTERN = r"(?:\?%ad[dsc]\+|%ad(?:d|s|c|n)|\?-d\+allow_url_include|\?-s\b|\?%2dd|/[^?]+\.(?:jpg|png|gif|txt|css|js)/[^?]+\.php|PATH_INFO=.*\.php)"
+_RANDOM_QUERY_PARAMETER_PATTERN = (
+    r"(?:^/\?query-[0-9a-f]{8}=[^&]{0,64}(?:$|&)|[?&]query-[0-9a-f]{8}=[^&]{0,64}&query-[0-9a-f]{8}=[^&]{0,64}(?:$|&))"
+)
 _GHOSTSCRIPT_PATTERN = r"(?:(?:\.ps|\.eps|\.pdf)(?:$|\?|/)|-dSAFER|\.forceput|%pipe%|\.setdevice|/invalidaccess)"
 _JAVA_STRUTS_PATTERN = r"(?:(?:%24%7B|\$\{|%\{).*?(?:ognl|memberAccess|#context|#_memberAccess|com\.opensymphony|xwork|Runtime|getRuntime)|struts2|redirect(?:Action)?:)"
 _WEBLOGIC_PATTERN = r"(?:/(?:wls-wsat|_async|bea_wls_internal|uddiexplorer|console)(?:/|$)|/console/.*(?:%252e%252e%252f|com\.tangosol|MVEL|ShellSession|JNDI)|T3://|weblogic)"
@@ -438,6 +441,7 @@ SAFELINE_COMPATIBILITY_RULES = [
     _safeline_rule(131075, "Jackson deserialization (CVE-2017-7525)", _JACKSON_PATTERN, target="all", severity="critical"),
     _safeline_rule(131074, "Spring Framework Vulnerability", _SPRING_PATTERN, target="all", severity="critical"),
     _safeline_rule(131073, "Spring Framework Vulnerability", _SPRING_PATTERN, target="all", severity="critical"),
+    _safeline_rule(65884, "Random query parameter probing", _RANDOM_QUERY_PARAMETER_PATTERN, severity="medium"),
     _safeline_rule(65883, "RaspAP command Injection vulnerability (CVE-2021-33396)", r"(?:/ajax/networking/get_netcfg\.php|/hostapd_conf|/includes/provider\.php|interface=.*[;&|])", severity="critical"),
     _safeline_rule(65882, "Vite Arbitrary File Read Vulnerability (CVE-2025-31125)", r"(?:/@fs/(?:/)?(?:etc/passwd|proc/self/environ|[^?]*\.env)|/@id/__x00__|[?&](?:raw|import|url)\b.*(?:\.\./|%2e%2e))", severity="critical"),
     _safeline_rule(65881, "Vite Arbitrary File Read Vulnerability (CVE-2025-30208)", r"(?:/@fs/(?:/)?(?:etc/passwd|proc/self/environ|[^?]*\.env)|/@id/__x00__|[?&](?:raw|import|url)\b.*(?:\.\./|%2e%2e))", severity="critical"),

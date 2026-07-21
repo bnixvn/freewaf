@@ -307,6 +307,25 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("if ($request_uri ~*", config)
         self.assertNotIn("$request_method$request_uri", config)
 
+    def test_blocks_random_query_parameter_probing(self):
+        rule = next(rule for rule in SAFELINE_COMPATIBILITY_RULES if rule["id"] == "builtin-safeline-65884")
+        regex = re.compile(rule["pattern"], re.IGNORECASE)
+
+        malicious_uris = [
+            "/?query-ee333222=11&query-4c10ad6f=6&query-62110522=2&query-9df10315=2",
+            "/?query-4c10ad6f=7",
+            "/?query-ee333222=11&query-4c10ad6f=11&query-62110522=2&query-9df10315=3",
+        ]
+        for uri in malicious_uris:
+            self.assertRegex(uri, regex)
+
+        self.assertNotRegex("/search?query-4c10ad6f=7", regex)
+        self.assertNotRegex("/?query-user=7", regex)
+
+        config = generate_nginx_config(make_state())
+        self.assertIn("Random query parameter probing", config)
+        self.assertIn("query-[0-9a-f]{8}", config)
+
     def test_header_rules_inspect_operational_security_headers(self):
         config = generate_nginx_config(
             make_state(
