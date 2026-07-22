@@ -3927,7 +3927,7 @@ function CertificateModal({ certificate, onClose, onSave }) {
                     type="password"
                     value={form.cloudflareApiToken || ''}
                     onChange={(event) => update('cloudflareApiToken', event.target.value)}
-                    placeholder={certificate?.source === 'cloudflare' ? 'Leave empty to reuse saved token' : 'Token with Zone DNS Edit'}
+                    placeholder={certificate?.source === 'cloudflare' ? 'Leave empty to reuse saved token' : 'Paste API token value only'}
                     autoComplete="off"
                     required={certificate?.source !== 'cloudflare'}
                   />
@@ -3943,7 +3943,7 @@ function CertificateModal({ certificate, onClose, onSave }) {
                   />
                 </label>
                 <div className="notice full">
-                  Uses Let's Encrypt DNS-01 for wildcard certificates. Token is stored in a protected certbot credentials file.
+                  Uses Let's Encrypt DNS-01 for wildcard certificates. Paste an API token with Zone:DNS:Edit permission; token is stored in a protected certbot credentials file.
                 </div>
               </>
             ) : (

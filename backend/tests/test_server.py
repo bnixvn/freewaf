@@ -650,6 +650,71 @@ class CertificateServerTests(unittest.TestCase):
             self.assertEqual(prepared["certFile"], str(live_dir / "cert-wild" / "fullchain.pem").replace("\\", "/"))
             self.assertEqual(prepared["keyFile"], str(live_dir / "cert-wild" / "privkey.pem").replace("\\", "/"))
 
+    def test_cloudflare_certificate_payload_sanitizes_token_paste_formats(self):
+        cases = [
+            "cf-secret-token",
+            "Bearer cf-secret-token",
+            "Authorization: Bearer cf-secret-token",
+            "dns_cloudflare_api_token = cf-secret-token\n",
+        ]
+
+        for token in cases:
+            with self.subTest(token=token):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    credentials_dir = Path(temp_dir) / "credentials"
+                    live_dir = Path(temp_dir) / "live"
+                    with mock.patch.dict(
+                        os.environ,
+                        {
+                            "CERTBOT_CREDENTIALS_DIR": str(credentials_dir),
+                            "CERTBOT_LIVE_DIR": str(live_dir),
+                        },
+                    ):
+                        with mock.patch(
+                            "freewaf.server.run_certbot_cloudflare",
+                            return_value={
+                                "ok": True,
+                                "stdout": (
+                                    "Successfully received certificate.\n"
+                                    f"Certificate is saved at: {live_dir}/cert-wild/fullchain.pem\n"
+                                    f"Key is saved at:         {live_dir}/cert-wild/privkey.pem\n"
+                                ),
+                                "stderr": "",
+                            },
+                        ):
+                            prepare_certificate_payload(
+                                {
+                                    "id": "cert-wild",
+                                    "source": "cloudflare",
+                                    "domains": ["example.test"],
+                                    "email": "ops@example.test",
+                                    "cloudflareApiToken": token,
+                                }
+                            )
+
+                    credentials_file = credentials_dir / "cert-wild-cloudflare.ini"
+                    self.assertEqual(credentials_file.read_text(encoding="utf-8"), "dns_cloudflare_api_token = cf-secret-token\n")
+
+    def test_cloudflare_certificate_payload_rejects_global_api_key_credentials(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with mock.patch.dict(os.environ, {"CERTBOT_CREDENTIALS_DIR": str(Path(temp_dir) / "credentials")}):
+                with self.assertRaises(server_module.StoreError) as context:
+                    prepare_certificate_payload(
+                        {
+                            "id": "cert-wild",
+                            "source": "cloudflare",
+                            "domains": ["example.test"],
+                            "email": "ops@example.test",
+                            "cloudflareApiToken": (
+                                "dns_cloudflare_email = ops@example.test\n"
+                                "dns_cloudflare_api_key = global-key\n"
+                            ),
+                        }
+                    )
+
+        self.assertEqual(context.exception.status, 400)
+        self.assertIn("Global API Key credentials are not supported", context.exception.message)
+
     def test_download_uploaded_certificate_returns_public_cert_only(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

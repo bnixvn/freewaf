@@ -2241,7 +2241,7 @@ def prepare_cloudflare_certificate_payload(payload: dict, certificate_id: str | 
 
     cert_id = certificate_id or str(payload.get("id") or f"cloudflare-{uuid.uuid4().hex[:8]}")
     cert_name = safe_file_stem(cert_id)
-    api_token = str(payload.get("cloudflareApiToken") or "").strip()
+    api_token = normalize_cloudflare_api_token(payload.get("cloudflareApiToken"))
     current_credentials_file = resolve_reference(payload.get("cloudflareCredentialsFile"))
     previous_credentials = None
     if api_token and current_credentials_file and current_credentials_file.exists():
@@ -2282,6 +2282,35 @@ def prepare_cloudflare_certificate_payload(payload: dict, certificate_id: str | 
     }
     prepared.pop("cloudflareApiToken", None)
     return prepared
+
+
+def normalize_cloudflare_api_token(value) -> str:
+    token = str(value or "").strip().strip("\"'")
+    if not token:
+        return ""
+
+    if "\n" in token or "\r" in token or token.lower().startswith("dns_cloudflare_"):
+        credentials = {}
+        for line in token.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, item = line.split("=", 1)
+            credentials[key.strip()] = item.strip().strip("\"'")
+        if credentials.get("dns_cloudflare_api_key"):
+            raise StoreError(400, "Cloudflare Global API Key credentials are not supported here. Paste an API token with Zone:DNS:Edit permission.")
+        token = credentials.get("dns_cloudflare_api_token", token).strip().strip("\"'")
+
+    lowered = token.lower()
+    if lowered.startswith("authorization:"):
+        token = token.split(":", 1)[1].strip()
+        lowered = token.lower()
+    if lowered.startswith("bearer "):
+        token = token[7:].strip()
+
+    if "\n" in token or "\r" in token or "=" in token or any(char.isspace() for char in token):
+        raise StoreError(400, "Paste only the Cloudflare API token value, not a header or credentials file.")
+    return token
 
 
 def prepare_certbot_certificate_payload(payload: dict, certificate_id: str | None = None, state: dict | None = None) -> dict:
