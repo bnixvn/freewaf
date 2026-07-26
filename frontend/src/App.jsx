@@ -1322,7 +1322,7 @@ export default function App() {
 
   const content = useMemo(() => {
     if (!data) return <LoadingPanel />;
-    if (!loadedViews[activeView]) return <LoadingPanel />;
+    if (activeView !== 'dashboard' && !loadedViews[activeView]) return <LoadingPanel />;
     const props = {
       data,
       filter,
