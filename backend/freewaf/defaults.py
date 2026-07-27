@@ -65,6 +65,12 @@ DEFAULT_SETTINGS = {
     "blockSupportIdPrefix": "SFL",
 }
 
+AUTO_BLOCK_IP_GROUP_ID = "ipgroup-auto-block-errors"
+AUTO_BLOCK_ACCESS_RULE_ID = "accessrule-auto-block-errors"
+AUTO_BLOCK_ERROR_STATUS_CODES = ["403", "404"]
+AUTO_BLOCK_ERROR_COUNT = 8
+AUTO_BLOCK_ERROR_WINDOW_SECONDS = 300
+
 DEFAULT_BOT_LOGIN_PATH_PATTERNS = [
     r"^/wp-login\.php(?:\?|$)",
     r"^/wp-admin/?(?:\?|$)",
@@ -789,6 +795,21 @@ def create_default_state(now: str | None = None) -> dict:
                 "createdAt": timestamp,
                 "updatedAt": timestamp,
             },
+            {
+                "id": AUTO_BLOCK_IP_GROUP_ID,
+                "name": "Auto-block error IPs",
+                "description": "IPs that repeatedly trigger 403 or 404 responses.",
+                "referenceUrl": "",
+                "items": [],
+                "lastSyncedAt": "",
+                "lastSyncStatus": "",
+                "lastSyncMessage": "",
+                "enabled": True,
+                "managed": True,
+                "provider": "auto_block_errors",
+                "createdAt": timestamp,
+                "updatedAt": timestamp,
+            },
             *[
                 {
                     "id": provider["id"],
@@ -808,7 +829,28 @@ def create_default_state(now: str | None = None) -> dict:
                 for provider_name, provider in managed_verified_bot_providers().items()
             ],
         ],
-        "accessRules": [],
+        "accessRules": [
+            {
+                "id": AUTO_BLOCK_ACCESS_RULE_ID,
+                "name": "Auto-block repeated 403/404 IPs",
+                "description": f"Automatically blocks IPs after {AUTO_BLOCK_ERROR_COUNT} repeated 403/404 responses within {AUTO_BLOCK_ERROR_WINDOW_SECONDS}s.",
+                "enabled": True,
+                "siteId": "*",
+                "action": "deny",
+                "insertPosition": "first",
+                "continueDetect": False,
+                "ipGroupIds": [AUTO_BLOCK_IP_GROUP_ID],
+                "ips": [],
+                "methods": [],
+                "uriPatterns": [],
+                "hostPatterns": [],
+                "userAgentPatterns": [],
+                "conditionGroups": [],
+                "createdAt": timestamp,
+                "updatedAt": timestamp,
+                "managed": True,
+            }
+        ],
         "users": [],
         "logs": [],
     }

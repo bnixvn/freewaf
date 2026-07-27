@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import io
 import hashlib
 import hmac
@@ -40,7 +41,14 @@ from .nginx import (
     site_ports,
     write_nginx_config,
 )
-from .defaults import challenge_secret, utc_now
+from .defaults import (
+    AUTO_BLOCK_ERROR_COUNT,
+    AUTO_BLOCK_ERROR_STATUS_CODES,
+    AUTO_BLOCK_ERROR_WINDOW_SECONDS,
+    AUTO_BLOCK_IP_GROUP_ID,
+    challenge_secret,
+    utc_now,
+)
 from .store import (
     Store,
     StoreError,
@@ -72,6 +80,7 @@ STATS_AGGREGATE_LOCK = threading.RLock()
 STATS_AGGREGATE_CACHE_VERSION = 5
 STATS_AGGREGATE_CACHE = {"files": {}, "countryCache": {}, "loadedCacheName": ""}
 STATS_AGGREGATE_CACHE_NAME = "stats:aggregate"
+AUTO_BLOCK_SYNC_LOCK = threading.RLock()
 UPDATE_STATUS_FILE = ROOT_DIR / "logs" / "update-status.json"
 UPDATE_LOG_FILE = ROOT_DIR / "logs" / "update.log"
 UPDATE_STATUS_LOCK = threading.RLock()
@@ -90,6 +99,7 @@ def main() -> None:
     store = Store(resolve_data_file(ROOT_DIR))
     store.init()
     start_ip_group_sync_worker(store)
+    start_error_block_worker(store)
     start_stats_warmup_worker(store)
     state = store.get_state()
     panel = state.get("settings", {}).get("panel", {})
@@ -2075,6 +2085,92 @@ def start_stats_warmup_worker(store: Store) -> None:
 
     thread = threading.Thread(target=worker, daemon=True, name="stats-warmup")
     thread.start()
+
+
+def start_error_block_worker(store: Store) -> None:
+    if os.environ.get("FREEWAF_AUTO_BLOCK_ERRORS", "true").lower() == "false":
+        return
+
+    def worker() -> None:
+        time.sleep(3)
+        while True:
+            try:
+                if sync_error_blocks(store):
+                    maybe_auto_write(store)
+            except Exception as error:
+                print(f"error-block worker failed: {error}")
+            time.sleep(error_block_check_seconds())
+
+    thread = threading.Thread(target=worker, daemon=True, name="error-block")
+    thread.start()
+
+
+def error_block_check_seconds() -> int:
+    return max(30, parse_int(os.environ.get("FREEWAF_AUTO_BLOCK_CHECK_SECONDS"), 300))
+
+
+def error_block_threshold() -> int:
+    return max(2, parse_int(os.environ.get("FREEWAF_AUTO_BLOCK_ERROR_COUNT"), AUTO_BLOCK_ERROR_COUNT))
+
+
+def error_block_window_seconds() -> int:
+    return max(60, parse_int(os.environ.get("FREEWAF_AUTO_BLOCK_WINDOW_SECONDS"), AUTO_BLOCK_ERROR_WINDOW_SECONDS))
+
+
+def error_block_status_codes() -> set[int]:
+    raw = os.environ.get("FREEWAF_AUTO_BLOCK_STATUS_CODES", "").strip()
+    values = raw.split(",") if raw else AUTO_BLOCK_ERROR_STATUS_CODES
+    codes = set()
+    for value in values:
+        try:
+            code = int(str(value).strip())
+        except (TypeError, ValueError):
+            continue
+        if code in {403, 404}:
+            codes.add(code)
+    return codes or {403, 404}
+
+
+def normalize_client_ip(value: str) -> str:
+    try:
+        return str(ipaddress.ip_address(str(value or "").strip()))
+    except ValueError:
+        return ""
+
+
+def sync_error_blocks(store: Store) -> int:
+    with AUTO_BLOCK_SYNC_LOCK:
+        scan_limit = log_scan_limit(max(error_block_threshold(), 1000))
+        state = store.get_state_fields("logs")
+        logs = [*parse_nginx_logs(ROOT_DIR, scan_limit), *(state.get("logs", []) or [])]
+        cutoff_ms = int(time.time() * 1000) - error_block_window_seconds() * 1000
+        counters: dict[str, int] = {}
+        for entry in logs:
+            if not isinstance(entry, dict):
+                continue
+            ip = normalize_client_ip(entry_ip(entry))
+            if not ip:
+                continue
+            status = int(entry.get("statusCode") or entry.get("status") or entry.get("upstreamStatus") or 0)
+            if status not in error_block_status_codes():
+                continue
+            at_ms = log_entry_timestamp_ms(entry)
+            if at_ms is None or at_ms < cutoff_ms:
+                continue
+            counters[ip] = counters.get(ip, 0) + 1
+
+        blocked_ips = sorted({ip for ip, count in counters.items() if count >= error_block_threshold()})
+        if not blocked_ips:
+            return 0
+        before = {
+            item
+            for group in store.get_state_fields("ipGroups").get("ipGroups", [])
+            if group.get("id") == AUTO_BLOCK_IP_GROUP_ID
+            for item in [*list(group.get("items") or []), *list(group.get("itemsPreview") or [])]
+        }
+        saved = store.append_ip_group_items(AUTO_BLOCK_IP_GROUP_ID, blocked_ips)
+        after = {*list(saved.get("items") or []), *list(saved.get("itemsPreview") or [])}
+        return len(after - before)
 
 
 def sync_due_ip_groups(store: Store) -> int:

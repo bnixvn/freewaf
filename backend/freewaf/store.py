@@ -23,6 +23,10 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .defaults import (
+    AUTO_BLOCK_ACCESS_RULE_ID,
+    AUTO_BLOCK_ERROR_COUNT,
+    AUTO_BLOCK_ERROR_WINDOW_SECONDS,
+    AUTO_BLOCK_IP_GROUP_ID,
     BUILTIN_RULES,
     DEFAULT_BOT_LOGIN_PATH_PATTERNS,
     DEFAULT_BOT_RATE_CHALLENGE,
@@ -391,6 +395,27 @@ class Store:
             )
             changed = True
 
+        if not any(group["id"] == AUTO_BLOCK_IP_GROUP_ID for group in self.state["ipGroups"]):
+            self.state["ipGroups"].insert(
+                1,
+                {
+                    "id": AUTO_BLOCK_IP_GROUP_ID,
+                    "name": "Auto-block error IPs",
+                    "description": "IPs that repeatedly trigger 403 or 404 responses.",
+                    "referenceUrl": "",
+                    "items": [],
+                    "lastSyncedAt": "",
+                    "lastSyncStatus": "",
+                    "lastSyncMessage": "",
+                    "enabled": True,
+                    "managed": True,
+                    "provider": "auto_block_errors",
+                    "createdAt": now,
+                    "updatedAt": now,
+                },
+            )
+            changed = True
+
         existing_groups = {group["id"]: group for group in self.state["ipGroups"]}
         for provider_name, provider in managed_verified_bot_providers().items():
             stored = existing_groups.get(provider["id"])
@@ -424,6 +449,32 @@ class Store:
             if prepared != group:
                 self.state["ipGroups"][index] = prepared
                 changed = True
+
+        if not any(rule["id"] == AUTO_BLOCK_ACCESS_RULE_ID for rule in self.state["accessRules"]):
+            self.state["accessRules"].insert(
+                0,
+                {
+                    "id": AUTO_BLOCK_ACCESS_RULE_ID,
+                    "name": "Auto-block repeated 403/404 IPs",
+                    "description": f"Automatically blocks IPs after {AUTO_BLOCK_ERROR_COUNT} repeated 403/404 responses within {AUTO_BLOCK_ERROR_WINDOW_SECONDS}s.",
+                    "enabled": True,
+                    "siteId": "*",
+                    "action": "deny",
+                    "insertPosition": "first",
+                    "continueDetect": False,
+                    "ipGroupIds": [AUTO_BLOCK_IP_GROUP_ID],
+                    "ips": [],
+                    "methods": [],
+                    "uriPatterns": [],
+                    "hostPatterns": [],
+                    "userAgentPatterns": [],
+                    "conditionGroups": [],
+                    "createdAt": now,
+                    "updatedAt": now,
+                    "managed": True,
+                },
+            )
+            changed = True
 
         if changed:
             self.persist()
@@ -607,6 +658,31 @@ class Store:
                 rule["ipGroupIds"] = [item for item in rule.get("ipGroupIds", []) if item != group_id]
 
             self.persist()
+
+    def append_ip_group_items(self, group_id: str, items: list[str]) -> dict:
+        with self.lock:
+            group = next((item for item in self._state()["ipGroups"] if item["id"] == group_id), None)
+            if not group:
+                raise StoreError(404, "IP group not found")
+            if group.get("managed") and group.get("provider") != "auto_block_errors":
+                raise StoreError(400, "Managed IP groups cannot be modified")
+            current_items = list(group.get("items") or [])
+            item_file = str(group.get("itemsFile") or "").strip()
+            if item_file:
+                path = Path(item_file)
+                if path.exists() and path.is_file():
+                    current_items.extend(line.strip() for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip())
+            merged = normalize_ip_items([*current_items, *(items or [])])
+            current_items = normalize_ip_items(current_items)
+            if merged == current_items:
+                return deepcopy(group)
+            group["items"] = merged
+            group["updatedAt"] = utc_now()
+            prepared = self.prepare_ip_group_storage(group)
+            group.clear()
+            group.update(prepared)
+            self.persist()
+            return deepcopy(group)
 
     def upsert_access_rule(self, payload: dict, access_rule_id: str | None = None) -> dict:
         with self.lock:

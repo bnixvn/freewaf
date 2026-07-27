@@ -9,7 +9,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from freewaf.defaults import BUILTIN_RULES, VERIFIED_AI_BOT_PROVIDERS, managed_verified_bot_providers
+from freewaf.defaults import AUTO_BLOCK_ACCESS_RULE_ID, AUTO_BLOCK_IP_GROUP_ID, BUILTIN_RULES, VERIFIED_AI_BOT_PROVIDERS, managed_verified_bot_providers
 from freewaf.store import Store, StoreError, build_stats, country_for_ip, geoip_attribution, normalize_state
 
 
@@ -45,6 +45,18 @@ class StoreTests(unittest.TestCase):
 
                 with self.assertRaises(StoreError):
                     store.delete_ip_group(provider["id"])
+
+    def test_default_state_includes_auto_block_group_and_rule(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.json")
+            store.init()
+            state = store.get_state()
+
+        group = next(item for item in state["ipGroups"] if item["id"] == AUTO_BLOCK_IP_GROUP_ID)
+        rule = next(item for item in state["accessRules"] if item["id"] == AUTO_BLOCK_ACCESS_RULE_ID)
+        self.assertTrue(group["managed"])
+        self.assertEqual(rule["action"], "deny")
+        self.assertEqual(rule["ipGroupIds"], [AUTO_BLOCK_IP_GROUP_ID])
 
     def test_init_updates_builtin_rule_definition_and_preserves_user_controls(self):
         builtin = next(rule for rule in BUILTIN_RULES if rule["id"] == "builtin-laravel-sensitive-files")
@@ -603,7 +615,8 @@ class StoreTests(unittest.TestCase):
                 }
             )
 
-            self.assertEqual([rule["name"] for rule in store.get_state()["accessRules"]], ["First rule", "Last rule"])
+            user_rules = [rule for rule in store.get_state()["accessRules"] if not rule.get("managed")]
+            self.assertEqual([rule["name"] for rule in user_rules], ["First rule", "Last rule"])
 
     def test_delete_certificate_clears_panel_ssl_reference(self):
         with tempfile.TemporaryDirectory() as directory:
