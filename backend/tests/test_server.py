@@ -23,6 +23,7 @@ from freewaf.server import (
     combined_stats,
     combined_stats_logs,
     dashboard_period_days,
+    dashboard_stats,
     enrich_log_countries,
     make_admin_handler,
     prepare_certificate_payload,
@@ -116,7 +117,7 @@ class CertificateServerTests(unittest.TestCase):
         store.get_state.return_value = state
         store.get_state_fields.side_effect = lambda *fields: {field: state.get(field) for field in fields}
 
-        with mock.patch("freewaf.server.combined_stats", return_value={"total": 12, "siteStats": []}) as stats:
+        with mock.patch("freewaf.server.dashboard_stats_snapshot", return_value={"total": 12, "siteStats": []}) as stats:
             dashboard = state_slice_payload(store, "dashboard", {"siteId": ["site-a"], "periodDays": ["1"]})
             sites = state_slice_payload(store, "sites")
 
@@ -1065,6 +1066,24 @@ class LogPaginationTests(unittest.TestCase):
         parse_logs.assert_called_once()
         self.assertEqual(parse_logs.call_args.args[1], 1234)
         store.get_logs.assert_called_once_with(1234)
+
+    def test_dashboard_stats_reads_cached_state_file(self):
+        store = mock.Mock()
+        state = {"sites": [], "settings": {}, "logs": []}
+        store.get_state_fields.return_value = state
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_file = str(Path(temp_dir) / "dashboard-state.json")
+            with mock.patch.dict(os.environ, {"DASHBOARD_STATE_FILE": cache_file}):
+                with mock.patch("freewaf.server.combined_stats", return_value={"total": 12, "siteStats": []}) as stats:
+                    first = dashboard_stats(store, state, retention_days=1)
+
+                with mock.patch("freewaf.server.combined_stats", side_effect=AssertionError("cache miss")):
+                    second = dashboard_stats(store, state, retention_days=1)
+
+        self.assertEqual(first["total"], 12)
+        self.assertEqual(second["total"], 12)
+        stats.assert_called_once_with(store, state, site_id="", retention_days=1)
 
     def test_combined_logs_page_filters_domain_and_paginates(self):
         nginx_logs = [

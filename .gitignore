@@ -8,6 +8,7 @@ nginx/certs/*
 !nginx/certs/.gitkeep
 data/state.json
 data/stats-cache.json
+data/dashboard-state.json
 logs/*
 !logs/.gitkeep
 .env

@@ -80,6 +80,11 @@ STATS_AGGREGATE_LOCK = threading.RLock()
 STATS_AGGREGATE_CACHE_VERSION = 5
 STATS_AGGREGATE_CACHE = {"files": {}, "countryCache": {}, "loadedCacheName": ""}
 STATS_AGGREGATE_CACHE_NAME = "stats:aggregate"
+DASHBOARD_STATE_LOCK = threading.RLock()
+DASHBOARD_STATE_VERSION = 1
+DASHBOARD_STATE_REFRESH_REQUEST_LOCK = threading.Lock()
+DASHBOARD_STATE_REFRESHING = False
+DASHBOARD_STATE_REFRESH_PENDING_KEYS: set[str] = set()
 AUTO_BLOCK_SYNC_LOCK = threading.RLock()
 UPDATE_STATUS_FILE = ROOT_DIR / "logs" / "update-status.json"
 UPDATE_LOG_FILE = ROOT_DIR / "logs" / "update.log"
@@ -246,7 +251,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 state = store.get_state()
                 site_id = str((query.get("siteId") or query.get("site_id") or [""])[0]).strip()
                 period_days = dashboard_period_days((query.get("periodDays") or query.get("period_days") or [""])[0])
-                state["stats"] = combined_stats(store, state, site_id=site_id, retention_days=period_days)
+                state["stats"] = dashboard_stats_snapshot(store, state, site_id=site_id, retention_days=period_days)
                 state["runtime"] = runtime_payload(state, admin_port, demo_origin_port, demo_enabled)
                 state["users"] = [public_user(user) for user in state.get("users", [])]
                 state["certificates"] = [public_certificate(certificate) for certificate in state.get("certificates", [])]
@@ -308,7 +313,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 state = store.get_state()
                 site_id = str((query.get("siteId") or query.get("site_id") or [""])[0]).strip()
                 period_days = dashboard_period_days((query.get("periodDays") or query.get("period_days") or [""])[0])
-                self.send_json(200, combined_stats(store, state, site_id=site_id, retention_days=period_days))
+                self.send_json(200, dashboard_stats(store, state, site_id=site_id, retention_days=period_days))
                 return
 
             if parsed.path == "/api/logs":
@@ -548,6 +553,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     store.clear_logs()
                     clear_nginx_logs(ROOT_DIR)
                     clear_stats_aggregate_cache()
+                    clear_dashboard_state_cache()
                     self.record_audit(action="logs.clear", target="logs", status=204)
                     self.send_empty(204)
                     return
@@ -1356,7 +1362,7 @@ def state_slice_payload(
         period_days = dashboard_period_days((query.get("periodDays") or query.get("period_days") or [""])[0])
         return {
             "sites": state.get("sites", []),
-            "stats": combined_stats(store, state, site_id=site_id, retention_days=period_days),
+            "stats": dashboard_stats_snapshot(store, state, site_id=site_id, retention_days=period_days),
             "settings": {"panel": state.get("settings", {}).get("panel", {})},
         }
     if section == "sites":
@@ -1657,6 +1663,38 @@ def combined_stats(store: Store, state: dict | None = None, site_id: str = "", r
     return build_stats({**source_state, "logs": recent_logs}, site_id=site_id)
 
 
+def dashboard_stats(
+    store: Store,
+    state: dict | None = None,
+    site_id: str = "",
+    retention_days: int | None = None,
+    force: bool = False,
+) -> dict:
+    source_state = state or store.get_state_fields("sites", "logs", "settings")
+    normalized_days = dashboard_period_days(retention_days)
+    key = dashboard_state_key(site_id, normalized_days)
+    if not force:
+        cached = load_dashboard_state_cache().get("stats", {}).get(key)
+        if isinstance(cached, dict):
+            stats = cached.get("data")
+            if isinstance(stats, dict):
+                return stats
+    stats = combined_stats(store, source_state, site_id=site_id, retention_days=normalized_days)
+    save_dashboard_state_entry(key, stats)
+    return stats
+
+
+def dashboard_stats_snapshot(store: Store, state: dict | None = None, site_id: str = "", retention_days: int | None = None) -> dict:
+    normalized_days = dashboard_period_days(retention_days)
+    key = dashboard_state_key(site_id, normalized_days)
+    cached = load_dashboard_state_cache().get("stats", {}).get(key)
+    if isinstance(cached, dict) and isinstance(cached.get("data"), dict):
+        return cached["data"]
+    request_dashboard_state_refresh(store, key)
+    source_state = state or store.get_state_fields("sites", "settings")
+    return build_stats({**source_state, "logs": []}, site_id=site_id)
+
+
 def nginx_stats_summary(retention_days: int | None = None) -> dict:
     retention_days = normalize_stats_retention_days(retention_days) if retention_days is not None else stats_retention_days()
     aggregate_retention_days = stats_retention_days()
@@ -1692,6 +1730,126 @@ def clear_stats_aggregate_cache() -> None:
         STATS_AGGREGATE_CACHE["loadedCacheName"] = ""
     try:
         stats_cache_file().unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def dashboard_state_file() -> Path:
+    configured = Path(os.environ.get("DASHBOARD_STATE_FILE", "./data/dashboard-state.json"))
+    return configured if configured.is_absolute() else ROOT_DIR / configured
+
+
+def dashboard_state_key(site_id: str = "", retention_days: int | None = None) -> str:
+    return f"site:{site_id or '*'}|days:{dashboard_period_days(retention_days)}"
+
+
+def empty_dashboard_state_cache() -> dict:
+    return {"version": DASHBOARD_STATE_VERSION, "updatedAt": "", "stats": {}}
+
+
+def load_dashboard_state_cache() -> dict:
+    with DASHBOARD_STATE_LOCK:
+        try:
+            payload = json.loads(dashboard_state_file().read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return empty_dashboard_state_cache()
+        if payload.get("version") != DASHBOARD_STATE_VERSION:
+            return empty_dashboard_state_cache()
+        if not isinstance(payload.get("stats"), dict):
+            return empty_dashboard_state_cache()
+        return payload
+
+
+def save_dashboard_state_cache(payload: dict) -> None:
+    path = dashboard_state_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": DASHBOARD_STATE_VERSION,
+        "updatedAt": utc_now(),
+        "stats": payload.get("stats") if isinstance(payload.get("stats"), dict) else {},
+    }
+    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def save_dashboard_state_entry(key: str, stats: dict) -> None:
+    with DASHBOARD_STATE_LOCK:
+        try:
+            payload = json.loads(dashboard_state_file().read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = empty_dashboard_state_cache()
+        if payload.get("version") != DASHBOARD_STATE_VERSION or not isinstance(payload.get("stats"), dict):
+            payload = empty_dashboard_state_cache()
+        payload.setdefault("stats", {})[key] = {"updatedAt": utc_now(), "data": stats}
+        save_dashboard_state_cache(payload)
+
+
+def dashboard_state_key_parts(key: str) -> tuple[str, int] | None:
+    match = re.fullmatch(r"site:(.*)\|days:(1|7)", str(key or ""))
+    if not match:
+        return None
+    site_id = "" if match.group(1) == "*" else match.group(1)
+    return site_id, int(match.group(2))
+
+
+def request_dashboard_state_refresh(store: Store, key: str = "") -> None:
+    global DASHBOARD_STATE_REFRESHING
+    with DASHBOARD_STATE_REFRESH_REQUEST_LOCK:
+        if key:
+            DASHBOARD_STATE_REFRESH_PENDING_KEYS.add(key)
+        if DASHBOARD_STATE_REFRESHING:
+            return
+        DASHBOARD_STATE_REFRESHING = True
+
+    def worker() -> None:
+        global DASHBOARD_STATE_REFRESHING
+        try:
+            while True:
+                with DASHBOARD_STATE_REFRESH_REQUEST_LOCK:
+                    pending_keys = set(DASHBOARD_STATE_REFRESH_PENDING_KEYS)
+                    DASHBOARD_STATE_REFRESH_PENDING_KEYS.clear()
+                if not pending_keys:
+                    return
+                refresh_dashboard_state_cache(store, pending_keys)
+        except Exception as error:
+            print(f"dashboard-state-refresh-failed: {error}", flush=True)
+        finally:
+            with DASHBOARD_STATE_REFRESH_REQUEST_LOCK:
+                DASHBOARD_STATE_REFRESHING = False
+                should_restart = bool(DASHBOARD_STATE_REFRESH_PENDING_KEYS)
+            if should_restart:
+                request_dashboard_state_refresh(store)
+
+    threading.Thread(target=worker, daemon=True, name="dashboard-state-refresh").start()
+
+
+def refresh_dashboard_state_cache(store: Store, extra_keys: set[str] | None = None) -> dict:
+    state = store.get_state_fields("sites", "logs", "settings")
+    payload = load_dashboard_state_cache()
+    keys = set(payload.get("stats", {}).keys())
+    keys.update(extra_keys or set())
+    keys.add(dashboard_state_key("", 1))
+    refreshed = {}
+    for key in sorted(keys):
+        parts = dashboard_state_key_parts(key)
+        if not parts:
+            continue
+        site_id, retention_days = parts
+        refreshed[key] = {
+            "updatedAt": utc_now(),
+            "data": combined_stats(store, state, site_id=site_id, retention_days=retention_days),
+        }
+    payload["stats"] = refreshed
+    save_dashboard_state_cache(payload)
+    return refreshed.get(dashboard_state_key("", 1), {}).get("data", {})
+
+
+def clear_dashboard_state_cache() -> None:
+    try:
+        dashboard_state_file().unlink()
     except FileNotFoundError:
         pass
     except OSError:
@@ -1995,6 +2153,10 @@ def recent_stats_log_limit() -> int:
     return clamp(default_limit, 0, max(0, maximum))
 
 
+def dashboard_state_refresh_seconds() -> int:
+    return clamp(parse_int(os.environ.get("DASHBOARD_STATE_REFRESH_SECONDS"), 5), 1, 3600)
+
+
 def stats_retention_days() -> int:
     return clamp(parse_int(os.environ.get("STATS_RETENTION_DAYS"), 7), 1, 31)
 
@@ -2075,13 +2237,15 @@ def start_stats_warmup_worker(store: Store) -> None:
         return
 
     def worker() -> None:
-        started = time.time()
-        try:
-            stats = combined_stats(store, store.get_state())
-            elapsed = time.time() - started
-            print(f"stats-warmup-complete total={stats.get('total', 0)} elapsed={elapsed:.3f}s", flush=True)
-        except Exception as error:
-            print(f"stats-warmup-failed: {error}", flush=True)
+        while True:
+            started = time.time()
+            try:
+                stats = refresh_dashboard_state_cache(store)
+                elapsed = time.time() - started
+                print(f"stats-warmup-complete total={stats.get('total', 0)} elapsed={elapsed:.3f}s", flush=True)
+            except Exception as error:
+                print(f"stats-warmup-failed: {error}", flush=True)
+            time.sleep(dashboard_state_refresh_seconds())
 
     thread = threading.Thread(target=worker, daemon=True, name="stats-warmup")
     thread.start()
