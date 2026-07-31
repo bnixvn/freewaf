@@ -1670,10 +1670,14 @@ function DashboardView({ data, dashboardSiteId, setDashboardSiteId, dashboardPer
   const stats = { ...emptyStats, ...(data?.stats || {}) };
   const topRule = stats.topRules[0]?.name || 'None';
   const timeline = stats.timeline || [];
-  const statusTimeline = stats.statusTimeline?.length ? stats.statusTimeline : timeline;
+  const rawStatusTimeline = Array.isArray(stats.statusTimeline) ? stats.statusTimeline : [];
   const sites = data?.sites || [];
   const protectedTotal = Number(stats.protected ?? (Number(stats.blocked || 0) + Number(stats.challenged || 0)));
   const blockedTotal = Number(stats.blocked || 0);
+  const fallbackStatusTimeline = buildFallbackStatusTimeline(stats);
+  const statusTimeline = hasTimelineData(rawStatusTimeline, ['total', 'blocked', 'challenged', 'protected'])
+    ? rawStatusTimeline
+    : (hasTimelineData(timeline, ['total', 'blocked', 'challenged', 'protected']) ? timeline : fallbackStatusTimeline);
   const botTypes = stats.botTypes || [];
   const userClientOs = stats.userClientOs || [];
   const userClientBrowsers = stats.userClientBrowsers || [];
@@ -3067,7 +3071,7 @@ function RequestsStatusChart({ points = [], valueKey = 'total', tone = 'requests
 
         return (
           <div className="bar-wrap" key={`${point.at || 'empty'}-${index}`} onMouseEnter={() => setHovered(index)} onFocus={() => setHovered(index)}>
-            <span className={`bar-value ${value ? '' : 'zero'}`}>{formatCompact(value)}</span>
+            <span className={`bar-value ${value ? '' : 'zero'}`}>{value ? formatCompact(value) : ''}</span>
             {hovered === index && (
               <div className={`chart-tooltip ${tooltipSide}`}>
                 <strong>{formatBucketRange(point)}</strong>
@@ -3114,6 +3118,30 @@ function padSeries(points, count, emptyPoint) {
     ...Array.from({ length: missing }, (_, index) => ({ ...emptyPoint, at: `empty-${index}` })),
     ...source
   ];
+}
+
+function hasTimelineData(points, keys = ['total']) {
+  return Array.isArray(points) && points.some((point) => keys.some((key) => Number(point?.[key] || 0) > 0));
+}
+
+function buildFallbackStatusTimeline(stats = {}) {
+  const total = Number(stats.total || 0);
+  const blocked = Number(stats.blocked || 0);
+  const challenged = Number(stats.challenged || 0);
+  const protectedCount = Number(stats.protected ?? (blocked + challenged));
+  if (!total && !blocked && !challenged && !protectedCount) return [];
+  const now = Date.now();
+  const bucketMs = 5 * 60 * 1000;
+  const at = now - (now % bucketMs);
+  return [{
+    at,
+    endAt: at + bucketMs,
+    label: new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    total,
+    blocked,
+    challenged,
+    protected: protectedCount
+  }];
 }
 
 function smoothLinePath(values, width, height) {
