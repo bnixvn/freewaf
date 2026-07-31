@@ -211,21 +211,12 @@ build_frontend() {
 install_geoip_database() {
   local geoip_dir="/var/lib/freewaf/geoip"
   local geoip_file="${geoip_dir}/dbip-country-lite.csv.gz"
-  local year month url tmp_file
-  year="$(date +%Y)"
-  month="$(date +%m)"
-  url="https://download.db-ip.com/free/dbip-country-lite-${year}-${month}.csv.gz"
-  tmp_file="$(mktemp)"
 
   log "Downloading DB-IP country database"
   install -d -m 0755 "$geoip_dir"
-  if curl -fsSL --retry 3 --connect-timeout 15 "$url" -o "$tmp_file" && gzip -t "$tmp_file"; then
-    install -m 0644 "$tmp_file" "$geoip_file"
-    printf '%s\n' "$url" > "${geoip_file}.source"
-  else
-    log "GeoIP database download failed; country statistics will show Unknown until ${geoip_file} exists"
+  if ! PYTHONPATH="${APP_DIR}/backend" /usr/bin/python3 -m freewaf.geoip install --target "$geoip_file"; then
+    fail "GeoIP database download failed and no valid existing database was found at ${geoip_file}"
   fi
-  rm -f "$tmp_file"
 }
 
 install_modsecurity() {

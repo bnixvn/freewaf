@@ -4,12 +4,14 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from freewaf.defaults import BUILTIN_RULES, VERIFIED_AI_BOT_PROVIDERS, managed_verified_bot_providers
+from freewaf.geoip import candidate_months, install_dbip_country_lite, validate_dbip_country_csv
 from freewaf.store import Store, StoreError, build_stats, country_for_ip, geoip_attribution, normalize_state
 
 
@@ -173,6 +175,28 @@ class StoreTests(unittest.TestCase):
         geoip_reader.assert_not_called()
         self.assertTrue(attribution["available"])
         self.assertEqual(attribution["database"], str(geoip_file))
+
+    def test_geoip_installer_falls_back_to_previous_month(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "dbip-country-lite.csv.gz"
+            attempts = []
+
+            def fake_download(url, destination, timeout=30):
+                attempts.append(url)
+                if "2026-08" in url:
+                    raise OSError("not published yet")
+                with gzip.open(destination, "wt", encoding="utf-8", newline="") as output:
+                    output.write("43.134.0.0,43.134.191.255,SG\n")
+
+            with mock.patch("freewaf.geoip.download_file", side_effect=fake_download):
+                result = install_dbip_country_lite(target, today=date(2026, 8, 1))
+
+            self.assertFalse(result["keptExisting"])
+            self.assertIn("2026-07", result["url"])
+            self.assertTrue(validate_dbip_country_csv(target))
+            self.assertEqual(candidate_months(date(2026, 8, 1), 4), ["2026-08", "2026-07", "2026-06", "2026-05"])
+            self.assertEqual(len(attempts), 2)
+            self.assertIn("2026-07", target.with_suffix(target.suffix + ".source").read_text(encoding="utf-8"))
 
     def test_certbot_certificate_state_is_normalized(self):
         state = normalize_state(

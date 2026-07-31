@@ -341,16 +341,12 @@ After changing environment variables:
 sudo systemctl restart freewaf
 ```
 
-The installer downloads the current DB-IP country lite CSV to `GEOIP_DB_FILE`. To refresh it manually:
+The installer downloads the DB-IP country lite CSV to `GEOIP_DB_FILE`. DB-IP can publish the newest monthly file a little after the month starts, so FreeWAF tries the current month and then recent previous months before using an existing valid database. To refresh it manually:
 
 ```bash
-YEAR=$(date +%Y)
-MONTH=$(date +%m)
-sudo install -d -m 0755 /var/lib/freewaf/geoip
-curl -fsSL "https://download.db-ip.com/free/dbip-country-lite-${YEAR}-${MONTH}.csv.gz" \
-  -o /tmp/dbip-country-lite.csv.gz
-gzip -t /tmp/dbip-country-lite.csv.gz
-sudo install -m 0644 /tmp/dbip-country-lite.csv.gz /var/lib/freewaf/geoip/dbip-country-lite.csv.gz
+sudo PYTHONPATH=/opt/freewaf/backend \
+  /usr/bin/python3 -m freewaf.geoip install \
+  --target /var/lib/freewaf/geoip/dbip-country-lite.csv.gz
 sudo systemctl restart freewaf
 ```
 
