@@ -704,6 +704,16 @@ export default function App() {
     });
   }
 
+  function removeDataItem(collection, id) {
+    setData((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        [collection]: (current[collection] || []).filter((item) => item.id !== id)
+      };
+    });
+  }
+
   function updateSettingsLocal(settings) {
     setData((current) => (current ? { ...current, settings } : current));
   }
@@ -1105,7 +1115,10 @@ export default function App() {
     if (!window.confirm(`Delete ${site.name}?`)) return;
     try {
       await api(`/api/sites/${site.id}`, { method: 'DELETE' });
-      await loadViewData('sites', { force: true });
+      removeDataItem('sites', site.id);
+      if (dashboardSiteId && String(dashboardSiteId) === String(site.id)) {
+        setDashboardSiteId('');
+      }
       showToast('Site deleted');
     } catch (error) {
       showToast(error.message, true);
