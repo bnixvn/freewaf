@@ -3044,19 +3044,66 @@ function QpsBars({ points = [] }) {
 }
 
 function RequestsStatusChart({ points = [], valueKey = 'total', tone = 'requests' }) {
-  const displayPoints = padSeries(points, 24, { total: 0 });
-  const width = 360;
-  const height = 166;
-  const values = displayPoints.map((point) => Number(point[valueKey] || 0));
-  const path = smoothLinePath(values, width, height);
-  const areaPath = `${path} L ${width} ${height - 14} L 0 ${height - 14} Z`;
+  const [hovered, setHovered] = useState(null);
+  const displayPoints = padSeries(points, 24, { total: 0, blocked: 0, challenged: 0, protected: 0 });
+  const max = Math.max(1, ...displayPoints.map((point) => Number(point[valueKey] || 0)));
+  const isBlocking = tone === 'blocking';
 
   return (
-    <svg className={`request-status-chart ${tone}`} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Traffic status chart">
-      {[28, 60, 92, 124, 152].map((y) => <line key={y} x1="0" y1={y} x2={width} y2={y} />)}
-      <path className="request-status-area" d={areaPath} />
-      <path className="request-status-line" d={path} />
-    </svg>
+    <div className={`chart compact request-status-chart ${tone}`} aria-label="Traffic status chart" onMouseLeave={() => setHovered(null)}>
+      {displayPoints.map((point, index) => {
+        const total = Number(point.total || 0);
+        const blocked = Number(point.blocked || 0);
+        const challenged = Number(point.challenged || 0);
+        const protectedCount = Number(point.protected ?? (blocked + challenged));
+        const value = Number(point[valueKey] || 0);
+        const height = value ? Math.max(8, Math.round((value / max) * 100)) : 4;
+        const protectedHeight = !isBlocking && total ? Math.round((protectedCount / total) * 100) : 0;
+        const showTick = index % 4 === 0 || index === displayPoints.length - 1;
+        const tooltipSide = index > displayPoints.length - 6 ? 'left' : 'right';
+        const title = isBlocking
+          ? `${formatBucketRange(point)}: ${formatCompact(value)} blocked${challenged ? `, ${formatCompact(challenged)} challenged` : ''}`
+          : `${formatBucketRange(point)}: ${formatCompact(total)} requests${protectedCount ? `, ${formatCompact(protectedCount)} protected` : ''}${challenged ? `, ${formatCompact(challenged)} challenged` : ''}${blocked ? `, ${formatCompact(blocked)} blocked` : ''}`;
+
+        return (
+          <div className="bar-wrap" key={`${point.at || 'empty'}-${index}`} onMouseEnter={() => setHovered(index)} onFocus={() => setHovered(index)}>
+            <span className={`bar-value ${value ? '' : 'zero'}`}>{formatCompact(value)}</span>
+            {hovered === index && (
+              <div className={`chart-tooltip ${tooltipSide}`}>
+                <strong>{formatBucketRange(point)}</strong>
+                {isBlocking ? (
+                  <>
+                    <span>{formatCompact(value)} blocked</span>
+                    <span>{formatCompact(challenged)} challenged</span>
+                    <span>{formatCompact(total)} total</span>
+                    <span>{formatCompact(protectedCount)} protected</span>
+                  </>
+                ) : (
+                  <>
+                    <span>{formatCompact(total)} requests</span>
+                    <span>{formatCompact(protectedCount)} protected</span>
+                    <span>{formatCompact(challenged)} challenged</span>
+                    <span>{formatCompact(blocked)} blocked</span>
+                  </>
+                )}
+              </div>
+            )}
+            <div
+              tabIndex={0}
+              className={`bar ${value ? 'has-data' : ''} ${index === displayPoints.length - 1 ? 'latest' : ''}`}
+              style={{ height: `${height}%` }}
+              title={title}
+            >
+              {!isBlocking && (
+                <span className="bar-protected" style={{ height: `${protectedHeight}%` }} />
+              )}
+              {index === displayPoints.length - 1 && <span className="request-status-live" aria-hidden="true" />}
+            </div>
+            <span className="bar-time">{showTick ? point.label : ''}</span>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

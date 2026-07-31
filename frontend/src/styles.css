@@ -1509,35 +1509,62 @@ h2 {
 }
 
 .request-status-chart {
-  display: block;
   width: 100%;
-  height: 152px;
+  height: 160px;
+}
+
+.request-status-chart .bar {
+  transition: height 0.45s ease, background-color 0.18s ease;
+}
+
+.request-status-chart .bar-protected {
+  transition: height 0.45s ease;
+}
+
+.request-status-chart.requests .bar.has-data {
+  background: #d8e8eb;
+}
+
+.request-status-chart.blocking .bar.has-data {
+  background: #f4d7db;
+}
+
+.request-status-chart .bar.latest {
   overflow: visible;
 }
 
-.request-status-chart line {
-  stroke: #edf1f4;
-  stroke-width: 1;
+.request-status-live {
+  position: absolute;
+  top: -8px;
+  left: 50%;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  transform: translateX(-50%);
+  background: #2f89df;
+  box-shadow: 0 0 0 4px rgba(47, 137, 223, 0.12);
+  animation: request-status-pulse 1.8s ease-in-out infinite;
 }
 
-.request-status-area {
-  fill: rgba(44, 138, 229, 0.06);
+.request-status-chart.blocking .request-status-live {
+  background: #ff6c7c;
+  box-shadow: 0 0 0 4px rgba(255, 108, 124, 0.12);
 }
 
-.request-status-line {
-  fill: none;
-  stroke: #2f89df;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 4;
+.request-status-chart.blocking .bar-protected {
+  display: none;
 }
 
-.request-status-chart.blocking .request-status-area {
-  fill: rgba(255, 108, 124, 0.08);
-}
+@keyframes request-status-pulse {
+  0%, 100% {
+    transform: translateX(-50%) scale(0.95);
+    opacity: 0.75;
+  }
 
-.request-status-chart.blocking .request-status-line {
-  stroke: #ff6c7c;
+  50% {
+    transform: translateX(-50%) scale(1.08);
+    opacity: 1;
+  }
 }
 
 .incident-list {
