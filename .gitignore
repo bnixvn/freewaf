@@ -16,3 +16,5 @@ logs/*
 *.log
 __pycache__/
 *.pyc
+backend/tests/test_server.py
+backend/tests/test_server.py

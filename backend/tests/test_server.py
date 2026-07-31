@@ -25,6 +25,7 @@ from freewaf.server import (
     dashboard_period_days,
     dashboard_stats,
     enrich_log_countries,
+    export_logs_csv,
     make_admin_handler,
     prepare_certificate_payload,
     prepare_certbot_certificate_payload,
@@ -1154,6 +1155,39 @@ class LogPaginationTests(unittest.TestCase):
 
         self.assertEqual(page["total"], 1)
         self.assertEqual([entry["id"] for entry in page["logs"]], ["1"])
+
+    def test_export_logs_csv_filters_by_domain(self):
+        nginx_logs = [
+            {
+                "id": "1",
+                "at": "2026-06-10T10:02:00+00:00",
+                "host": "a.example.test",
+                "siteName": "Site A",
+                "method": "GET",
+                "path": "/blocked",
+                "ip": "8.8.8.8",
+                "verdict": "block",
+                "reason": "Rule hit",
+                "statusCode": 403,
+                "upstreamStatus": 403,
+                "durationMs": 12,
+            },
+            {"id": "2", "at": "2026-06-10T10:01:00+00:00", "host": "b.example.test", "siteName": "Site B", "path": "/ok", "verdict": "allow"},
+        ]
+        store = mock.Mock()
+        store.get_logs.return_value = []
+        store.get_state.return_value = {"sites": []}
+
+        with mock.patch.dict(os.environ, {"LOG_EXPORT_SCAN_LIMIT": "10", "LOG_EXPORT_SCAN_MAX": "10"}):
+            with mock.patch("freewaf.server.parse_nginx_logs", return_value=nginx_logs):
+                with mock.patch("freewaf.server.country_for_ip", return_value={"code": "US", "name": "United States"}):
+                    content, filename = export_logs_csv(store, domain="a.example.test")
+
+        text = content.decode("utf-8-sig")
+        self.assertTrue(filename.startswith("freewaf-logs-a.example.test-"))
+        self.assertIn("time,site,host,method,path,ip,country,verdict,reason,status,upstream_status,duration_ms", text)
+        self.assertIn("Site A,a.example.test,GET,/blocked,8.8.8.8,US,block,Rule hit,403,403,12", text)
+        self.assertNotIn("b.example.test", text)
 
 
 if __name__ == "__main__":

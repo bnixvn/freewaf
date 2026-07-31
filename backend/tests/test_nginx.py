@@ -11,7 +11,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from freewaf import nginx as nginx_module
-from freewaf.defaults import AUTO_BLOCK_ACCESS_RULE_ID, AUTO_BLOCK_IP_GROUP_ID, BUILTIN_RULES, DEFAULT_SETTINGS, SAFELINE_COMPATIBILITY_RULES, VERIFIED_AI_BOT_PROVIDERS, VERIFIED_BOT_PROVIDERS
+from freewaf.defaults import BUILTIN_RULES, DEFAULT_SETTINGS, SAFELINE_COMPATIBILITY_RULES, VERIFIED_AI_BOT_PROVIDERS, VERIFIED_BOT_PROVIDERS
 from freewaf.nginx import generate_nginx_config, parse_nginx_logs, write_nginx_config
 
 
@@ -74,34 +74,6 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn('"remote_addr":"$sfl_client_ip"', config)
         self.assertIn("proxy_set_header X-Real-IP $sfl_client_ip;", config)
         self.assertIn("proxy_set_header X-Forwarded-For $sfl_client_ip;", config)
-
-    def test_auto_block_error_group_renders_as_access_rule(self):
-        config = generate_nginx_config(
-            make_state(
-                ipGroups=[
-                    {
-                        "id": AUTO_BLOCK_IP_GROUP_ID,
-                        "name": "Auto-block error IPs",
-                        "items": ["203.0.113.50"],
-                        "enabled": True,
-                    }
-                ],
-                accessRules=[
-                    {
-                        "id": AUTO_BLOCK_ACCESS_RULE_ID,
-                        "name": "Auto-block repeated 403/404 IPs",
-                        "enabled": True,
-                        "siteId": "*",
-                        "action": "deny",
-                        "ipGroupIds": [AUTO_BLOCK_IP_GROUP_ID],
-                    }
-                ],
-            )
-        )
-
-        self.assertIn("203.0.113.50 1;", config)
-        self.assertIn("set $sfl_verdict block;", config)
-        self.assertIn("Auto-block repeated 403/404 IPs", config)
 
     def test_x_forwarded_for_client_ip_source_is_supported(self):
         settings = make_settings()
@@ -334,6 +306,14 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("if ($request_method ~*", config)
         self.assertIn("if ($request_uri ~*", config)
         self.assertNotIn("$request_method$request_uri", config)
+
+    def test_svg_files_are_not_flagged_by_imagemagick_rule(self):
+        rule = next(rule for rule in BUILTIN_RULES if rule["id"] == "builtin-safeline-65739")
+        regex = re.compile(rule["pattern"], re.IGNORECASE)
+
+        self.assertNotRegex("/assets/logo.svg", regex)
+        self.assertNotRegex("/images/icon.svg?cache=1", regex)
+        self.assertRegex("/upload/sample.mvg", regex)
 
     def test_blocks_random_query_parameter_probing(self):
         rule = next(rule for rule in SAFELINE_COMPATIBILITY_RULES if rule["id"] == "builtin-safeline-65884")

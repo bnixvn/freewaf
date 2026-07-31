@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import csv
 import ipaddress
 import io
 import hashlib
@@ -42,10 +43,6 @@ from .nginx import (
     write_nginx_config,
 )
 from .defaults import (
-    AUTO_BLOCK_ERROR_COUNT,
-    AUTO_BLOCK_ERROR_STATUS_CODES,
-    AUTO_BLOCK_ERROR_WINDOW_SECONDS,
-    AUTO_BLOCK_IP_GROUP_ID,
     challenge_secret,
     utc_now,
 )
@@ -85,7 +82,6 @@ DASHBOARD_STATE_VERSION = 1
 DASHBOARD_STATE_REFRESH_REQUEST_LOCK = threading.Lock()
 DASHBOARD_STATE_REFRESHING = False
 DASHBOARD_STATE_REFRESH_PENDING_KEYS: set[str] = set()
-AUTO_BLOCK_SYNC_LOCK = threading.RLock()
 UPDATE_STATUS_FILE = ROOT_DIR / "logs" / "update-status.json"
 UPDATE_LOG_FILE = ROOT_DIR / "logs" / "update.log"
 UPDATE_STATUS_LOCK = threading.RLock()
@@ -104,7 +100,6 @@ def main() -> None:
     store = Store(resolve_data_file(ROOT_DIR))
     store.init()
     start_ip_group_sync_worker(store)
-    start_error_block_worker(store)
     start_stats_warmup_worker(store)
     state = store.get_state()
     panel = state.get("settings", {}).get("panel", {})
@@ -314,6 +309,24 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 site_id = str((query.get("siteId") or query.get("site_id") or [""])[0]).strip()
                 period_days = dashboard_period_days((query.get("periodDays") or query.get("period_days") or [""])[0])
                 self.send_json(200, dashboard_stats(store, state, site_id=site_id, retention_days=period_days))
+                return
+
+            if parsed.path == "/api/logs/export":
+                domain = str((query.get("domain") or [""])[0]).strip()
+                site_id = str((query.get("siteId") or query.get("site_id") or [""])[0]).strip()
+                verdict = str((query.get("verdict") or [""])[0]).strip()
+                search = str((query.get("search") or [""])[0]).strip()
+                content, filename = export_logs_csv(store, domain, search, site_id, verdict)
+                self.record_audit(action="logs.export", target="logs", status=200, extra={"domain": domain, "siteId": site_id, "verdict": verdict})
+                self.send_binary(
+                    200,
+                    content,
+                    "text/csv; charset=utf-8",
+                    headers={
+                        "Content-Disposition": f'attachment; filename="{filename}"',
+                        "X-Content-Type-Options": "nosniff",
+                    },
+                )
                 return
 
             if parsed.path == "/api/logs":
@@ -1763,16 +1776,17 @@ def load_dashboard_state_cache() -> dict:
 
 
 def save_dashboard_state_cache(payload: dict) -> None:
-    path = dashboard_state_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "version": DASHBOARD_STATE_VERSION,
-        "updatedAt": utc_now(),
-        "stats": payload.get("stats") if isinstance(payload.get("stats"), dict) else {},
-    }
-    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
-    tmp_path.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
-    tmp_path.replace(path)
+    with DASHBOARD_STATE_LOCK:
+        path = dashboard_state_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": DASHBOARD_STATE_VERSION,
+            "updatedAt": utc_now(),
+            "stats": payload.get("stats") if isinstance(payload.get("stats"), dict) else {},
+        }
+        tmp_path = path.with_suffix(f"{path.suffix}.tmp")
+        tmp_path.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
+        tmp_path.replace(path)
 
 
 def save_dashboard_state_entry(key: str, stats: dict) -> None:
@@ -2124,6 +2138,44 @@ def combined_logs_page(store: Store, limit: int, offset: int = 0, domain: str = 
     }
 
 
+def export_logs_csv(store: Store, domain: str = "", search: str = "", site_id: str = "", verdict: str = "") -> tuple[bytes, str]:
+    scan_limit = log_export_scan_limit()
+    state = store.get_state()
+    sites = state.get("sites", []) or []
+    site_by_id = {str(site.get("id") or ""): site for site in sites if site.get("id")}
+    logs = [*parse_nginx_logs(ROOT_DIR, scan_limit), *store.get_logs(scan_limit)]
+    logs = sorted(logs, key=lambda entry: entry.get("at") or "", reverse=True)
+    filtered = [entry for entry in logs if log_matches(entry, domain, search, site_id, verdict, sites, site_by_id)]
+    rows = enrich_log_countries(filtered[:scan_limit])
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["time", "site", "host", "method", "path", "ip", "country", "verdict", "reason", "status", "upstream_status", "duration_ms"])
+    for entry in rows:
+        country = entry.get("country") if isinstance(entry.get("country"), dict) else {}
+        writer.writerow(
+            [
+                entry.get("at") or "",
+                entry.get("siteName") or "",
+                entry.get("host") or "",
+                entry.get("method") or "",
+                entry.get("path") or "",
+                entry.get("ip") or entry.get("remote_addr") or "",
+                country.get("code") or "",
+                entry.get("verdict") or "",
+                entry.get("reason") or "",
+                entry.get("statusCode") or "",
+                entry.get("upstreamStatus") or "",
+                entry.get("durationMs") or "",
+            ]
+        )
+
+    filename_target = site_id or domain or "all"
+    filename_target = re.sub(r"[^A-Za-z0-9_.-]+", "-", filename_target).strip("-") or "all"
+    filename = f"freewaf-logs-{filename_target}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.csv"
+    return ("\ufeff" + buffer.getvalue()).encode("utf-8"), filename
+
+
 def enrich_log_countries(logs: list[dict]) -> list[dict]:
     countries = {}
     enriched = []
@@ -2139,6 +2191,12 @@ def log_scan_limit(requested: int) -> int:
     default_limit = parse_int(os.environ.get("LOG_PAGE_SCAN_LIMIT"), 10000)
     maximum = parse_int(os.environ.get("LOG_PAGE_SCAN_MAX"), 50000)
     return clamp(max(requested, default_limit), 1, max(1, maximum))
+
+
+def log_export_scan_limit() -> int:
+    default_limit = parse_int(os.environ.get("LOG_EXPORT_SCAN_LIMIT"), 50000)
+    maximum = parse_int(os.environ.get("LOG_EXPORT_SCAN_MAX"), 250000)
+    return clamp(default_limit, 1, max(1, maximum))
 
 
 def stats_scan_limit() -> int:
@@ -2249,92 +2307,6 @@ def start_stats_warmup_worker(store: Store) -> None:
 
     thread = threading.Thread(target=worker, daemon=True, name="stats-warmup")
     thread.start()
-
-
-def start_error_block_worker(store: Store) -> None:
-    if os.environ.get("FREEWAF_AUTO_BLOCK_ERRORS", "true").lower() == "false":
-        return
-
-    def worker() -> None:
-        time.sleep(3)
-        while True:
-            try:
-                if sync_error_blocks(store):
-                    maybe_auto_write(store)
-            except Exception as error:
-                print(f"error-block worker failed: {error}")
-            time.sleep(error_block_check_seconds())
-
-    thread = threading.Thread(target=worker, daemon=True, name="error-block")
-    thread.start()
-
-
-def error_block_check_seconds() -> int:
-    return max(30, parse_int(os.environ.get("FREEWAF_AUTO_BLOCK_CHECK_SECONDS"), 300))
-
-
-def error_block_threshold() -> int:
-    return max(2, parse_int(os.environ.get("FREEWAF_AUTO_BLOCK_ERROR_COUNT"), AUTO_BLOCK_ERROR_COUNT))
-
-
-def error_block_window_seconds() -> int:
-    return max(60, parse_int(os.environ.get("FREEWAF_AUTO_BLOCK_WINDOW_SECONDS"), AUTO_BLOCK_ERROR_WINDOW_SECONDS))
-
-
-def error_block_status_codes() -> set[int]:
-    raw = os.environ.get("FREEWAF_AUTO_BLOCK_STATUS_CODES", "").strip()
-    values = raw.split(",") if raw else AUTO_BLOCK_ERROR_STATUS_CODES
-    codes = set()
-    for value in values:
-        try:
-            code = int(str(value).strip())
-        except (TypeError, ValueError):
-            continue
-        if code in {403, 404}:
-            codes.add(code)
-    return codes or {403, 404}
-
-
-def normalize_client_ip(value: str) -> str:
-    try:
-        return str(ipaddress.ip_address(str(value or "").strip()))
-    except ValueError:
-        return ""
-
-
-def sync_error_blocks(store: Store) -> int:
-    with AUTO_BLOCK_SYNC_LOCK:
-        scan_limit = log_scan_limit(max(error_block_threshold(), 1000))
-        state = store.get_state_fields("logs")
-        logs = [*parse_nginx_logs(ROOT_DIR, scan_limit), *(state.get("logs", []) or [])]
-        cutoff_ms = int(time.time() * 1000) - error_block_window_seconds() * 1000
-        counters: dict[str, int] = {}
-        for entry in logs:
-            if not isinstance(entry, dict):
-                continue
-            ip = normalize_client_ip(entry_ip(entry))
-            if not ip:
-                continue
-            status = int(entry.get("statusCode") or entry.get("status") or entry.get("upstreamStatus") or 0)
-            if status not in error_block_status_codes():
-                continue
-            at_ms = log_entry_timestamp_ms(entry)
-            if at_ms is None or at_ms < cutoff_ms:
-                continue
-            counters[ip] = counters.get(ip, 0) + 1
-
-        blocked_ips = sorted({ip for ip, count in counters.items() if count >= error_block_threshold()})
-        if not blocked_ips:
-            return 0
-        before = {
-            item
-            for group in store.get_state_fields("ipGroups").get("ipGroups", [])
-            if group.get("id") == AUTO_BLOCK_IP_GROUP_ID
-            for item in [*list(group.get("items") or []), *list(group.get("itemsPreview") or [])]
-        }
-        saved = store.append_ip_group_items(AUTO_BLOCK_IP_GROUP_ID, blocked_ips)
-        after = {*list(saved.get("items") or []), *list(saved.get("itemsPreview") or [])}
-        return len(after - before)
 
 
 def sync_due_ip_groups(store: Store) -> int:

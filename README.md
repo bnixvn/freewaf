@@ -55,6 +55,7 @@ The installer will:
 - Install the Nginx ModSecurity connector and OWASP CRS when available.
 - Build the React dashboard.
 - Copy the application to `/opt/freewaf`.
+- Keep the existing `/opt/freewaf/data/` directory and back up `state.json` before migration.
 - Create the `freewaf` systemd service.
 - Add an Nginx include file for the generated FreeWAF config.
 - Start FreeWAF and reload Nginx.
@@ -388,7 +389,7 @@ If installed with the installer, you can run it again:
 sudo FREEWAF_REPO_URL=https://github.com/bnixvn/freewaf.git bash install.sh
 ```
 
-The installer keeps local `data/state.json`, logs, and certificates.
+When `FREEWAF_REPO_URL` is set, the installer clones the requested branch before copying files, so it updates even if the local `install.sh` came from an older checkout. The installer keeps local `data/`, logs, and certificates, and writes timestamped backups under `/opt/freewaf/data/backups/`.
 
 ## Development
 

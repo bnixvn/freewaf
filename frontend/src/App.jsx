@@ -73,6 +73,7 @@ const emptyStats = {
   statusGroups: [],
   qps: 0,
   qpsTimeline: [],
+  statusTimeline: [],
   timeline: []
 };
 
@@ -86,7 +87,7 @@ function createEmptyData() {
     users: [],
     logs: [],
     settings: { panel: {}, applicationDefaults: { proxy: {}, modSecurity: {} }, challengePage: {} },
-    stats: { ...emptyStats, timeline: [] }
+    stats: { ...emptyStats, qpsTimeline: [], statusTimeline: [], timeline: [] }
   };
 }
 
@@ -154,7 +155,7 @@ const defaultSite = {
   proxySslServerName: 'true',
   modSecurityEnabled: 'false',
   modSecurityMode: 'on',
-  modSecurityRuleset: 'cms',
+  modSecurityRuleset: 'comodo',
   modSecurityRequestBodyLimit: '13107200',
   aclEnabled: 'true',
   aclRateLimitMode: 'custom',
@@ -324,6 +325,12 @@ const certificateSourceLabels = {
   cloudflare: 'Cloudflare'
 };
 
+const modSecurityRulesetOptions = [
+  { value: 'comodo', label: 'Comodo WAF Rules' },
+  { value: 'owasp', label: 'OWASP Core Rule Set' },
+  { value: 'cms', label: 'CMS Deep Inspection' }
+];
+
 const defaultIpGroup = {
   name: '',
   description: '',
@@ -399,6 +406,7 @@ export default function App() {
   const [pendingActions, setPendingActions] = useState({});
   const [logsLoading, setLogsLoading] = useState(false);
   const [logSiteId, setLogSiteId] = useState('');
+  const [logDomain, setLogDomain] = useState('');
   const [logVerdict, setLogVerdict] = useState('');
   const [logPage, setLogPage] = useState(1);
   const [logPageSize, setLogPageSize] = useState(50);
@@ -502,7 +510,7 @@ export default function App() {
       window.clearInterval(refreshTimer);
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [auth.authenticated, auth.loading, activeView, filter, logSiteId, logVerdict, logPage, logPageSize, modal]);
+  }, [auth.authenticated, auth.loading, activeView, filter, logSiteId, logDomain, logVerdict, logPage, logPageSize, modal]);
 
   useEffect(() => {
     if (!auth.authenticated || auth.loading || (activeView !== 'settings' && !systemUpdate?.running)) {
@@ -589,6 +597,7 @@ export default function App() {
     const nextPage = Number(overrides.page || logPage || 1);
     const nextPageSize = Number(overrides.pageSize || logPageSize || 50);
     const nextSiteId = overrides.siteId ?? logSiteId;
+    const nextDomain = overrides.domain ?? logDomain;
     const nextVerdict = overrides.verdict ?? logVerdict;
     const nextSearch = overrides.search ?? filter;
     const params = new URLSearchParams({
@@ -596,6 +605,7 @@ export default function App() {
       pageSize: String(nextPageSize)
     });
     if (nextSiteId) params.set('siteId', nextSiteId);
+    if (nextDomain) params.set('domain', nextDomain);
     if (nextVerdict) params.set('verdict', nextVerdict);
     if (nextSearch.trim()) params.set('search', nextSearch.trim());
     const requestKey = params.toString();
@@ -790,6 +800,22 @@ export default function App() {
       const hasHttpPort = ports.some((port) => !String(port).endsWith('_ssl'));
       const hasHttpsPort = ports.some((port) => String(port).endsWith('_ssl'));
       const forceHttps = hasHttpPort && hasHttpsPort && boolValue(site.proxyForceHttps);
+      let certificateId = site.certificateId || '';
+      if (hasHttpsPort && site.certificateRequest?.source && site.certificateRequest.source !== 'existing') {
+        const request = site.certificateRequest;
+        const savedCertificate = await api('/api/certificates', {
+          method: 'POST',
+          body: {
+            source: request.source,
+            name: request.name,
+            domains: request.domains,
+            email: request.email,
+            cloudflareApiToken: request.cloudflareApiToken,
+            cloudflarePropagationSeconds: request.cloudflarePropagationSeconds
+          }
+        });
+        certificateId = savedCertificate.id;
+      }
       const payload = {
         id: site.id,
         name: site.name,
@@ -810,7 +836,7 @@ export default function App() {
         },
         tls: {
           enabled: boolValue(site.tlsEnabled),
-          certificateId: site.certificateId || '',
+          certificateId,
           redirectHttp: forceHttps,
           httpListen: Number(site.httpListen || 80),
           http2: boolValue(site.http2)
@@ -885,7 +911,7 @@ export default function App() {
       });
       setModal(null);
       await loadViewData('sites', { force: true });
-      showToast('Site saved and Nginx reloaded');
+      showToast(site.certificateRequest?.source && site.certificateRequest.source !== 'existing' ? 'SSL issued, site saved, and Nginx reloaded' : 'Site saved and Nginx reloaded');
     } catch (error) {
       showToast(error.message, true);
     }
@@ -1361,6 +1387,8 @@ export default function App() {
       logResult,
       logSiteId,
       setLogSiteId,
+      logDomain,
+      setLogDomain,
       logVerdict,
       setLogVerdict,
       logPage,
@@ -1382,7 +1410,7 @@ export default function App() {
     if (activeView === 'logs') return <LogsView {...props} />;
     if (activeView === 'settings') return <SettingsView {...props} />;
     return <DashboardView {...props} />;
-  }, [activeView, data, loadedViews, filter, auth, pendingActions, logsLoading, logResult, logSiteId, logVerdict, logPage, logPageSize, dashboardSiteId, dashboardPeriodDays, systemUpdate]);
+  }, [activeView, data, loadedViews, filter, auth, pendingActions, logsLoading, logResult, logSiteId, logDomain, logVerdict, logPage, logPageSize, dashboardSiteId, dashboardPeriodDays, systemUpdate]);
 
   if (auth.loading) {
     return <LoadingPanel />;
@@ -1629,6 +1657,7 @@ function DashboardView({ data, dashboardSiteId, setDashboardSiteId, dashboardPer
   const stats = { ...emptyStats, ...(data?.stats || {}) };
   const topRule = stats.topRules[0]?.name || 'None';
   const timeline = stats.timeline || [];
+  const statusTimeline = stats.statusTimeline?.length ? stats.statusTimeline : timeline;
   const sites = data?.sites || [];
   const protectedTotal = Number(stats.protected ?? (Number(stats.blocked || 0) + Number(stats.challenged || 0)));
   const blockedTotal = Number(stats.blocked || 0);
@@ -1644,8 +1673,10 @@ function DashboardView({ data, dashboardSiteId, setDashboardSiteId, dashboardPer
     .slice(0, 8);
   const qpsTimeline = stats.qpsTimeline || [];
   const qpsValue = Number(stats.qps ?? qpsTimeline[qpsTimeline.length - 1]?.qps ?? 0);
-  const requestsMax = Math.max(0, ...timeline.map((point) => Number(point.total || 0)));
-  const blockedMax = Math.max(0, ...timeline.map((point) => Number(point.blocked || 0)));
+  const requestsMax = Math.max(0, ...statusTimeline.map((point) => Number(point.total || 0)));
+  const blockedMax = Math.max(0, ...statusTimeline.map((point) => Number(point.blocked || 0)));
+  const currentRequests = Number(statusTimeline[statusTimeline.length - 1]?.total || 0);
+  const currentBlocked = Number(statusTimeline[statusTimeline.length - 1]?.blocked || 0);
   const selectedSite = sites.find((site) => String(site.id || '') === String(dashboardSiteId || ''));
   const selectedSiteLabel = selectedSite?.name || selectedSite?.hostnames?.[0] || 'All applications';
   const kpiItems = [
@@ -1725,17 +1756,17 @@ function DashboardView({ data, dashboardSiteId, setDashboardSiteId, dashboardPer
           <section className="panel traffic-widget sfl-status-panel">
             <div className="traffic-widget-heading">
               <h2>Requests Status</h2>
-              <span className="traffic-max">Max <strong>{formatCompact(requestsMax)}</strong></span>
+              <span className="traffic-max">5m <strong>{formatCompact(currentRequests)}</strong> / Max <strong>{formatCompact(requestsMax)}</strong></span>
             </div>
-            <RequestsStatusChart points={timeline} />
+            <RequestsStatusChart points={statusTimeline} />
           </section>
 
           <section className="panel traffic-widget sfl-status-panel">
             <div className="traffic-widget-heading">
               <h2>Blocking Status</h2>
-              <span className="traffic-max">Max <strong>{formatCompact(blockedMax)}</strong></span>
+              <span className="traffic-max">5m <strong>{formatCompact(currentBlocked)}</strong> / Max <strong>{formatCompact(blockedMax)}</strong></span>
             </div>
-            <RequestsStatusChart points={timeline} valueKey="blocked" tone="blocking" />
+            <RequestsStatusChart points={statusTimeline} valueKey="blocked" tone="blocking" />
           </section>
         </aside>
       </div>
@@ -2381,6 +2412,8 @@ function LogsView({
   logResult,
   logSiteId,
   setLogSiteId,
+  logDomain,
+  setLogDomain,
   logVerdict,
   setLogVerdict,
   logPage,
@@ -2407,12 +2440,14 @@ function LogsView({
     }
     return Array.from(seen.entries()).map(([id, name]) => ({ id, name }));
   })();
+  const domainOptions = Array.from(new Set((logResult.domains || []).filter(Boolean))).sort();
   const verdictOptions = [
     { value: 'allow', label: 'Allow' },
     { value: 'block', label: 'Block' },
     { value: 'challenge', label: 'Challenge' },
     { value: 'monitor', label: 'Monitor' }
   ];
+  const exportUrl = logsExportUrl({ siteId: logSiteId, domain: logDomain, verdict: logVerdict, search: filter });
 
   return (
     <section className="table-panel">
@@ -2420,6 +2455,9 @@ function LogsView({
         <div className="panel-heading compact">
           <h2>Access Logs</h2>
           <span className="pill">{formatCompact(total)} entries</span>
+          <a className="tool-button" href={exportUrl} download>
+            <Download size={18} /> Export
+          </a>
           <button className="tool-button danger" onClick={clearLogs}><Trash2 size={18} /> Clear</button>
         </div>
         <div className="log-filter-controls">
@@ -2433,6 +2471,17 @@ function LogsView({
           >
             <option value="">All apps</option>
             {siteOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
+          </select>
+          <select
+            className="search domain-select"
+            value={logDomain}
+            onChange={(event) => {
+              setLogDomain(event.target.value);
+              setLogPage(1);
+            }}
+          >
+            <option value="">All domains</option>
+            {domainOptions.map((domain) => <option key={domain} value={domain}>{domain}</option>)}
           </select>
           <select
             className="search verdict-select"
@@ -2689,11 +2738,7 @@ function SettingsView({
                     label="Rule Set"
                     value={applicationForm.modSecurityRuleset}
                     onChange={(value) => updateApplication('modSecurityRuleset', value)}
-                    options={[
-                      { value: 'cms', label: 'CMS Deep Inspection' },
-                      { value: 'comodo', label: 'Comodo WAF Rules' },
-                      { value: 'owasp', label: 'OWASP Core Rule Set' }
-                    ]}
+                    options={modSecurityRulesetOptions}
                   />
                   <SelectField
                     label="Engine Mode"
@@ -3559,6 +3604,7 @@ function LimitEditFields({ prefix, form, updateLimit, includeStatusCodes = false
 
 function SiteModal({ site, certificates, onClose, onSave }) {
   const [submitting, setSubmitting] = useState(false);
+  const [wizardStep, setWizardStep] = useState(1);
   const domainFieldRef = useRef(null);
   const [form, setForm] = useState(() => ({
     ...defaultSite,
@@ -3612,11 +3658,69 @@ function SiteModal({ site, certificates, onClose, onSave }) {
     featureHttpFlood: String(site?.features?.httpFlood ?? true),
     featureBotProtection: String(site?.features?.botProtection ?? true),
     featureGeoBlock: String(site?.features?.geoBlock ?? false),
+    sslMode: site?.tls?.certificateId ? 'existing' : 'none',
+    sslEmail: '',
+    sslCloudflareApiToken: '',
+    sslCloudflarePropagationSeconds: '60',
     enabled: String(site?.enabled ?? true)
   }));
+  const isEditing = Boolean(site);
 
   function update(name, value) {
     setForm((current) => ({ ...current, [name]: value }));
+  }
+
+  function currentHostnames() {
+    return listFromText(domainFieldRef.current?.commit() || form.hostnames, /[\s,]+/);
+  }
+
+  function hasHttpsPort() {
+    return form.listeningPorts.some((row) => row.protocol === 'https');
+  }
+
+  function canAdvanceSiteStep(step = wizardStep) {
+    const hostnames = currentHostnames();
+    if (step === 1) {
+      if (!hostnames.length) {
+        window.alert('Enter at least one application domain.');
+        return false;
+      }
+      if (form.applicationType === 'reverse_proxy' && !form.upstreams.some((item) => String(item).trim())) {
+        window.alert('Add at least one upstream.');
+        return false;
+      }
+      if (form.applicationType === 'redirect' && !String(form.redirectAddress || '').trim()) {
+        window.alert('Redirect address is required.');
+        return false;
+      }
+    }
+    if (step === 2 && hasHttpsPort()) {
+      if (form.sslMode === 'none') {
+        window.alert('Choose an SSL option for HTTPS ports.');
+        return false;
+      }
+      if (form.sslMode === 'existing' && !form.certificateId) {
+        window.alert('Select an SSL cert for HTTPS ports.');
+        return false;
+      }
+      if ((form.sslMode === 'certbot' || form.sslMode === 'cloudflare') && !String(form.sslEmail || '').includes('@')) {
+        window.alert("Enter an email address for Let's Encrypt.");
+        return false;
+      }
+      if (form.sslMode === 'cloudflare' && !String(form.sslCloudflareApiToken || '').trim()) {
+        window.alert('Enter a Cloudflare API token.');
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function nextStep() {
+    if (canAdvanceSiteStep()) setWizardStep((current) => Math.min(3, current + 1));
+  }
+
+  function previousStep() {
+    setWizardStep((current) => Math.max(1, current - 1));
   }
 
   function updatePort(index, patch) {
@@ -3658,31 +3762,31 @@ function SiteModal({ site, certificates, onClose, onSave }) {
   async function submit(event) {
     event.preventDefault();
     if (submitting) return;
-    const hostnameText = domainFieldRef.current?.commit() || form.hostnames;
-    const hostnames = listFromText(hostnameText, /[\s,]+/);
-    if (!hostnames.length) {
-      window.alert('Enter at least one application domain.');
+    if (wizardStep < 3) {
+      nextStep();
       return;
     }
-    const hasHttpsPort = form.listeningPorts.some((row) => row.protocol === 'https');
-    if (form.applicationType === 'reverse_proxy' && !form.upstreams.some((item) => String(item).trim())) {
-      window.alert('Add at least one upstream.');
-      return;
-    }
-    if (hasHttpsPort && !form.certificateId) {
-      window.alert('Select an SSL cert for HTTPS ports.');
-      return;
-    }
-    if (form.applicationType === 'redirect' && !String(form.redirectAddress || '').trim()) {
-      window.alert('Redirect address is required.');
-      return;
-    }
+    if (!canAdvanceSiteStep(1) || !canAdvanceSiteStep(2)) return;
+    const hostnames = currentHostnames();
+    const httpsPortSelected = hasHttpsPort();
+    const certificateRequest = httpsPortSelected && ['certbot', 'cloudflare'].includes(form.sslMode)
+      ? {
+          source: form.sslMode,
+          name: form.name || hostnames[0],
+          domains: hostnames.join('\n'),
+          email: form.sslEmail,
+          cloudflareApiToken: form.sslCloudflareApiToken,
+          cloudflarePropagationSeconds: Number(form.sslCloudflarePropagationSeconds || 60)
+        }
+      : null;
     setSubmitting(true);
     try {
       await onSave({
         ...form,
-        tlsEnabled: String(hasHttpsPort || boolValue(form.tlsEnabled)),
-        redirectHttp: String(hasHttpsPort && form.listeningPorts.some((row) => row.protocol === 'http') && boolValue(form.proxyForceHttps)),
+        certificateId: certificateRequest ? '' : form.certificateId,
+        certificateRequest,
+        tlsEnabled: String(httpsPortSelected || boolValue(form.tlsEnabled)),
+        redirectHttp: String(httpsPortSelected && form.listeningPorts.some((row) => row.protocol === 'http') && boolValue(form.proxyForceHttps)),
         hostnames: hostnames.join('\n'),
         upstreams: form.upstreams,
         listeningPorts: form.listeningPorts
@@ -3695,75 +3799,203 @@ function SiteModal({ site, certificates, onClose, onSave }) {
   return (
     <Modal title={site ? 'Edit Application' : 'Add Application'} onClose={onClose} wide>
       <form onSubmit={submit}>
+        <div className="wizard-steps">
+          {['Application', 'SSL', 'WAF'].map((label, index) => {
+            const step = index + 1;
+            return (
+              <button
+                type="button"
+                key={label}
+                className={`wizard-step ${wizardStep === step ? 'active' : ''} ${wizardStep > step ? 'done' : ''}`}
+                onClick={() => {
+                  if (step < wizardStep || canAdvanceSiteStep(wizardStep)) setWizardStep(step);
+                }}
+              >
+                <span>{step}</span>
+                {label}
+              </button>
+            );
+          })}
+        </div>
         <div className="safe-form">
-          <DomainChipField ref={domainFieldRef} label="Domain" value={form.hostnames} onChange={(value) => update('hostnames', value)} placeholder="example.com, *.example.com" required />
-
-          <div className="safe-fieldset">
-            {form.listeningPorts.map((row, index) => (
-              <div className="listen-row" key={`${index}-${row.protocol}`}>
-                <TextField label="Port" value={row.port} onChange={(value) => updatePort(index, { port: value })} required />
-                <ProtocolToggle value={row.protocol} onChange={(protocol) => updatePort(index, { protocol })} />
-                <button type="button" className="table-action ghost" onClick={() => removePort(index)} title="Remove port" disabled={form.listeningPorts.length <= 1}>
-                  <Trash2 size={17} />
-                </button>
-              </div>
-            ))}
-            <button type="button" className="outline-action" onClick={addPort}><Plus size={16} /> Add Listening Port</button>
-          </div>
-
-          <label className="field full">
-            <span>SSL Cert</span>
-            <select value={form.certificateId} onChange={(event) => update('certificateId', event.target.value)}>
-              <option value=""></option>
-              {certificates.map((certificate) => (
-                <option key={certificate.id} value={certificate.id}>{certificate.name || certificate.id}</option>
-              ))}
-            </select>
-          </label>
-
-          <div className="mode-grid">
-            <ModeChoice active={form.applicationType === 'reverse_proxy'} label="Reverse Proxy" onClick={() => update('applicationType', 'reverse_proxy')} />
-            <ModeChoice active={form.applicationType === 'static_files'} label="Static Files" onClick={() => update('applicationType', 'static_files')} />
-            <ModeChoice active={form.applicationType === 'redirect'} label="Redirect" onClick={() => update('applicationType', 'redirect')} />
-          </div>
-
-          {form.applicationType === 'reverse_proxy' && (
+          {wizardStep === 1 && (
             <>
+              <DomainChipField ref={domainFieldRef} label="Domain" value={form.hostnames} onChange={(value) => update('hostnames', value)} placeholder="example.com, *.example.com" required />
+
+              <TextField label="Application Name" value={form.name} onChange={(value) => update('name', value)} placeholder="Application Name" full required />
+
+              <div className="mode-grid">
+                <ModeChoice active={form.applicationType === 'reverse_proxy'} label="Reverse Proxy" onClick={() => update('applicationType', 'reverse_proxy')} />
+                <ModeChoice active={form.applicationType === 'static_files'} label="Static Files" onClick={() => update('applicationType', 'static_files')} />
+                <ModeChoice active={form.applicationType === 'redirect'} label="Redirect" onClick={() => update('applicationType', 'redirect')} />
+              </div>
+
               <div className="safe-fieldset">
-                {form.upstreams.map((upstream, index) => (
-                  <div className="upstream-row" key={index}>
-                    <TextField label="Upstream" value={upstream} onChange={(value) => updateUpstream(index, value)} placeholder="http://192.168.1.10:8080, not support path" full required />
-                    <button type="button" className="table-action ghost" onClick={() => removeUpstream(index)} title="Remove upstream" disabled={form.upstreams.length <= 1}>
+                {form.listeningPorts.map((row, index) => (
+                  <div className="listen-row" key={`${index}-${row.protocol}`}>
+                    <TextField label="Port" value={row.port} onChange={(value) => updatePort(index, { port: value })} required />
+                    <ProtocolToggle value={row.protocol} onChange={(protocol) => updatePort(index, { protocol })} />
+                    <button type="button" className="table-action ghost" onClick={() => removePort(index)} title="Remove port" disabled={form.listeningPorts.length <= 1}>
                       <Trash2 size={17} />
                     </button>
                   </div>
                 ))}
-                <button type="button" className="outline-action" onClick={addUpstream}><Plus size={16} /> Add Upstream</button>
+                <button type="button" className="outline-action" onClick={addPort}><Plus size={16} /> Add Listening Port</button>
               </div>
+
+              {form.applicationType === 'reverse_proxy' && (
+                <div className="safe-fieldset">
+                  {form.upstreams.map((upstream, index) => (
+                    <div className="upstream-row" key={index}>
+                      <TextField label="Upstream" value={upstream} onChange={(value) => updateUpstream(index, value)} placeholder="http://192.168.1.10:8080, not support path" full required />
+                      <button type="button" className="table-action ghost" onClick={() => removeUpstream(index)} title="Remove upstream" disabled={form.upstreams.length <= 1}>
+                        <Trash2 size={17} />
+                      </button>
+                    </div>
+                  ))}
+                  <button type="button" className="outline-action" onClick={addUpstream}><Plus size={16} /> Add Upstream</button>
+                </div>
+              )}
+
+              {form.applicationType === 'static_files' && (
+                <div className="notice full">
+                  After the site is successfully added, you can manage static files on the site details page.
+                </div>
+              )}
+
+              {form.applicationType === 'redirect' && (
+                <div className="redirect-grid">
+                  <SelectField label="Status Code" value={form.redirectStatusCode} onChange={(value) => update('redirectStatusCode', value)} options={['301', '302', '307', '308']} />
+                  <TextField label="Address" value={form.redirectAddress} onChange={(value) => update('redirectAddress', value)} placeholder="http://192.168.1.10:8080, not support path" required />
+                </div>
+              )}
             </>
           )}
 
-          {form.applicationType === 'static_files' && (
-            <div className="notice full">
-              After the site is successfully added, you can manage static files on the site details page.
-            </div>
+          {wizardStep === 2 && (
+            <>
+              {!hasHttpsPort() && (
+                <div className="notice full">
+                  This application only has HTTP listeners. Add an HTTPS listening port in step 1 if you want SSL.
+                </div>
+              )}
+              <div className="cert-source-grid">
+                <button type="button" className={`cert-source-choice ${form.sslMode === 'none' ? 'active' : ''}`} onClick={() => update('sslMode', 'none')} disabled={hasHttpsPort()}>
+                  <span className="radio-dot" />
+                  No SSL
+                </button>
+                <button type="button" className={`cert-source-choice ${form.sslMode === 'existing' ? 'active' : ''}`} onClick={() => update('sslMode', 'existing')}>
+                  <span className="radio-dot" />
+                  Existing Cert
+                </button>
+                {!isEditing && (
+                  <>
+                    <button type="button" className={`cert-source-choice ${form.sslMode === 'certbot' ? 'active' : ''}`} onClick={() => update('sslMode', 'certbot')}>
+                      <span className="radio-dot" />
+                      Let's Encrypt
+                    </button>
+                    <button type="button" className={`cert-source-choice ${form.sslMode === 'cloudflare' ? 'active' : ''}`} onClick={() => update('sslMode', 'cloudflare')}>
+                      <span className="radio-dot" />
+                      Cloudflare DNS
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {hasHttpsPort() && form.sslMode === 'existing' && (
+                <SelectField label="SSL Cert" value={form.certificateId} onChange={(value) => update('certificateId', value)} options={[
+                  { value: '', label: 'Select certificate' },
+                  ...certificates.map((certificate) => ({ value: certificate.id, label: certificate.name || certificate.id }))
+                ]} full />
+              )}
+
+              {hasHttpsPort() && ['certbot', 'cloudflare'].includes(form.sslMode) && (
+                <>
+                  <TextField label="Let's Encrypt Email" type="email" value={form.sslEmail} onChange={(value) => update('sslEmail', value)} placeholder="admin@example.com" full required />
+                  {form.sslMode === 'cloudflare' && (
+                    <>
+                      <TextField label="Cloudflare API Token" type="password" value={form.sslCloudflareApiToken} onChange={(value) => update('sslCloudflareApiToken', value)} placeholder="Paste API token value only" full required />
+                      <TextField label="DNS Propagation Seconds" type="number" value={form.sslCloudflarePropagationSeconds} onChange={(value) => update('sslCloudflarePropagationSeconds', value)} full />
+                    </>
+                  )}
+                  <div className="notice full">
+                    {form.sslMode === 'cloudflare'
+                      ? 'Uses DNS-01 and supports wildcard domains. The token is stored in a protected certbot credentials file.'
+                      : 'Uses HTTP-01. Make sure port 80 for this domain reaches this FreeWAF server.'}
+                  </div>
+                </>
+              )}
+
+              <div className="feature-toggle-grid">
+                <ApplicationOption label="Enable HTTP/2" checked={boolValue(form.http2)} onChange={(value) => update('http2', String(value))} />
+                <ApplicationOption label="Redirect HTTP to HTTPS" checked={boolValue(form.proxyForceHttps)} onChange={(value) => update('proxyForceHttps', String(value))} />
+                <ApplicationOption label="Enable HSTS" checked={boolValue(form.proxyHsts)} onChange={(value) => update('proxyHsts', String(value))} />
+              </div>
+              {boolValue(form.proxyHsts) && (
+                <TextField label="HSTS Max Age (seconds)" value={form.proxyHstsMaxAge} onChange={(value) => update('proxyHstsMaxAge', value)} type="number" full />
+              )}
+            </>
           )}
 
-          {form.applicationType === 'redirect' && (
-            <div className="redirect-grid">
-              <SelectField label="Status Code" value={form.redirectStatusCode} onChange={(value) => update('redirectStatusCode', value)} options={['301', '302', '307', '308']} />
-              <TextField label="Address" value={form.redirectAddress} onChange={(value) => update('redirectAddress', value)} placeholder="http://192.168.1.10:8080, not support path" required />
-            </div>
-          )}
+          {wizardStep === 3 && (
+            <>
+              <div className="feature-toggle-grid">
+                <ApplicationOption label="ModSecurity" checked={boolValue(form.modSecurityEnabled)} onChange={(value) => update('modSecurityEnabled', String(value))} />
+                <ApplicationOption label="HTTP Flood" checked={boolValue(form.featureHttpFlood)} onChange={(value) => update('featureHttpFlood', String(value))} />
+                <ApplicationOption label="BOT Protect" checked={boolValue(form.featureBotProtection)} onChange={(value) => update('featureBotProtection', String(value))} />
+                <ApplicationOption label="GEO Block" checked={boolValue(form.featureGeoBlock)} onChange={(value) => update('featureGeoBlock', String(value))} />
+                <ApplicationOption label="Gzip Compression" checked={boolValue(form.proxyGzip)} onChange={(value) => update('proxyGzip', String(value))} />
+                <ApplicationOption label="Brotli Compression" checked={boolValue(form.proxyBrotli)} onChange={(value) => update('proxyBrotli', String(value))} />
+              </div>
 
-          <TextField label="Application Name" value={form.name} onChange={(value) => update('name', value)} placeholder="Application Name" full required />
+              {boolValue(form.modSecurityEnabled) && (
+                <div className="redirect-grid">
+                  <SelectField label="Rule Set" value={form.modSecurityRuleset} onChange={(value) => update('modSecurityRuleset', value)} options={modSecurityRulesetOptions} />
+                  <SelectField
+                    label="Engine Mode"
+                    value={form.modSecurityMode}
+                    onChange={(value) => update('modSecurityMode', value)}
+                    options={[
+                      { value: 'on', label: 'Block' },
+                      { value: 'detection_only', label: 'Detection Only' }
+                    ]}
+                  />
+                  <TextField label="Request Body Limit (bytes)" value={form.modSecurityRequestBodyLimit} onChange={(value) => update('modSecurityRequestBodyLimit', value)} type="number" />
+                </div>
+              )}
+
+              <div className="feature-toggle-grid">
+                <ApplicationOption label="Clear and Rewrite X-Forwarded-For" checked={boolValue(form.proxyResetXff)} onChange={(value) => update('proxyResetXff', String(value))} />
+                <ApplicationOption label="Modify Host Header" checked={boolValue(form.proxyModifyHostHeader)} onChange={(value) => update('proxyModifyHostHeader', String(value))} />
+                <ApplicationOption label="Pass Forwarded Headers" checked={boolValue(form.proxyForwardedHeaders)} onChange={(value) => update('proxyForwardedHeaders', String(value))} />
+                <ApplicationOption label="Proxy SSL Server Name" checked={boolValue(form.proxySslServerName)} onChange={(value) => update('proxySslServerName', String(value))} />
+              </div>
+
+              {(boolValue(form.proxyModifyHostHeader) || boolValue(form.proxyForwardedHeaders)) && (
+                <div className="redirect-grid">
+                  {boolValue(form.proxyModifyHostHeader) && <TextField label="Host Header" value={form.proxyHostHeader} onChange={(value) => update('proxyHostHeader', value)} placeholder="$http_host" />}
+                  {boolValue(form.proxyForwardedHeaders) && (
+                    <>
+                      <TextField label="X-Forwarded-Host" value={form.proxyXForwardedHost} onChange={(value) => update('proxyXForwardedHost', value)} placeholder="$http_host" />
+                      <TextField label="X-Forwarded-Proto" value={form.proxyXForwardedProto} onChange={(value) => update('proxyXForwardedProto', value)} placeholder="$scheme" />
+                    </>
+                  )}
+                </div>
+              )}
+            </>
+          )}
         </div>
         <div className="modal-footer">
           <button type="button" className="tool-button" onClick={onClose} disabled={submitting}>Cancel</button>
-          <button className="tool-button primary" disabled={submitting}>
-            {submitting && <Loader2 size={17} className="spin" />}
-            {submitting ? 'Saving...' : 'Submit'}
-          </button>
+          {wizardStep > 1 && <button type="button" className="tool-button" onClick={previousStep} disabled={submitting}>Back</button>}
+          {wizardStep < 3 ? (
+            <button type="button" className="tool-button primary" onClick={nextStep} disabled={submitting}>Next</button>
+          ) : (
+            <button className="tool-button primary" disabled={submitting}>
+              {submitting && <Loader2 size={17} className="spin" />}
+              {submitting ? (form.sslMode === 'certbot' || form.sslMode === 'cloudflare' ? 'Issuing...' : 'Saving...') : 'Submit'}
+            </button>
+          )}
         </div>
       </form>
     </Modal>
@@ -4548,6 +4780,16 @@ async function api(path, options = {}) {
   }
   if (response.status === 204) return null;
   return response.json();
+}
+
+function logsExportUrl({ siteId = '', verdict = '', search = '', domain = '' } = {}) {
+  const params = new URLSearchParams();
+  if (siteId) params.set('siteId', siteId);
+  if (domain) params.set('domain', domain);
+  if (verdict) params.set('verdict', verdict);
+  if (String(search || '').trim()) params.set('search', String(search).trim());
+  const query = params.toString();
+  return query ? `/api/logs/export?${query}` : '/api/logs/export';
 }
 
 function formatTime(value) {

@@ -65,12 +65,6 @@ DEFAULT_SETTINGS = {
     "blockSupportIdPrefix": "SFL",
 }
 
-AUTO_BLOCK_IP_GROUP_ID = "ipgroup-auto-block-errors"
-AUTO_BLOCK_ACCESS_RULE_ID = "accessrule-auto-block-errors"
-AUTO_BLOCK_ERROR_STATUS_CODES = ["403", "404"]
-AUTO_BLOCK_ERROR_COUNT = 8
-AUTO_BLOCK_ERROR_WINDOW_SECONDS = 300
-
 DEFAULT_BOT_LOGIN_PATH_PATTERNS = [
     r"^/wp-login\.php(?:\?|$)",
     r"^/wp-admin/?(?:\?|$)",
@@ -423,7 +417,7 @@ _GITLAB_PATTERN = r"(?:/uploads/.*/(?:\.\./|%2e%2e)|/api/v4/projects/.*/(?:repos
 _VMWARE_SSTI_PATTERN = r"(?:/catalog-portal/ui/oauth/verify\?.*(?:deviceUdid|code)=.*(?:\$\{|freemarker|Execute)|/catalog-portal/ui/oauth/verify|/SAAS/(?:auth|API|jersey))"
 _JIRA_SSRF_PATTERN = r"(?:/plugins/servlet/(?:gadgets/makeRequest|oauth/users/icon-uri|avatar|relay)|/jira/plugins/servlet/gadgets/makeRequest|[?&]url=https?://)"
 _ATLASSIAN_OGNL_PATTERN = r"(?:/(?:confluence|wiki)/.*(?:%24%7B|\$\{|ognl|xwork|TextParseUtil)|/plugins/servlet/.*(?:%24%7B|\$\{))"
-_IMAGE_MAGICK_PATTERN = r"(?:(?:\.mvg|\.svg)(?:$|\?)|mvg:|ephemeral:|push graphic-context|fill 'url\(|delegate|caption:|label:)"
+_IMAGE_MAGICK_PATTERN = r"(?:(?:\.mvg)(?:$|\?)|mvg:|ephemeral:|push graphic-context|fill 'url\(|delegate|caption:|label:)"
 _ACTIVEMQ_PATTERN = r"(?:/fileserver/(?:.*\.jsp|\.\.|%2e%2e)|/admin/(?:test/systemProperties\.jsp|queueBrowse)|/api/message/)"
 _COUCHDB_PATTERN = r"(?:/(?:_users|_config|_replicator|_membership|_utils)(?:/|$|\?)|/_node/[^/]+/_config|/_config/.*(?:os_daemons|query_servers)|_temp_view)"
 _ELASTICSEARCH_PATTERN = r"(?:/(?:_cat|_cluster|_nodes|_all|_search|_mapping|_scripts|_template|_snapshot)(?:/|\?|$)|_search.*(?:script|groovy|mvel|painless))"
@@ -795,21 +789,6 @@ def create_default_state(now: str | None = None) -> dict:
                 "createdAt": timestamp,
                 "updatedAt": timestamp,
             },
-            {
-                "id": AUTO_BLOCK_IP_GROUP_ID,
-                "name": "Auto-block error IPs",
-                "description": "IPs that repeatedly trigger 403 or 404 responses.",
-                "referenceUrl": "",
-                "items": [],
-                "lastSyncedAt": "",
-                "lastSyncStatus": "",
-                "lastSyncMessage": "",
-                "enabled": True,
-                "managed": True,
-                "provider": "auto_block_errors",
-                "createdAt": timestamp,
-                "updatedAt": timestamp,
-            },
             *[
                 {
                     "id": provider["id"],
@@ -830,26 +809,6 @@ def create_default_state(now: str | None = None) -> dict:
             ],
         ],
         "accessRules": [
-            {
-                "id": AUTO_BLOCK_ACCESS_RULE_ID,
-                "name": "Auto-block repeated 403/404 IPs",
-                "description": f"Automatically blocks IPs after {AUTO_BLOCK_ERROR_COUNT} repeated 403/404 responses within {AUTO_BLOCK_ERROR_WINDOW_SECONDS}s.",
-                "enabled": True,
-                "siteId": "*",
-                "action": "deny",
-                "insertPosition": "first",
-                "continueDetect": False,
-                "ipGroupIds": [AUTO_BLOCK_IP_GROUP_ID],
-                "ips": [],
-                "methods": [],
-                "uriPatterns": [],
-                "hostPatterns": [],
-                "userAgentPatterns": [],
-                "conditionGroups": [],
-                "createdAt": timestamp,
-                "updatedAt": timestamp,
-                "managed": True,
-            }
         ],
         "users": [],
         "logs": [],

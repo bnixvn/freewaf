@@ -23,10 +23,6 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .defaults import (
-    AUTO_BLOCK_ACCESS_RULE_ID,
-    AUTO_BLOCK_ERROR_COUNT,
-    AUTO_BLOCK_ERROR_WINDOW_SECONDS,
-    AUTO_BLOCK_IP_GROUP_ID,
     BUILTIN_RULES,
     DEFAULT_BOT_LOGIN_PATH_PATTERNS,
     DEFAULT_BOT_RATE_CHALLENGE,
@@ -395,27 +391,6 @@ class Store:
             )
             changed = True
 
-        if not any(group["id"] == AUTO_BLOCK_IP_GROUP_ID for group in self.state["ipGroups"]):
-            self.state["ipGroups"].insert(
-                1,
-                {
-                    "id": AUTO_BLOCK_IP_GROUP_ID,
-                    "name": "Auto-block error IPs",
-                    "description": "IPs that repeatedly trigger 403 or 404 responses.",
-                    "referenceUrl": "",
-                    "items": [],
-                    "lastSyncedAt": "",
-                    "lastSyncStatus": "",
-                    "lastSyncMessage": "",
-                    "enabled": True,
-                    "managed": True,
-                    "provider": "auto_block_errors",
-                    "createdAt": now,
-                    "updatedAt": now,
-                },
-            )
-            changed = True
-
         existing_groups = {group["id"]: group for group in self.state["ipGroups"]}
         for provider_name, provider in managed_verified_bot_providers().items():
             stored = existing_groups.get(provider["id"])
@@ -449,32 +424,6 @@ class Store:
             if prepared != group:
                 self.state["ipGroups"][index] = prepared
                 changed = True
-
-        if not any(rule["id"] == AUTO_BLOCK_ACCESS_RULE_ID for rule in self.state["accessRules"]):
-            self.state["accessRules"].insert(
-                0,
-                {
-                    "id": AUTO_BLOCK_ACCESS_RULE_ID,
-                    "name": "Auto-block repeated 403/404 IPs",
-                    "description": f"Automatically blocks IPs after {AUTO_BLOCK_ERROR_COUNT} repeated 403/404 responses within {AUTO_BLOCK_ERROR_WINDOW_SECONDS}s.",
-                    "enabled": True,
-                    "siteId": "*",
-                    "action": "deny",
-                    "insertPosition": "first",
-                    "continueDetect": False,
-                    "ipGroupIds": [AUTO_BLOCK_IP_GROUP_ID],
-                    "ips": [],
-                    "methods": [],
-                    "uriPatterns": [],
-                    "hostPatterns": [],
-                    "userAgentPatterns": [],
-                    "conditionGroups": [],
-                    "createdAt": now,
-                    "updatedAt": now,
-                    "managed": True,
-                },
-            )
-            changed = True
 
         if changed:
             self.persist()
@@ -664,7 +613,7 @@ class Store:
             group = next((item for item in self._state()["ipGroups"] if item["id"] == group_id), None)
             if not group:
                 raise StoreError(404, "IP group not found")
-            if group.get("managed") and group.get("provider") != "auto_block_errors":
+            if group.get("managed"):
                 raise StoreError(400, "Managed IP groups cannot be modified")
             current_items = list(group.get("items") or [])
             item_file = str(group.get("itemsFile") or "").strip()
@@ -2383,6 +2332,7 @@ def build_stats(state: dict, site_id: str = "") -> dict:
     site_stats = summarize_site_stats(logs, sites)
     status_groups = Counter(status_group(entry) for entry in logs)
     timeline = build_timeline(logs)
+    status_timeline = build_status_timeline(logs)
     qps_timeline = build_qps_timeline(logs)
 
     return {
@@ -2417,6 +2367,7 @@ def build_stats(state: dict, site_id: str = "") -> dict:
         "statusGroups": counter_items(status_groups),
         "qps": qps_timeline[-1]["qps"] if qps_timeline else 0,
         "qpsTimeline": qps_timeline,
+        "statusTimeline": status_timeline,
         "timeline": timeline,
     }
 
@@ -2491,6 +2442,7 @@ def build_stats_from_summary(state: dict, summary: dict, recent_logs: list[dict]
     user_client_os = sorted(aggregate["userClientOs"].values(), key=lambda item: item["count"], reverse=True)
     user_client_browsers = sorted(aggregate["userClientBrowsers"].values(), key=lambda item: item["count"], reverse=True)
     timeline = build_timeline(recent)
+    status_timeline = build_status_timeline(recent)
     qps_timeline = build_qps_timeline(recent)
     site_stats = []
     for item in site_totals.values():
@@ -2543,6 +2495,7 @@ def build_stats_from_summary(state: dict, summary: dict, recent_logs: list[dict]
         "statusGroups": counter_items(aggregate["statusGroups"]),
         "qps": qps_timeline[-1]["qps"] if qps_timeline else 0,
         "qpsTimeline": qps_timeline,
+        "statusTimeline": status_timeline,
         "timeline": timeline,
         "retentionDays": summary.get("retentionDays"),
     }
@@ -2958,6 +2911,35 @@ def build_timeline(logs: list[dict]) -> list[dict]:
         elif entry.get("verdict") == "challenge":
             buckets[index]["challenged"] += 1
             buckets[index]["protected"] += 1
+
+    return buckets
+
+
+def build_status_timeline(logs: list[dict]) -> list[dict]:
+    bucket_ms = 5 * 60 * 1000
+    bucket_count = 24
+    now_ms = int(time.time() * 1000)
+    start_ms = now_ms - bucket_ms * bucket_count
+    buckets = []
+    for index in range(bucket_count):
+        at = start_ms + bucket_ms * index
+        label = datetime.fromtimestamp(at / 1000).strftime("%H:%M")
+        buckets.append({"at": at, "endAt": at + bucket_ms, "label": label, "total": 0, "blocked": 0, "challenged": 0, "protected": 0})
+
+    for entry in logs:
+        at_ms = entry_timestamp_ms(entry)
+        if at_ms is None or at_ms < start_ms:
+            continue
+        index = min(bucket_count - 1, max(0, (at_ms - start_ms) // bucket_ms))
+        bucket = buckets[index]
+        bucket["total"] += 1
+        verdict = entry.get("verdict")
+        if verdict == "block":
+            bucket["blocked"] += 1
+            bucket["protected"] += 1
+        elif verdict == "challenge":
+            bucket["challenged"] += 1
+            bucket["protected"] += 1
 
     return buckets
 

@@ -15,7 +15,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from freewaf import nginx as nginx_module
-from freewaf.defaults import AUTO_BLOCK_IP_GROUP_ID, BUILTIN_RULES, DEFAULT_SETTINGS
+from freewaf.defaults import BUILTIN_RULES, DEFAULT_SETTINGS
 from freewaf.nginx import (
     nginx_output_file,
     nginx_site_config_dir,
@@ -27,7 +27,6 @@ from freewaf.server import (
     _redact_audit_value,
     append_audit_log,
     build_system_update_plan,
-    sync_error_blocks,
     make_pow_salt,
     pow_difficulty_bits,
     read_audit_log,
@@ -200,61 +199,6 @@ class LoginThrottleHelperTests(unittest.TestCase):
         self.assertGreaterEqual(server_module.LOGIN_THROTTLE_IP_LIMIT, 1)
         self.assertGreaterEqual(server_module.LOGIN_THROTTLE_USER_LIMIT, server_module.LOGIN_THROTTLE_IP_LIMIT)
         self.assertGreaterEqual(server_module.LOGIN_THROTTLE_WINDOW_SECONDS, 60)
-
-
-class ErrorBlockHelperTests(unittest.TestCase):
-    def test_repeated_404_adds_ip_to_managed_block_group(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = Store(Path(directory) / "state.json")
-            store.init()
-            for index in range(8):
-                store.add_log(
-                    {
-                        "at": datetime.now(timezone.utc).isoformat(),
-                        "ip": "203.0.113.50",
-                        "statusCode": 404,
-                        "verdict": "allow",
-                    }
-                )
-
-            count = sync_error_blocks(store)
-            group = next(item for item in store.get_state()["ipGroups"] if item["id"] == AUTO_BLOCK_IP_GROUP_ID)
-
-        self.assertEqual(count, 1)
-        self.assertIn("203.0.113.50", group["items"])
-
-    def test_repeated_nginx_404_adds_ip_to_managed_block_group(self):
-        import freewaf.server as server_module
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            log_file = root / "access.log"
-            store = Store(root / "state.json")
-            store.init()
-            rows = [
-                {
-                    "time": datetime.now(timezone.utc).isoformat(),
-                    "remote_addr": "203.0.113.60",
-                    "host": "example.test",
-                    "method": "GET",
-                    "uri": f"/missing-{index}",
-                    "status": 404,
-                    "verdict": "allow",
-                }
-                for index in range(8)
-            ]
-            log_file.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
-
-            with mock.patch.object(server_module, "ROOT_DIR", root), mock.patch.dict(
-                os.environ,
-                {"NGINX_ACCESS_LOG": str(log_file), "NGINX_SITE_LOG_DIR": str(root / "sites")},
-                clear=False,
-            ):
-                count = sync_error_blocks(store)
-            group = next(item for item in store.get_state()["ipGroups"] if item["id"] == AUTO_BLOCK_IP_GROUP_ID)
-
-        self.assertEqual(count, 1)
-        self.assertIn("203.0.113.60", group["items"])
 
 
 class SystemUpdatePlanTests(unittest.TestCase):

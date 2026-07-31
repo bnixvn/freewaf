@@ -1661,6 +1661,7 @@ def render_modsecurity_directives(site: dict) -> list[str]:
     body_limit = min(max(int(config.get("requestBodyLimit") or 13107200), 131072), 1073741824)
     lines = [
         "    modsecurity on;",
+        f"    # FreeWAF ModSecurity ruleset: {nginx_comment(ruleset)}",
         f"    modsecurity_rules_file {nginx_path(rules_file)};",
         f"    modsecurity_rules 'SecRuleEngine {engine}';",
         f"    modsecurity_rules 'SecRequestBodyLimit {body_limit}';",

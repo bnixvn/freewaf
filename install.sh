@@ -4,6 +4,23 @@ set -Eeuo pipefail
 APP_DIR="${FREEWAF_APP_DIR:-/opt/freewaf}"
 ENV_DIR="${FREEWAF_ENV_DIR:-/etc/freewaf}"
 ENV_FILE="${ENV_DIR}/freewaf.env"
+
+read_existing_env() {
+  local key="$1"
+  local default="$2"
+  local value=""
+  if [ -f "$ENV_FILE" ]; then
+    value="$(awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$ENV_FILE")"
+    value="${value%\"}"
+    value="${value#\"}"
+  fi
+  if [ -n "$value" ]; then
+    printf '%s\n' "$value"
+  else
+    printf '%s\n' "$default"
+  fi
+}
+
 SERVICE_FILE="/etc/systemd/system/freewaf.service"
 HEALTHCHECK_SCRIPT="/usr/local/sbin/freewaf-healthcheck"
 HEALTHCHECK_SERVICE="/etc/systemd/system/freewaf-healthcheck.service"
@@ -13,9 +30,9 @@ NGINX_UPLOAD_LIMIT_INCLUDE="/etc/nginx/conf.d/00-upload-size.conf"
 NGINX_CLIENT_MAX_BODY_SIZE="${FREEWAF_NGINX_CLIENT_MAX_BODY_SIZE:-512M}"
 LOGROTATE_FILE="/etc/logrotate.d/freewaf"
 CERTBOT_DEPLOY_HOOK="/etc/letsencrypt/renewal-hooks/deploy/freewaf-nginx-reload"
-ADMIN_PORT="${ADMIN_PORT:-7001}"
-DEMO_ORIGIN_PORT="${DEMO_ORIGIN_PORT:-9090}"
-ENABLE_DEMO_ORIGIN="${ENABLE_DEMO_ORIGIN:-true}"
+ADMIN_PORT="${ADMIN_PORT:-$(read_existing_env ADMIN_PORT 7001)}"
+DEMO_ORIGIN_PORT="${DEMO_ORIGIN_PORT:-$(read_existing_env DEMO_ORIGIN_PORT 9090)}"
+ENABLE_DEMO_ORIGIN="${ENABLE_DEMO_ORIGIN:-$(read_existing_env ENABLE_DEMO_ORIGIN true)}"
 REPO_URL="${FREEWAF_REPO_URL:-}"
 REPO_BRANCH="${FREEWAF_REPO_BRANCH:-main}"
 SKIP_SERVICE_RESTART="${FREEWAF_SKIP_SERVICE_RESTART:-false}"
@@ -122,11 +139,6 @@ install_nodejs() {
 source_dir() {
   local script_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  if [ -f "${script_dir}/backend/run.py" ] && [ -f "${script_dir}/frontend/package.json" ]; then
-    echo "$script_dir"
-    return
-  fi
-
   if [ -n "$REPO_URL" ]; then
     local tmp_dir
     tmp_dir="$(mktemp -d)"
@@ -136,7 +148,31 @@ source_dir() {
     return
   fi
 
+  if [ -f "${script_dir}/backend/run.py" ] && [ -f "${script_dir}/frontend/package.json" ]; then
+    echo "$script_dir"
+    return
+  fi
+
   fail "Run this installer from a FreeWAF checkout, or set FREEWAF_REPO_URL=https://..."
+}
+
+backup_existing_install() {
+  local stamp backup_dir
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+
+  if [ -f "${APP_DIR}/data/state.json" ]; then
+    backup_dir="${APP_DIR}/data/backups"
+    install -d -m 0750 "$backup_dir"
+    cp -a "${APP_DIR}/data/state.json" "${backup_dir}/state-${stamp}.json"
+    log "Backed up existing state to ${backup_dir}/state-${stamp}.json"
+  fi
+
+  if [ -f "$ENV_FILE" ]; then
+    backup_dir="${ENV_DIR}/backups"
+    install -d -m 0750 "$backup_dir"
+    cp -a "$ENV_FILE" "${backup_dir}/freewaf-${stamp}.env"
+    log "Backed up existing environment to ${backup_dir}/freewaf-${stamp}.env"
+  fi
 }
 
 copy_app() {
@@ -150,7 +186,7 @@ copy_app() {
     --exclude "node_modules/" \
     --exclude "frontend/node_modules/" \
     --exclude "frontend/dist/" \
-    --exclude "data/state.json" \
+    --exclude "data/***" \
     --exclude "logs/" \
     --exclude "nginx/certs/*" \
     --exclude "nginx/generated/*" \
@@ -536,6 +572,7 @@ main() {
   install_nodejs
   local src
   src="$(source_dir)"
+  backup_existing_install
   copy_app "$src"
   build_frontend
   install_geoip_database
