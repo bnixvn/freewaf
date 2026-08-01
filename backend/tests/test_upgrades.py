@@ -74,13 +74,18 @@ class AtomicWriteNginxConfigTests(unittest.TestCase):
                 site_dir = nginx_site_config_dir(root)
                 first_files = sorted(p.name for p in site_dir.glob("*.conf"))
                 self.assertEqual(len(first_files), 1)
+                first_content = (site_dir / first_files[0]).read_text(encoding="utf-8")
+                self.assertIn("server_name localhost;", first_content)
 
                 second_state = _state_with_demo_site()
                 second_state["sites"][0]["hostnames"] = ["other.test"]
                 write_nginx_config(root, second_state)
                 second_files = sorted(p.name for p in site_dir.glob("*.conf"))
                 self.assertEqual(len(second_files), 1)
-                self.assertNotEqual(first_files, second_files)
+                self.assertEqual(first_files, second_files)
+                second_content = (site_dir / second_files[0]).read_text(encoding="utf-8")
+                self.assertIn("server_name other.test;", second_content)
+                self.assertNotIn("server_name localhost;", second_content)
 
                 # No leftover staging or backup directories.
                 leftovers = [p.name for p in site_dir.parent.iterdir() if p.is_dir() and p.name != site_dir.name]

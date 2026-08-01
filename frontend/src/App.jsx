@@ -3243,14 +3243,16 @@ function NginxModal({ result, onClose, onCopy }) {
   return (
     <Modal title="Nginx Config" onClose={onClose} wide>
       <div className="nginx-modal-body">
-        <div className="settings-actions">
-          <button className="tool-button" onClick={() => onCopy(config)}><Copy size={18} /> Copy Config</button>
-          {result?.outputFile && <span className="pill">{result.outputFile}</span>}
-          {result?.runtime?.outputFile && <span className="pill">{result.runtime.outputFile}</span>}
-        </div>
+        {(config || result?.outputFile || result?.runtime?.outputFile) && (
+          <div className="settings-actions">
+            {config && <button className="tool-button" onClick={() => onCopy(config)}><Copy size={18} /> Copy Config</button>}
+            {result?.outputFile && <span className="pill">{result.outputFile}</span>}
+            {result?.runtime?.outputFile && <span className="pill">{result.runtime.outputFile}</span>}
+          </div>
+        )}
         {result?.test && <CommandResult label="nginx -t" result={result.test} />}
         {result?.reload && <CommandResult label="reload" result={result.reload} />}
-        <pre className="config-preview">{config}</pre>
+        {config && <pre className="config-preview">{config}</pre>}
       </div>
       <div className="modal-footer">
         <button type="button" className="tool-button primary" onClick={onClose}>Done</button>

@@ -954,7 +954,6 @@ def apply_nginx(store: Store, payload: dict) -> dict:
     result = {
         "ok": True,
         "outputFile": str(output_file),
-        "config": generate_nginx_config(store.get_state()),
         "test": None,
         "reload": None,
         "rollback": None,
@@ -1001,6 +1000,23 @@ def snapshot_nginx_bundle(root_dir: Path) -> dict:
     return snapshot
 
 
+def snapshot_http01_challenge_server(root_dir: Path, challenge_file: Path) -> dict:
+    output_file = nginx_output_file(root_dir)
+    backup_dir = Path(tempfile.mkdtemp(prefix="freewaf-http01-backup."))
+    snapshot = {
+        "outputFile": output_file,
+        "challengeFile": challenge_file,
+        "backupDir": backup_dir,
+        "outputExists": output_file.exists(),
+        "challengeExists": challenge_file.exists(),
+    }
+    if output_file.exists():
+        shutil.copy2(output_file, backup_dir / "freewaf.conf")
+    if challenge_file.exists():
+        shutil.copy2(challenge_file, backup_dir / "challenge.conf")
+    return snapshot
+
+
 def restore_nginx_bundle(snapshot: dict) -> dict:
     output_file = Path(snapshot["outputFile"])
     site_dir = Path(snapshot["siteDir"])
@@ -1016,6 +1032,27 @@ def restore_nginx_bundle(snapshot: dict) -> dict:
             shutil.rmtree(site_dir)
         if snapshot.get("siteDirExists"):
             shutil.copytree(backup_dir / "sites", site_dir)
+        return {"ok": True, "restored": True}
+    except OSError as error:
+        return {"ok": False, "restored": False, "stderr": str(error)}
+
+
+def restore_http01_challenge_snapshot(snapshot: dict) -> dict:
+    output_file = Path(snapshot["outputFile"])
+    challenge_file = Path(snapshot["challengeFile"])
+    backup_dir = Path(snapshot["backupDir"])
+    try:
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        if snapshot.get("outputExists"):
+            shutil.copy2(backup_dir / "freewaf.conf", output_file)
+        elif output_file.exists():
+            output_file.unlink()
+
+        challenge_file.parent.mkdir(parents=True, exist_ok=True)
+        if snapshot.get("challengeExists"):
+            shutil.copy2(backup_dir / "challenge.conf", challenge_file)
+        elif challenge_file.exists():
+            challenge_file.unlink()
         return {"ok": True, "restored": True}
     except OSError as error:
         return {"ok": False, "restored": False, "stderr": str(error)}
@@ -2630,52 +2667,49 @@ def ensure_http01_challenge_server(domains: list[str], webroot: str, state: dict
     if not output_file.exists():
         raise StoreError(500, f"Nginx include file is missing: {output_file}")
 
-    snapshot = snapshot_nginx_bundle(ROOT_DIR)
     challenge_file = site_dir / "_freewaf_acme_http01.conf"
+    snapshot = snapshot_http01_challenge_server(ROOT_DIR, challenge_file)
     server_names = " ".join(nginx_server_name(domain) for domain in domains)
     server_names = server_names or "_"
     try:
         site_dir.mkdir(parents=True, exist_ok=True)
-        if state and http01_domains_have_site_listener(domains, state):
-            write_nginx_config(ROOT_DIR, state)
-        else:
-            include_line = f"include {nginx_conf_path(site_dir / '*.conf')};"
-            output_text = output_file.read_text(encoding="utf-8", errors="replace")
-            if include_line not in output_text:
-                output_file.write_text(output_text.rstrip() + "\n\n" + include_line + "\n", encoding="utf-8")
-            challenge_file.write_text(
-                "\n".join(
-                    [
-                        "# Temporary FreeWAF HTTP-01 challenge server.",
-                        "server {",
-                        "    listen 0.0.0.0:80;",
-                        "    listen [::]:80;",
-                        f"    server_name {server_names};",
-                        "",
-                        "    location ^~ /.well-known/acme-challenge/ {",
-                        "        default_type text/plain;",
-                        f"        root {nginx_conf_path(webroot)};",
-                        "        try_files $uri =404;",
-                        "    }",
-                        "",
-                        "    location / {",
-                        "        return 404;",
-                        "    }",
-                        "}",
-                        "",
-                    ]
-                ),
-                encoding="utf-8",
-            )
+        include_line = f"include {nginx_conf_path(site_dir / '*.conf')};"
+        output_text = output_file.read_text(encoding="utf-8", errors="replace")
+        if include_line not in output_text:
+            output_file.write_text(output_text.rstrip() + "\n\n" + include_line + "\n", encoding="utf-8")
+        challenge_file.write_text(
+            "\n".join(
+                [
+                    "# Temporary FreeWAF HTTP-01 challenge server.",
+                    "server {",
+                    "    listen 0.0.0.0:80;",
+                    "    listen [::]:80;",
+                    f"    server_name {server_names};",
+                    "",
+                    "    location ^~ /.well-known/acme-challenge/ {",
+                    "        default_type text/plain;",
+                    f"        root {nginx_conf_path(webroot)};",
+                    "        try_files $uri =404;",
+                    "    }",
+                    "",
+                    "    location / {",
+                    "        return 404;",
+                    "    }",
+                    "}",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
         test_result = run_nginx_command(os.environ.get("NGINX_TEST_CMD", "nginx -t"))
         if not test_result.get("ok"):
-            restore_nginx_bundle(snapshot)
+            restore_http01_challenge_snapshot(snapshot)
             cleanup_nginx_snapshot(snapshot)
             message = (test_result.get("stderr") or test_result.get("stdout") or "Nginx test failed").strip()
             raise StoreError(500, f"Cannot prepare HTTP-01 challenge server: {message}")
         reload_result = run_nginx_command(os.environ.get("NGINX_RELOAD_CMD", "nginx -s reload"))
         if not reload_result.get("ok"):
-            restore_nginx_bundle(snapshot)
+            restore_http01_challenge_snapshot(snapshot)
             cleanup_nginx_snapshot(snapshot)
             message = (reload_result.get("stderr") or reload_result.get("stdout") or "Nginx reload failed").strip()
             raise StoreError(500, f"Cannot reload HTTP-01 challenge server: {message}")
@@ -2683,7 +2717,7 @@ def ensure_http01_challenge_server(domains: list[str], webroot: str, state: dict
     except StoreError:
         raise
     except OSError as error:
-        restore_nginx_bundle(snapshot)
+        restore_http01_challenge_snapshot(snapshot)
         cleanup_nginx_snapshot(snapshot)
         raise StoreError(500, f"Cannot write HTTP-01 challenge server: {error}") from error
 
@@ -2691,7 +2725,7 @@ def ensure_http01_challenge_server(domains: list[str], webroot: str, state: dict
 def restore_http01_challenge_server(snapshot: dict | None) -> None:
     if not snapshot:
         return
-    restored = restore_nginx_bundle(snapshot)
+    restored = restore_http01_challenge_snapshot(snapshot)
     cleanup_nginx_snapshot(snapshot)
     if not restored.get("ok"):
         raise StoreError(500, f"Cannot restore Nginx after certbot: {restored.get('stderr') or 'restore failed'}")
