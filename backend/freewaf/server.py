@@ -24,6 +24,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -32,6 +33,7 @@ from urllib.parse import parse_qs, quote, urlparse
 from .nginx import (
     clear_nginx_logs,
     generate_nginx_config,
+    nginx_modsecurity_ip_list_dir,
     nginx_output_file,
     nginx_runtime,
     nginx_site_config_dir,
@@ -86,6 +88,8 @@ UPDATE_STATUS_FILE = ROOT_DIR / "logs" / "update-status.json"
 UPDATE_LOG_FILE = ROOT_DIR / "logs" / "update.log"
 UPDATE_STATUS_LOCK = threading.RLock()
 UPDATE_JOB_LOCK = threading.Lock()
+NGINX_APPLY_LOCK = threading.Lock()
+NGINX_APPLY_CACHE = {"signature": "", "result": None}
 UPDATE_LOG_TAIL_BYTES = 48 * 1024
 UPDATE_STALE_SECONDS = 60 * 60
 UPDATE_REPO_URL = "https://github.com/bnixvn/freewaf.git"
@@ -948,55 +952,82 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
     return AdminHandler
 
 
+def apply_nginx_state_signature(state: dict, payload: dict) -> str:
+    return json.dumps(
+        {
+            "state": state,
+            "test": bool(payload.get("test")),
+            "reload": bool(payload.get("reload")),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+
+
 def apply_nginx(store: Store, payload: dict) -> dict:
-    snapshot = snapshot_nginx_bundle(ROOT_DIR) if payload.get("test") else None
-    output_file = write_nginx_config(ROOT_DIR, store.get_state())
-    result = {
-        "ok": True,
-        "outputFile": str(output_file),
-        "test": None,
-        "reload": None,
-        "rollback": None,
-    }
+    state = store.get_state()
+    signature = apply_nginx_state_signature(state, payload)
+    with NGINX_APPLY_LOCK:
+        cached_result = NGINX_APPLY_CACHE["result"] if NGINX_APPLY_CACHE.get("signature") == signature else None
+        if cached_result is not None:
+            return deepcopy(cached_result)
 
-    if payload.get("test"):
-        test_result = run_nginx_command(os.environ.get("NGINX_TEST_CMD", "nginx -t"))
-        result["test"] = test_result
-        result["ok"] = result["ok"] and test_result.get("ok", False)
-        if not test_result.get("ok", False) and snapshot:
-            result["rollback"] = restore_nginx_bundle(snapshot)
+        snapshot = snapshot_nginx_bundle(ROOT_DIR) if payload.get("test") else None
+        output_file = write_nginx_config(ROOT_DIR, state)
+        result = {
+            "ok": True,
+            "outputFile": str(output_file),
+            "test": None,
+            "reload": None,
+            "rollback": None,
+        }
 
-    if payload.get("reload"):
-        if result["test"] and not result["test"].get("ok"):
-            result["reload"] = {"configured": True, "ok": False, "stderr": "Skipped reload because nginx test failed"}
-            result["ok"] = False
-        else:
-            reload_result = run_nginx_command(os.environ.get("NGINX_RELOAD_CMD", "nginx -s reload"))
-            result["reload"] = reload_result
-            result["ok"] = result["ok"] and reload_result.get("ok", False)
-            if not reload_result.get("ok", False) and snapshot and not result["rollback"]:
+        if payload.get("test"):
+            test_result = run_nginx_command(os.environ.get("NGINX_TEST_CMD", "nginx -t"))
+            result["test"] = test_result
+            result["ok"] = result["ok"] and test_result.get("ok", False)
+            if not test_result.get("ok", False) and snapshot:
                 result["rollback"] = restore_nginx_bundle(snapshot)
 
-    if snapshot:
-        cleanup_nginx_snapshot(snapshot)
-    return result
+        if payload.get("reload"):
+            if result["test"] and not result["test"].get("ok"):
+                result["reload"] = {"configured": True, "ok": False, "stderr": "Skipped reload because nginx test failed"}
+                result["ok"] = False
+            else:
+                reload_result = run_nginx_command(os.environ.get("NGINX_RELOAD_CMD", "nginx -s reload"))
+                result["reload"] = reload_result
+                result["ok"] = result["ok"] and reload_result.get("ok", False)
+                if not reload_result.get("ok", False) and snapshot and not result["rollback"]:
+                    result["rollback"] = restore_nginx_bundle(snapshot)
+
+        if snapshot:
+            cleanup_nginx_snapshot(snapshot)
+        NGINX_APPLY_CACHE["signature"] = signature
+        NGINX_APPLY_CACHE["result"] = deepcopy(result)
+        return result
 
 
 def snapshot_nginx_bundle(root_dir: Path) -> dict:
     output_file = nginx_output_file(root_dir)
     site_dir = nginx_site_config_dir(root_dir)
+    modsecurity_ip_list_dir = nginx_modsecurity_ip_list_dir(root_dir)
     backup_dir = Path(tempfile.mkdtemp(prefix="freewaf-nginx-backup."))
     snapshot = {
         "outputFile": output_file,
         "siteDir": site_dir,
+        "modsecurityIpListDir": modsecurity_ip_list_dir,
         "backupDir": backup_dir,
         "outputExists": output_file.exists(),
         "siteDirExists": site_dir.exists(),
+        "modsecurityIpListDirExists": modsecurity_ip_list_dir.exists(),
     }
     if output_file.exists():
         shutil.copy2(output_file, backup_dir / "freewaf.conf")
     if site_dir.exists():
         shutil.copytree(site_dir, backup_dir / "sites")
+    if modsecurity_ip_list_dir.exists():
+        shutil.copytree(modsecurity_ip_list_dir, backup_dir / "modsecurity-ip-lists")
     return snapshot
 
 
@@ -1020,6 +1051,7 @@ def snapshot_http01_challenge_server(root_dir: Path, challenge_file: Path) -> di
 def restore_nginx_bundle(snapshot: dict) -> dict:
     output_file = Path(snapshot["outputFile"])
     site_dir = Path(snapshot["siteDir"])
+    modsecurity_ip_list_dir = Path(snapshot["modsecurityIpListDir"])
     backup_dir = Path(snapshot["backupDir"])
     try:
         output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1032,6 +1064,10 @@ def restore_nginx_bundle(snapshot: dict) -> dict:
             shutil.rmtree(site_dir)
         if snapshot.get("siteDirExists"):
             shutil.copytree(backup_dir / "sites", site_dir)
+        if modsecurity_ip_list_dir.exists():
+            shutil.rmtree(modsecurity_ip_list_dir)
+        if snapshot.get("modsecurityIpListDirExists"):
+            shutil.copytree(backup_dir / "modsecurity-ip-lists", modsecurity_ip_list_dir)
         return {"ok": True, "restored": True}
     except OSError as error:
         return {"ok": False, "restored": False, "stderr": str(error)}

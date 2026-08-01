@@ -56,6 +56,7 @@ CLIENT_IP_SOURCE_ALIASES = {
     "proxy": "proxy_protocol",
 }
 HTTP_HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,126}$")
+MODSECURITY_IP_LIST_DIR_NAME = "modsecurity-ip-lists"
 
 
 def client_ip_settings(state: dict | None) -> dict:
@@ -113,6 +114,14 @@ def nginx_site_config_dir(root_dir: Path) -> Path:
     return nginx_output_file(root_dir).parent / "sites"
 
 
+def nginx_modsecurity_ip_list_dir(root_dir: Path) -> Path:
+    configured = os.environ.get("NGINX_MODSECURITY_IP_LIST_DIR", "").strip()
+    if configured:
+        path = Path(configured)
+        return path if path.is_absolute() else root_dir / path
+    return nginx_output_file(root_dir).parent / MODSECURITY_IP_LIST_DIR_NAME
+
+
 def nginx_access_log_file(root_dir: Path) -> Path:
     configured = Path(os.environ.get("NGINX_ACCESS_LOG", "./logs/freewaf_access.log"))
     return configured if configured.is_absolute() else root_dir / configured
@@ -138,6 +147,24 @@ def nginx_site_access_log_directive(site: dict) -> str:
 
 def nginx_site_error_log_directive(site: dict) -> str:
     return f"{nginx_site_log_dir_directive()}/errorlog_{safe_identifier(site.get('id') or site.get('name') or 'site')}"
+
+
+def env_int(name: str, fallback: int, minimum: int = 1) -> int:
+    try:
+        value = int(os.environ.get(name, str(fallback)))
+    except (TypeError, ValueError):
+        value = fallback
+    return max(minimum, value)
+
+
+def nginx_hash_tuning_directives() -> list[str]:
+    return [
+        f"server_names_hash_max_size {env_int('NGINX_SERVER_NAMES_HASH_MAX_SIZE', 1024)};",
+        f"server_names_hash_bucket_size {env_int('NGINX_SERVER_NAMES_HASH_BUCKET_SIZE', 128)};",
+        f"variables_hash_max_size {env_int('NGINX_VARIABLES_HASH_MAX_SIZE', 1024)};",
+        f"variables_hash_bucket_size {env_int('NGINX_VARIABLES_HASH_BUCKET_SIZE', 128)};",
+        "",
+    ]
 
 
 def generate_nginx_config(state: dict) -> str:
@@ -174,6 +201,7 @@ def generate_nginx_common_blocks(state: dict) -> list[str]:
         "    '' close;",
         "}",
         "",
+        *nginx_hash_tuning_directives(),
     ]
 
     verified_bot_maps = render_verified_bot_maps(state, enabled_sites)
@@ -247,15 +275,85 @@ def render_client_ip_maps(selected_variable: str) -> list[str]:
     ]
 
 
-def render_domain_config_files(state: dict) -> dict[str, str]:
+def render_domain_config_files(state: dict, modsecurity_ip_list_dir: Path | None = None) -> dict[str, str]:
     enabled_sites = [site for site in state.get("sites", []) if site.get("enabled")]
     certificates = {certificate["id"]: certificate for certificate in state.get("certificates", [])}
     configs = {}
     for site in enabled_sites:
         hostname = site_hostnames(site)[0] if site_hostnames(site) else None
         filename = site_config_filename(site)
-        configs[filename] = render_site_server(site, state, certificates, hostname)
+        configs[filename] = render_site_server(site, state, certificates, hostname, modsecurity_ip_list_dir)
     return configs
+
+
+def render_modsecurity_ip_list_files(state: dict, output_dir: Path) -> dict[str, str]:
+    enabled_sites = [site for site in state.get("sites", []) if site.get("enabled")]
+    groups = {group.get("id"): group for group in state.get("ipGroups", []) if group.get("enabled")}
+    files: dict[str, str] = {}
+
+    provider_ids = {
+        provider["id"]
+        for provider in [*VERIFIED_BOT_PROVIDERS.values(), *VERIFIED_AI_BOT_PROVIDERS.values()]
+        if provider.get("id") in groups
+    }
+    for provider_id in provider_ids:
+        items = ip_group_items(groups.get(provider_id))
+        if items:
+            files[modsecurity_provider_ip_list_path(output_dir, provider_id).name] = "\n".join(items) + "\n"
+
+    for site in enabled_sites:
+        items = collect_site_access_allow_ips(state, site)
+        if items:
+            files[modsecurity_site_allow_ip_list_path(output_dir, site).name] = "\n".join(items) + "\n"
+
+    return files
+
+
+def write_modsecurity_ip_list_files(output_dir: Path, files: dict[str, str]) -> None:
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging_dir = Path(tempfile.mkdtemp(prefix="modsecurity-ip-lists.", dir=str(output_dir.parent)))
+    previous_dir = output_dir.with_name(output_dir.name + ".old")
+    try:
+        for filename, content in files.items():
+            _write_text_atomic(staging_dir / filename, content)
+        if previous_dir.exists():
+            shutil.rmtree(previous_dir, ignore_errors=True)
+        if output_dir.exists():
+            os.replace(output_dir, previous_dir)
+        os.replace(staging_dir, output_dir)
+        shutil.rmtree(previous_dir, ignore_errors=True)
+    except Exception:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        if previous_dir.exists() and not output_dir.exists():
+            try:
+                os.replace(previous_dir, output_dir)
+            except OSError:
+                pass
+        raise
+
+
+def modsecurity_ip_list_dir(site: dict) -> Path | None:
+    value = site.get("_modsecurityIpListDir")
+    return value if isinstance(value, Path) else None
+
+
+def modsecurity_provider_ip_list_path(output_dir: Path | None, provider_id: str) -> Path | None:
+    if not output_dir:
+        return None
+    safe_id = safe_identifier(provider_id or "provider").lower()
+    return output_dir / f"{safe_id}.txt"
+
+
+def modsecurity_site_allow_ip_list_path(output_dir: Path | None, site: dict) -> Path | None:
+    if not output_dir:
+        return None
+    site_id = safe_identifier(site.get("id") or site.get("name") or "site").lower()
+    return output_dir / f"{site_id}.allow.txt"
+
+
+def site_render_modsecurity_ip_list_dir(site: dict) -> Path | None:
+    value = site.get("_modsecurityIpListDir")
+    return value if isinstance(value, Path) else None
 
 
 def write_nginx_config(root_dir: Path, state: dict) -> Path:
@@ -270,9 +368,12 @@ def write_nginx_config(root_dir: Path, state: dict) -> Path:
 
     output_file = nginx_output_file(root_dir)
     site_config_dir = nginx_site_config_dir(root_dir)
-    site_configs = render_domain_config_files(state)
+    modsecurity_ip_list_dir = nginx_modsecurity_ip_list_dir(root_dir)
+    site_configs = render_domain_config_files(state, modsecurity_ip_list_dir)
+    modsecurity_ip_lists = render_modsecurity_ip_list_files(state, modsecurity_ip_list_dir)
     output_file.parent.mkdir(parents=True, exist_ok=True)
     site_config_dir.mkdir(parents=True, exist_ok=True)
+    modsecurity_ip_list_dir.mkdir(parents=True, exist_ok=True)
     nginx_site_log_dir(root_dir).mkdir(parents=True, exist_ok=True)
 
     blocks = generate_nginx_common_blocks(state)
@@ -291,6 +392,7 @@ def write_nginx_config(root_dir: Path, state: dict) -> Path:
         try:
             for filename, content in site_configs.items():
                 _write_text_atomic(staging_dir / filename, content)
+            write_modsecurity_ip_list_files(modsecurity_ip_list_dir, modsecurity_ip_lists)
 
             # Swap directories: current sites/ -> sites.old/, staging -> sites/
             if previous_dir.exists():
@@ -1079,12 +1181,24 @@ def site_config_filename(site: dict) -> str:
     return f"{site_id}.conf"
 
 
-def render_site_server(site: dict, state: dict, certificates: dict[str, dict], hostname: str | None = None) -> str:
+def render_site_server(
+    site: dict,
+    state: dict,
+    certificates: dict[str, dict],
+    hostname: str | None = None,
+    modsecurity_ip_list_dir: Path | None = None,
+) -> str:
     hostnames = site_hostnames(site)
     defaults = application_defaults(state)
     proxy = site_proxy(site, defaults.get("proxy"))
     modsecurity = site_modsecurity(site, defaults.get("modSecurity"))
-    render_site = {**site, "hostnames": hostnames, "proxy": proxy, "modSecurity": modsecurity}
+    render_site = {
+        **site,
+        "hostnames": hostnames,
+        "proxy": proxy,
+        "modSecurity": modsecurity,
+        "_modsecurityIpListDir": modsecurity_ip_list_dir,
+    }
     server_name = " ".join(escape_server_name(name) for name in hostnames)
     app_type = application_type(site)
     upstreams = site_upstreams(site)
@@ -1865,23 +1979,37 @@ def render_verified_bot_modsecurity_skip_rules(
         return []
 
     groups = {group.get("id"): group for group in state.get("ipGroups", []) if group.get("enabled")}
+    output_dir = modsecurity_ip_list_dir(site)
     rules = []
     rule_id = first_rule_id
     for provider in providers.values():
         items = ip_group_items(groups.get(provider["id"]))
         if not items:
             continue
-        for chunk in chunks(items, 80):
+        ip_file = modsecurity_provider_ip_list_path(output_dir, provider["id"])
+        if ip_file is not None:
             rules.append(
                 "\n".join(
                     [
-                        f'SecRule REMOTE_ADDR "@ipMatch {",".join(chunk)}" '
+                        f'SecRule REMOTE_ADDR "@ipMatchFromFile {nginx_path(str(ip_file))}" '
                         f'"id:{rule_id},phase:1,nolog,pass,chain,skipAfter:{marker}"',
                         f'    SecRule REQUEST_HEADERS:User-Agent "@rx (?i:{provider["userAgentPattern"]})" "t:none"',
                     ]
                 )
             )
             rule_id += 1
+        else:
+            for chunk in chunks(items, 80):
+                rules.append(
+                    "\n".join(
+                        [
+                            f'SecRule REMOTE_ADDR "@ipMatch {",".join(chunk)}" '
+                            f'"id:{rule_id},phase:1,nolog,pass,chain,skipAfter:{marker}"',
+                            f'    SecRule REQUEST_HEADERS:User-Agent "@rx (?i:{provider["userAgentPattern"]})" "t:none"',
+                        ]
+                    )
+                )
+                rule_id += 1
     return rules
 
 
@@ -1951,6 +2079,13 @@ def render_access_allow_modsecurity_skip_rules(
     items = collect_site_access_allow_ips(state or {}, site)
     if not items:
         return []
+    output_dir = modsecurity_ip_list_dir(site)
+    ip_file = modsecurity_site_allow_ip_list_path(output_dir, site)
+    if ip_file is not None:
+        return [
+            f'SecRule REMOTE_ADDR "@ipMatchFromFile {nginx_path(str(ip_file))}" '
+            f'"id:{first_rule_id},phase:1,nolog,pass,skipAfter:{marker}"'
+        ]
     rules: list[str] = []
     rule_id = first_rule_id
     for chunk in chunks(items, 80):

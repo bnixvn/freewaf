@@ -88,7 +88,11 @@ class AtomicWriteNginxConfigTests(unittest.TestCase):
                 self.assertNotIn("server_name localhost;", second_content)
 
                 # No leftover staging or backup directories.
-                leftovers = [p.name for p in site_dir.parent.iterdir() if p.is_dir() and p.name != site_dir.name]
+                leftovers = [
+                    p.name
+                    for p in site_dir.parent.iterdir()
+                    if p.is_dir() and p.name not in {site_dir.name, "modsecurity-ip-lists"}
+                ]
                 self.assertEqual(leftovers, [])
 
     def test_concurrent_writes_do_not_lose_files(self):

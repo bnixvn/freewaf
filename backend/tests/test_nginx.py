@@ -1757,6 +1757,49 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertRegex(config, r"@ipMatch 203\.0\.113\.7\".*skipAfter:FREEWAF_BOT_RATE_DONE_SITE_DEMO")
         self.assertRegex(config, r"@ipMatch 203\.0\.113\.7\".*skipAfter:FREEWAF_HTTP_FLOOD_DONE_SITE_DEMO")
 
+    def test_written_nginx_uses_file_based_modsecurity_ip_lists(self):
+        state = self._modsec_rate_state(
+            access_rules=[
+                {
+                    "id": "allow-office",
+                    "name": "Allow office",
+                    "enabled": True,
+                    "siteId": "*",
+                    "action": "allow",
+                    "conditionGroups": [
+                        {
+                            "conditions": [
+                                {"target": "source_ip", "operator": "cidr", "content": "203.0.113.7"},
+                            ]
+                        }
+                    ],
+                }
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root_dir = Path(directory)
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "NGINX_OUTPUT_FILE": "nginx/generated/freewaf.conf",
+                    "NGINX_HAS_MODSECURITY": "true",
+                },
+                clear=False,
+                ):
+                output_file = write_nginx_config(root_dir, state)
+                config = output_file.read_text(encoding="utf-8")
+
+            ip_list_dir = output_file.parent / "modsecurity-ip-lists"
+            ip_lists = sorted(p.name for p in ip_list_dir.glob("*.txt"))
+            site_conf = next((output_file.parent / "sites").glob("*.conf"))
+            site_config = site_conf.read_text(encoding="utf-8")
+            allow_list_content = (ip_list_dir / "site_demo.allow.txt").read_text(encoding="utf-8")
+
+        self.assertIn("@ipMatchFromFile", site_config)
+        self.assertEqual(ip_lists, ["site_demo.allow.txt"])
+        self.assertIn("203.0.113.7", allow_list_content)
+
     def test_access_allow_legacy_ips_skip_modsecurity_rate_rules(self):
         state = self._modsec_rate_state(
             access_rules=[

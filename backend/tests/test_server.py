@@ -200,6 +200,10 @@ class CertificateServerTests(unittest.TestCase):
             sites_dir.mkdir(parents=True)
             output_file = root / "nginx" / "generated" / "freewaf.conf"
             output_file.write_text("old main config", encoding="utf-8")
+            ip_list_dir = root / "nginx" / "generated" / "modsecurity-ip-lists"
+            ip_list_dir.mkdir(parents=True)
+            old_ip_list = ip_list_dir / "old.txt"
+            old_ip_list.write_text("1.2.3.4\n", encoding="utf-8")
 
             store = mock.Mock()
             store.get_state.return_value = {
@@ -234,6 +238,7 @@ class CertificateServerTests(unittest.TestCase):
             self.assertFalse(result["ok"])
             self.assertEqual(result["rollback"], {"ok": True, "restored": True})
             self.assertEqual(output_file.read_text(encoding="utf-8"), "old main config")
+            self.assertEqual(old_ip_list.read_text(encoding="utf-8"), "1.2.3.4\n")
 
     def test_api_json_responses_disable_cache(self):
         handler_cls = make_admin_handler(mock.Mock(), 7001, 9090, False, False)
