@@ -496,7 +496,7 @@ class StoreTests(unittest.TestCase):
                             "antiBotChallenge": True,
                             "verifiedAIBots": {
                                 "enabled": True,
-                                "allowedProviders": [valid_provider, "not-a-provider"],
+                                "allowedProviders": [valid_provider, "legacy-provider"],
                                 "bypassChallenge": True,
                                 "bypassRateLimit": False,
                             },
@@ -512,6 +512,30 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(config["allowedProviders"], [valid_provider])
         self.assertTrue(config["bypassChallenge"])
         self.assertFalse(config["bypassRateLimit"])
+
+    def test_verified_ai_bot_toggle_without_provider_list_enables_all_managed_providers(self):
+        state = normalize_state(
+            {
+                "sites": [
+                    {
+                        "id": "site-demo",
+                        "name": "Demo",
+                        "hostnames": ["example.test"],
+                        "origin": "http://127.0.0.1:9090",
+                        "features": {"botProtection": True},
+                        "botProtection": {
+                            "antiBotChallenge": True,
+                            "verifiedAIBots": {"enabled": True},
+                        },
+                    }
+                ],
+                "rules": [],
+            }
+        )
+
+        config = state["sites"][0]["botProtection"]["verifiedAIBots"]
+        self.assertTrue(config["enabled"])
+        self.assertEqual(config["allowedProviders"], list(VERIFIED_AI_BOT_PROVIDERS))
 
     def test_challenge_page_and_under_attack_are_normalized(self):
         state = normalize_state(

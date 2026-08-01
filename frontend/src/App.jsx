@@ -247,19 +247,6 @@ const temporaryBlockMinuteOptions = [10, 30, 60].map((minutes) => ({
   label: `${minutes} minutes`
 }));
 
-const verifiedAiBotOptions = [
-  { value: 'openai_search', label: 'OpenAI Search', note: 'OAI-SearchBot' },
-  { value: 'openai_user', label: 'ChatGPT User', note: 'User fetch' },
-  { value: 'openai_gptbot', label: 'GPTBot', note: 'Training crawler' },
-  { value: 'anthropic_search', label: 'Claude Search', note: 'Claude-SearchBot' },
-  { value: 'anthropic_user', label: 'Claude User', note: 'User fetch' },
-  { value: 'anthropic_claudebot', label: 'ClaudeBot', note: 'Training crawler' },
-  { value: 'perplexity_bot', label: 'PerplexityBot', note: 'Crawler' },
-  { value: 'perplexity_user', label: 'Perplexity User', note: 'User fetch' }
-];
-
-const verifiedAiBotIds = new Set(verifiedAiBotOptions.map((option) => option.value));
-
 const siteFeatureLabels = {
   httpFlood: 'HTTP FLOOD',
   botProtection: 'BOT PROTECT',
@@ -3393,22 +3380,9 @@ function HttpFloodModal({ site, settings, onClose, onSave }) {
 function BotProtectModal({ site, onClose, onSave }) {
   const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState(() => botProtectFormFromSite(site));
-  const selectedAiProviders = new Set(normalizeVerifiedAiProviders(form.verifiedAIProviders));
 
   function update(name, value) {
     setForm((current) => ({ ...current, [name]: value }));
-  }
-
-  function toggleAiProvider(providerId, checked) {
-    setForm((current) => {
-      const next = new Set(normalizeVerifiedAiProviders(current.verifiedAIProviders));
-      if (checked) {
-        next.add(providerId);
-      } else {
-        next.delete(providerId);
-      }
-      return { ...current, verifiedAIProviders: Array.from(next) };
-    });
   }
 
   async function submit(event) {
@@ -3430,7 +3404,7 @@ function BotProtectModal({ site, onClose, onSave }) {
           <strong>Anti-Bot Challenge</strong>
           <Switch checked={boolValue(form.antiBotChallenge)} onChange={(checked) => update('antiBotChallenge', String(checked))} />
           <Info size={16} />
-          <span className="muted">Login pages and request spikes are challenged; verified search engines can be bypassed by IP and User-Agent.</span>
+          <span className="muted">Login pages and request spikes are challenged; known bot headers can be bypassed by User-Agent.</span>
         </div>
 
         <div className="bot-option-panel">
@@ -3439,7 +3413,7 @@ function BotProtectModal({ site, onClose, onSave }) {
             <strong>Verified Search Engine Bots</strong>
             <Switch checked={boolValue(form.verifiedSearchBots)} onChange={(checked) => update('verifiedSearchBots', String(checked))} />
             <Info size={16} />
-            <span className="muted">Only Google common crawlers and Bingbot from official synced CIDR feeds are trusted.</span>
+            <span className="muted">Google common crawlers and Bingbot are matched by User-Agent header only.</span>
           </div>
           <BotOptionCheckbox
             label="Bypass browser challenge"
@@ -3459,18 +3433,7 @@ function BotProtectModal({ site, onClose, onSave }) {
             <strong>Verified AI Bots</strong>
             <Switch checked={boolValue(form.verifiedAIBots)} onChange={(checked) => update('verifiedAIBots', String(checked))} />
             <Info size={16} />
-            <span className="muted">Allow selected AI crawlers only when IP and User-Agent are both verified for this application.</span>
-          </div>
-          <div className="bot-provider-grid">
-            {verifiedAiBotOptions.map((option) => (
-              <BotOptionCheckbox
-                key={option.value}
-                label={option.label}
-                note={option.note}
-                checked={selectedAiProviders.has(option.value)}
-                onChange={(checked) => toggleAiProvider(option.value, checked)}
-              />
-            ))}
+            <span className="muted">Known AI crawlers are matched by User-Agent header only.</span>
           </div>
           <BotOptionCheckbox
             label="Bypass browser challenge"
@@ -4880,11 +4843,6 @@ function listFromText(value, splitter) {
   return String(value || '').split(splitter).map((item) => item.trim()).filter(Boolean);
 }
 
-function normalizeVerifiedAiProviders(value) {
-  const source = Array.isArray(value) ? value : listFromText(value, /[\s,]+/);
-  return Array.from(new Set(source.filter((item) => verifiedAiBotIds.has(item))));
-}
-
 function boolValue(value) {
   return value === true || value === 'true';
 }
@@ -5369,7 +5327,6 @@ function botProtectFormFromSite(site) {
     verifiedBypassChallenge: String(config.verifiedSearchBots.bypassChallenge),
     verifiedBypassRateLimit: String(config.verifiedSearchBots.bypassRateLimit),
     verifiedAIBots: String(config.verifiedAIBots.enabled),
-    verifiedAIProviders: config.verifiedAIBots.allowedProviders,
     verifiedAIBypassChallenge: String(config.verifiedAIBots.bypassChallenge),
     verifiedAIBypassRateLimit: String(config.verifiedAIBots.bypassRateLimit),
     loginChallenge: String(config.loginChallenge.enabled),
@@ -5395,7 +5352,6 @@ function botProtectPayload(form) {
   const dynamicWatermark = boolValue(form.dynamicWatermark);
   const antiReplay = boolValue(form.antiReplay);
   const dynamicEnabled = dynamicHtml || dynamicJs || dynamicWatermark;
-  const verifiedAIProviders = normalizeVerifiedAiProviders(form.verifiedAIProviders);
   const challengeCount = positiveInt(form.rateChallengeCount, defaultBotRateChallenge.challengeCount);
   const blockCount = Math.max(challengeCount + 1, positiveInt(form.rateBlockCount, defaultBotRateChallenge.blockCount));
   const blockMinutes = temporaryBlockMinutes(form.rateBlockMinutes);
@@ -5408,8 +5364,7 @@ function botProtectPayload(form) {
       bypassRateLimit: boolValue(form.verifiedBypassRateLimit)
     },
     verifiedAIBots: {
-      enabled: antiBotChallenge && boolValue(form.verifiedAIBots) && verifiedAIProviders.length > 0,
-      allowedProviders: verifiedAIProviders,
+      enabled: antiBotChallenge && boolValue(form.verifiedAIBots),
       bypassChallenge: boolValue(form.verifiedAIBypassChallenge),
       bypassRateLimit: boolValue(form.verifiedAIBypassRateLimit)
     },
@@ -5473,7 +5428,6 @@ function botProtectPayloadFromConfig(config, enabledFallback = true) {
     },
     verifiedAIBots: {
       enabled: Boolean(antiBotChallenge) && Boolean(verifiedAI.enabled ?? false),
-      allowedProviders: normalizeVerifiedAiProviders(verifiedAI.allowedProviders),
       bypassChallenge: Boolean(verifiedAI.bypassChallenge ?? true),
       bypassRateLimit: Boolean(verifiedAI.bypassRateLimit ?? true)
     },

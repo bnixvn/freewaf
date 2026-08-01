@@ -1091,6 +1091,36 @@ class LogPaginationTests(unittest.TestCase):
         self.assertEqual(second["total"], 12)
         stats.assert_called_once_with(store, state, site_id="", retention_days=1)
 
+    def test_dashboard_refresh_batches_log_scan_and_period_summaries(self):
+        store = mock.Mock()
+        state = {"sites": [{"id": "site-a", "name": "Site A", "hostnames": ["a.test"]}], "settings": {}, "logs": []}
+        store.get_state_fields.return_value = state
+        payload = {
+            "version": server_module.DASHBOARD_STATE_VERSION,
+            "updatedAt": "",
+            "stats": {
+                "site:*|days:1": {},
+                "site:site-a|days:7": {},
+            },
+        }
+        summaries = {
+            1: {"total": 1, "hosts": {}, "retentionDays": 1},
+            7: {"total": 7, "hosts": {}, "retentionDays": 7},
+        }
+
+        with mock.patch("freewaf.server.load_dashboard_state_cache", return_value=payload), \
+            mock.patch("freewaf.server.save_dashboard_state_cache") as save_cache, \
+            mock.patch("freewaf.server.combined_stats_logs", return_value=[{"id": "recent"}]) as recent_logs, \
+            mock.patch("freewaf.server.nginx_stats_summaries", return_value=summaries) as summary_batch, \
+            mock.patch("freewaf.server.build_stats_from_summary", side_effect=lambda _state, summary, _logs, site_id="": {"total": summary["total"], "siteId": site_id}):
+            result = server_module.refresh_dashboard_state_cache(store)
+
+        recent_logs.assert_called_once_with(store)
+        summary_batch.assert_called_once_with({1, 7})
+        self.assertEqual(result["total"], 1)
+        saved_stats = save_cache.call_args.args[0]["stats"]
+        self.assertEqual(saved_stats["site:site-a|days:7"]["data"], {"total": 7, "siteId": "site-a"})
+
     def test_combined_logs_page_filters_domain_and_paginates(self):
         nginx_logs = [
             {"id": "1", "at": "2026-06-10T10:04:00+00:00", "host": "www.example.test", "siteName": "www.example.test", "path": "/d"},

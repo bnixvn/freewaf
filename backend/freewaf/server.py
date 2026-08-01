@@ -1782,11 +1782,17 @@ def dashboard_stats_snapshot(store: Store, state: dict | None = None, site_id: s
 
 
 def nginx_stats_summary(retention_days: int | None = None) -> dict:
-    retention_days = normalize_stats_retention_days(retention_days) if retention_days is not None else stats_retention_days()
+    normalized_days = normalize_stats_retention_days(retention_days) if retention_days is not None else stats_retention_days()
+    return nginx_stats_summaries({normalized_days})[normalized_days]
+
+
+def nginx_stats_summaries(retention_days_values) -> dict[int, dict]:
     aggregate_retention_days = stats_retention_days()
-    retention_days = min(retention_days, aggregate_retention_days)
+    retention_days_set = {
+        min(normalize_stats_retention_days(value), aggregate_retention_days)
+        for value in retention_days_values
+    } or {aggregate_retention_days}
     now_ms = int(time.time() * 1000)
-    retention_start_ms = now_ms - retention_days * 24 * 60 * 60 * 1000
     aggregate_start_ms = now_ms - aggregate_retention_days * 24 * 60 * 60 * 1000
 
     with STATS_AGGREGATE_LOCK:
@@ -1802,10 +1808,14 @@ def nginx_stats_summary(retention_days: int | None = None) -> dict:
         scanner_state = scan_nginx_log_entries(ROOT_DIR, STATS_AGGREGATE_CACHE_NAME, on_entry, on_reset)
         STATS_AGGREGATE_CACHE["scannerState"] = scanner_state
         prune_stats_aggregate(STATS_AGGREGATE_CACHE, aggregate_start_ms)
-        summary = collapse_stats_aggregate(STATS_AGGREGATE_CACHE, retention_start_ms)
-        summary["retentionDays"] = retention_days
         save_stats_aggregate_cache(STATS_AGGREGATE_CACHE_NAME, aggregate_retention_days, scanner_state)
-        return summary
+        summaries = {}
+        for retention_days in retention_days_set:
+            retention_start_ms = now_ms - retention_days * 24 * 60 * 60 * 1000
+            summary = collapse_stats_aggregate(STATS_AGGREGATE_CACHE, retention_start_ms)
+            summary["retentionDays"] = retention_days
+            summaries[retention_days] = summary
+        return summaries
 
 
 def clear_stats_aggregate_cache() -> None:
@@ -1919,15 +1929,24 @@ def refresh_dashboard_state_cache(store: Store, extra_keys: set[str] | None = No
     keys = set(payload.get("stats", {}).keys())
     keys.update(extra_keys or set())
     keys.add(dashboard_state_key("", 1))
-    refreshed = {}
+    parsed_keys = {}
     for key in sorted(keys):
         parts = dashboard_state_key_parts(key)
-        if not parts:
-            continue
-        site_id, retention_days = parts
+        if parts:
+            parsed_keys[key] = parts
+
+    recent_logs = combined_stats_logs(store)
+    summaries = nginx_stats_summaries({retention_days for _, retention_days in parsed_keys.values()})
+    refreshed = {}
+    for key, (site_id, retention_days) in parsed_keys.items():
+        summary = summaries.get(retention_days) or {}
+        if (summary.get("total") or 0) > 0:
+            stats = build_stats_from_summary(state, summary, recent_logs, site_id=site_id)
+        else:
+            stats = build_stats({**state, "logs": recent_logs}, site_id=site_id)
         refreshed[key] = {
             "updatedAt": utc_now(),
-            "data": combined_stats(store, state, site_id=site_id, retention_days=retention_days),
+            "data": stats,
         }
     payload["stats"] = refreshed
     save_dashboard_state_cache(payload)
@@ -2285,7 +2304,7 @@ def recent_stats_log_limit() -> int:
 
 
 def dashboard_state_refresh_seconds() -> int:
-    return clamp(parse_int(os.environ.get("DASHBOARD_STATE_REFRESH_SECONDS"), 5), 1, 3600)
+    return clamp(parse_int(os.environ.get("DASHBOARD_STATE_REFRESH_SECONDS"), 15), 1, 3600)
 
 
 def stats_retention_days() -> int:

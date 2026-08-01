@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from freewaf import nginx as nginx_module
 from freewaf.server import ensure_http01_challenge_server
 from freewaf.defaults import BUILTIN_RULES, DEFAULT_SETTINGS, SAFELINE_COMPATIBILITY_RULES, VERIFIED_AI_BOT_PROVIDERS, VERIFIED_BOT_PROVIDERS
-from freewaf.nginx import generate_nginx_config, parse_nginx_logs, write_nginx_config
+from freewaf.nginx import generate_nginx_config, parse_nginx_logs, render_domain_config_files, write_nginx_config
 
 
 def make_state(**overrides):
@@ -335,9 +335,25 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("SQL injection probes", config)
         self.assertIn("set $sfl_block 1;", config)
         self.assertIn("return 460;", config)
-        self.assertIn("if ($request_method ~*", config)
-        self.assertIn("if ($request_uri ~*", config)
+        self.assertIn("map $request_method $sfl_builtin_request_method", config)
+        self.assertIn("map $request_uri $sfl_builtin_request_uri", config)
+        self.assertIn("set $sfl_reason $sfl_builtin_rule_reason;", config)
         self.assertNotIn("$request_method$request_uri", config)
+
+    def test_shared_builtin_rules_are_not_repeated_in_each_site_file(self):
+        state = make_state(
+            sites=[
+                {"id": "site-a", "name": "A", "hostnames": ["a.test"], "origin": "http://127.0.0.1:9001", "listen": 8081, "enabled": True},
+                {"id": "site-b", "name": "B", "hostnames": ["b.test"], "origin": "http://127.0.0.1:9002", "listen": 8082, "enabled": True},
+            ]
+        )
+
+        common_config = generate_nginx_config(make_state(sites=[], rules=state["rules"]))
+        site_configs = render_domain_config_files(state)
+
+        self.assertIn("map $request_uri $sfl_builtin_request_uri", common_config)
+        self.assertTrue(all("SQL injection probes" not in config for config in site_configs.values()))
+        self.assertTrue(all("set $sfl_shared_builtin_rule $sfl_builtin_rule_id;" in config for config in site_configs.values()))
 
     def test_svg_files_are_not_flagged_by_imagemagick_rule(self):
         rule = next(rule for rule in BUILTIN_RULES if rule["id"] == "builtin-safeline-65739")
@@ -908,7 +924,7 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertNotIn("freewaf_site_native_bot_count", config)
         self.assertNotIn("freewaf_site_native_flood_count", config)
         self.assertIn("map $http_user_agent $sfl_bad_bot_ua", config)
-        self.assertIn("limit_req_zone $sfl_acl_key_site_native zone=sfl_acl_site_native:10m rate=20r/s;", config)
+        self.assertIn("limit_req_zone $sfl_acl_key_site_native zone=sfl_acl_site_native:2m rate=20r/s;", config)
         self.assertIn("set $sfl_challenge 1;", config)
 
     def test_site_settings_override_application_defaults_for_transport_and_modsecurity(self):
@@ -1318,7 +1334,7 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn('    ~^1: "";', config)
         self.assertIn('    ~^[^:]+:1$ "";', config)
         self.assertIn("set $sfl_verified_rate_bypass 1;", config)
-        self.assertIn("limit_req_zone $sfl_global_rate_key zone=freewaf_rate:10m", config)
+        self.assertIn("limit_req_zone $sfl_global_rate_key zone=freewaf_rate:2m", config)
         self.assertIn("if ($sfl_verified_search_bot = 1)", config)
         self.assertIn("set $sfl_under_attack_challenge 0;", config)
         self.assertIn('SecRule REMOTE_ADDR "@ipMatch 66.249.64.0/27"', config)
@@ -1496,7 +1512,7 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertNotIn("map $http_user_agent $sfl_bad_bot_ua", config)
         self.assertNotIn("Bot protection protected login path", config)
         self.assertNotIn("freewaf_site_demo_bot_count", config)
-        self.assertIn('limit_req_zone "$sfl_client_ip|$request_method|$request_uri|$http_user_agent" zone=sfl_replay_site_demo:10m rate=1r/s;', config)
+        self.assertIn('limit_req_zone "$sfl_client_ip|$request_method|$request_uri|$http_user_agent" zone=sfl_replay_site_demo:2m rate=1r/s;', config)
         self.assertIn("limit_req zone=sfl_replay_site_demo burst=1 nodelay;", config)
         self.assertIn('add_header X-FreeWAF-Dynamic-Protection "html,watermark" always;', config)
 
@@ -1561,8 +1577,8 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("map $cookie_freewaf_challenge $sfl_acl_key_site_demo", config)
         self.assertIn("map $cookie_freewaf_challenge $sfl_acl_key_site_demo_fp", config)
         self.assertIn("passed \"\";", config)
-        self.assertIn("limit_req_zone $sfl_acl_key_site_demo zone=sfl_acl_site_demo:10m", config)
-        self.assertIn("limit_req_zone $sfl_acl_key_site_demo_fp zone=sfl_acl_site_demo_fp:10m", config)
+        self.assertIn("limit_req_zone $sfl_acl_key_site_demo zone=sfl_acl_site_demo:2m", config)
+        self.assertIn("limit_req_zone $sfl_acl_key_site_demo_fp zone=sfl_acl_site_demo_fp:2m", config)
         self.assertIn("limit_req zone=sfl_acl_site_demo burst=200 nodelay;", config)
         self.assertIn("limit_req zone=sfl_acl_site_demo_fp burst=200 nodelay;", config)
         self.assertIn("error_page 429 = @freewaf_challenge;", config)
@@ -1596,7 +1612,7 @@ class NginxGeneratorTests(unittest.TestCase):
         config = generate_nginx_config(state)
 
         self.assertIn("map $sfl_wordpress_rate_bypass $sfl_global_rate_key", config)
-        self.assertIn("limit_req_zone $sfl_global_rate_key zone=freewaf_rate:10m", config)
+        self.assertIn("limit_req_zone $sfl_global_rate_key zone=freewaf_rate:2m", config)
         self.assertIn("limit_req zone=freewaf_rate burst=600 nodelay;", config)
         self.assertNotIn("zone=sfl_acl_site_demo", config)
 
@@ -1625,8 +1641,8 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("map $args $sfl_wordpress_rest_route_rate_bypass", config)
         self.assertIn("wordpress_logged_in_", config)
         self.assertIn('    1 "";', config)
-        self.assertIn("limit_req_zone $sfl_global_rate_key zone=freewaf_rate:10m", config)
-        self.assertIn("limit_req_zone $sfl_global_rate_fingerprint_key zone=freewaf_rate_fingerprint:10m", config)
+        self.assertIn("limit_req_zone $sfl_global_rate_key zone=freewaf_rate:2m", config)
+        self.assertIn("limit_req_zone $sfl_global_rate_fingerprint_key zone=freewaf_rate_fingerprint:2m", config)
 
     def test_waiting_room_queues_without_nodelay(self):
         state = make_state(

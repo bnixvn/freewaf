@@ -56,6 +56,7 @@ CLIENT_IP_SOURCE_ALIASES = {
     "proxy": "proxy_protocol",
 }
 HTTP_HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,126}$")
+NGINX_SIZE_RE = re.compile(r"^[1-9][0-9]*[kKmMgG]$")
 MODSECURITY_IP_LIST_DIR_NAME = "modsecurity-ip-lists"
 
 
@@ -157,6 +158,11 @@ def env_int(name: str, fallback: int, minimum: int = 1) -> int:
     return max(minimum, value)
 
 
+def nginx_limit_zone_size() -> str:
+    value = os.environ.get("NGINX_LIMIT_ZONE_SIZE", "2m").strip()
+    return value.lower() if NGINX_SIZE_RE.match(value) else "2m"
+
+
 def nginx_hash_tuning_directives() -> list[str]:
     return [
         f"server_names_hash_max_size {env_int('NGINX_SERVER_NAMES_HASH_MAX_SIZE', 1024)};",
@@ -203,6 +209,10 @@ def generate_nginx_common_blocks(state: dict) -> list[str]:
         "",
         *nginx_hash_tuning_directives(),
     ]
+
+    shared_builtin_maps = render_shared_builtin_rule_maps(state)
+    if shared_builtin_maps:
+        blocks.extend(shared_builtin_maps)
 
     verified_bot_maps = render_verified_bot_maps(state, enabled_sites)
     if verified_bot_maps:
@@ -991,12 +1001,12 @@ def render_verified_combined_map(output_var: str, provider_vars: list[str]) -> l
     ]
 
 
-def verified_provider_ip_var(provider_name: str, prefix: str = "") -> str:
-    return f"sfl_verified_{prefix}{safe_identifier(provider_name).lower()}_ip"
-
-
 def verified_provider_bot_var(provider_name: str, prefix: str = "") -> str:
     return f"sfl_verified_{prefix}{safe_identifier(provider_name).lower()}_bot"
+
+
+def verified_provider_ip_var(provider_name: str, prefix: str = "") -> str:
+    return f"sfl_verified_{prefix}{safe_identifier(provider_name).lower()}_ip"
 
 
 def render_challenge_maps() -> list[str]:
@@ -1062,8 +1072,8 @@ def render_global_rate_limit_zones(rate_limit: dict, verified_bot_bypass: bool =
     )
     return [
         *lines,
-        f"limit_req_zone $sfl_global_rate_key zone=freewaf_rate:10m rate={rate};",
-        f"limit_req_zone $sfl_global_rate_fingerprint_key zone=freewaf_rate_fingerprint:10m rate={rate};",
+        f"limit_req_zone $sfl_global_rate_key zone=freewaf_rate:{nginx_limit_zone_size()} rate={rate};",
+        f"limit_req_zone $sfl_global_rate_fingerprint_key zone=freewaf_rate_fingerprint:{nginx_limit_zone_size()} rate={rate};",
     ]
 
 
@@ -1086,8 +1096,63 @@ def render_bot_limit_zones(sites: list[dict]) -> list[str]:
                 ]
             )
             key = f"${key_name}"
-        zones.append(f"limit_req_zone {key} zone={bot_replay_zone_name(site)}:10m rate=1r/s;")
+        zones.append(f"limit_req_zone {key} zone={bot_replay_zone_name(site)}:{nginx_limit_zone_size()} rate=1r/s;")
     return zones
+
+
+def shared_builtin_rules(state: dict) -> list[dict]:
+    return [rule for rule in state.get("rules", []) if is_shared_builtin_rule(rule)]
+
+
+def is_shared_builtin_rule(rule: dict) -> bool:
+    return bool(
+        rule.get("enabled")
+        and rule.get("builtin")
+        and rule.get("siteId") == "*"
+        and rule.get("action") == "block"
+        and rule.get("matcher") == "regex"
+        and rule.get("target") in NATIVE_TARGETS
+        and rule.get("target") != "body"
+        and rule.get("id") not in BOT_RULE_IDS
+        and str(rule.get("pattern") or "").strip()
+    )
+
+
+def shared_builtin_source_var(source_variable: str) -> str:
+    return f"sfl_builtin_{safe_identifier(source_variable.lstrip('$')).lower()}"
+
+
+def render_shared_builtin_rule_maps(state: dict) -> list[str]:
+    rules = shared_builtin_rules(state)
+    if not rules:
+        return []
+
+    variable_rules: dict[str, list[tuple[int, dict]]] = {}
+    for index, rule in enumerate(rules, start=1):
+        for source_variable in target_variables(str(rule.get("target") or "all")):
+            variable_rules.setdefault(source_variable, []).append((index, rule))
+
+    lines = ["# Shared builtin WAF rules are compiled once in the http context."]
+    result_variables = []
+    for source_variable, indexed_rules in variable_rules.items():
+        result_variable = shared_builtin_source_var(source_variable)
+        result_variables.append(f"${result_variable}")
+        lines.extend([f"map {source_variable} ${result_variable} {{", "    default 0;"])
+        for index, rule in reversed(indexed_rules):
+            pattern = nginx_regex(rule.get("pattern") or "")
+            lines.append(f'    "~*{pattern[1:-1]}" {index};')
+        lines.extend(["}", ""])
+
+    combined_source = ":".join(result_variables)
+    lines.extend([f'map "{combined_source}" $sfl_builtin_rule_id {{', "    default 0;"])
+    for index in range(len(rules), 0, -1):
+        lines.append(f"    ~(?:^|:){index}(?::|$) {index};")
+    lines.extend(["}", "", "map $sfl_builtin_rule_id $sfl_builtin_rule_reason {", '    default "Builtin WAF rule matched";'])
+    for index, rule in enumerate(rules, start=1):
+        reason = nginx_string(rule.get("name") or rule.get("id") or "Builtin WAF rule matched")
+        lines.append(f'    {index} "{reason}";')
+    lines.extend(["}", ""])
+    return lines
 
 
 def render_geo_map(variable_name: str, items: list[str]) -> str:
@@ -1426,6 +1491,7 @@ def render_site_waf_directives(site: dict, state: dict) -> list[str]:
         and rule.get("action") != "allow"
         and (rule.get("siteId") == "*" or rule.get("siteId") == site.get("id"))
         and should_emit_rule_for_site(rule, site)
+        and not is_shared_builtin_rule(rule)
     ]
     allow_rules = [
         rule
@@ -1455,6 +1521,8 @@ def render_site_waf_directives(site: dict, state: dict) -> list[str]:
         rule_index += 1
         lines.extend(render_rule_if(rule, "allow", rule_index))
 
+    lines.extend(render_shared_builtin_rule_directives(site, state))
+
     for rule in rules:
         rule_index += 1
         if site.get("mode") == "monitor" or rule.get("action") == "monitor":
@@ -1467,6 +1535,24 @@ def render_site_waf_directives(site: dict, state: dict) -> list[str]:
     lines.extend(render_under_attack_protection(site))
     lines.extend(render_acl_notes(site))
     return lines
+
+
+def render_shared_builtin_rule_directives(site: dict, state: dict) -> list[str]:
+    if not shared_builtin_rules(state):
+        return []
+    verdict = "monitor" if site.get("mode") == "monitor" else "block"
+    block_value = "0" if verdict == "monitor" else "1"
+    return [
+        "    set $sfl_shared_builtin_rule $sfl_builtin_rule_id;",
+        "    if ($sfl_allow = 1) {",
+        "        set $sfl_shared_builtin_rule 0;",
+        "    }",
+        "    if ($sfl_shared_builtin_rule != 0) {",
+        f"        set $sfl_block {block_value};",
+        f"        set $sfl_verdict {verdict};",
+        "        set $sfl_reason $sfl_builtin_rule_reason;",
+        "    }",
+    ]
 
 
 def render_internal_waf_locations(site: dict, state: dict) -> list[str]:
@@ -1966,13 +2052,7 @@ def render_verified_bot_modsecurity_skip_rules(
         providers.update(VERIFIED_BOT_PROVIDERS)
     ai_config = site_verified_ai_bots(site)
     if ai_config.get("bypassRateLimit"):
-        providers.update(
-            {
-                provider_name: VERIFIED_AI_BOT_PROVIDERS[provider_name]
-                for provider_name in ai_config.get("allowedProviders", [])
-                if provider_name in VERIFIED_AI_BOT_PROVIDERS
-            }
-        )
+        providers.update(VERIFIED_AI_BOT_PROVIDERS)
     if not providers:
         return []
     if require_rate_bypass and not site_verified_rate_bypass(site):
@@ -2334,11 +2414,11 @@ def render_acl_limit_zones(sites: list[dict]) -> list[str]:
         if acl_limit_uses_mapped_key(site, limit):
             zones.extend(render_acl_limit_key_maps(site, limit))
         zones.append(
-            f"limit_req_zone {acl_limit_key(site, limit)} zone={acl_zone_name(site)}:10m rate={nginx_acl_rate(limit)};"
+            f"limit_req_zone {acl_limit_key(site, limit)} zone={acl_zone_name(site)}:{nginx_limit_zone_size()} rate={nginx_acl_rate(limit)};"
         )
         if site_features(site).get("httpFlood"):
             zones.append(
-                f"limit_req_zone {acl_fingerprint_limit_key(site, limit)} zone={acl_fingerprint_zone_name(site)}:10m rate={nginx_acl_rate(limit)};"
+                f"limit_req_zone {acl_fingerprint_limit_key(site, limit)} zone={acl_fingerprint_zone_name(site)}:{nginx_limit_zone_size()} rate={nginx_acl_rate(limit)};"
             )
     return zones
 
@@ -2517,6 +2597,13 @@ def site_bot_protection(site: dict) -> dict:
     if block_minutes not in {10, 30, 60}:
         block_minutes = DEFAULT_BOT_RATE_CHALLENGE["blockMinutes"]
     dynamic_enabled = enabled and bool(dynamic.get("enabled"))
+    allowed_ai_providers = [
+        provider_name
+        for provider_name in (verified_ai.get("allowedProviders") or [])
+        if provider_name in VERIFIED_AI_BOT_PROVIDERS
+    ]
+    if verified_ai.get("enabled") and "allowedProviders" not in verified_ai:
+        allowed_ai_providers = list(VERIFIED_AI_BOT_PROVIDERS)
     return {
         "enabled": enabled,
         "antiBotChallenge": anti_bot,
@@ -2526,12 +2613,8 @@ def site_bot_protection(site: dict) -> dict:
             "bypassRateLimit": verified.get("bypassRateLimit") is not False,
         },
         "verifiedAIBots": {
-            "enabled": anti_bot and bool(verified_ai.get("enabled")),
-            "allowedProviders": [
-                provider_name
-                for provider_name in (verified_ai.get("allowedProviders") or [])
-                if provider_name in VERIFIED_AI_BOT_PROVIDERS
-            ],
+            "enabled": anti_bot and bool(verified_ai.get("enabled")) and bool(allowed_ai_providers),
+            "allowedProviders": allowed_ai_providers,
             "bypassChallenge": verified_ai.get("bypassChallenge") is not False,
             "bypassRateLimit": verified_ai.get("bypassRateLimit") is not False,
         },

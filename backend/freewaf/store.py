@@ -29,7 +29,6 @@ from .defaults import (
     DEFAULT_SETTINGS,
     LEGACY_WHMCS_LOGIN_PATH_PATTERNS,
     VERIFIED_AI_BOT_PROVIDERS,
-    VERIFIED_BOT_PROVIDERS,
     create_default_state,
     managed_verified_bot_providers,
     utc_now,
@@ -595,7 +594,7 @@ class Store:
         with self.lock:
             existing = next((group for group in self._state()["ipGroups"] if group["id"] == group_id), None)
             if existing and existing.get("managed"):
-                raise StoreError(400, "Managed verified bot IP groups cannot be deleted")
+                raise StoreError(400, "Managed IP groups cannot be deleted")
             before = len(self._state()["ipGroups"])
             self._state()["ipGroups"] = [group for group in self._state()["ipGroups"] if group["id"] != group_id]
             if len(self._state()["ipGroups"]) == before:
@@ -1718,6 +1717,11 @@ def normalize_bot_protection_config(value, enabled_value=None) -> dict:
     replay_enabled = normalize_bool(anti_replay.get("enabled") if "enabled" in anti_replay else source.get("antiReplayEnabled"), False)
     enabled = normalize_bool(source.get("enabled"), normalize_bool(enabled_value, True))
     enabled = enabled and (anti_bot or dynamic_enabled or replay_enabled)
+    verified_ai_enabled = normalize_bool(verified_ai.get("enabled"), False)
+    provider_value = verified_ai.get("allowedProviders") if "allowedProviders" in verified_ai else verified_ai.get("allowed_providers")
+    allowed_providers = normalize_verified_ai_provider_ids(provider_value)
+    if verified_ai_enabled and provider_value is None:
+        allowed_providers = list(VERIFIED_AI_BOT_PROVIDERS)
     if not anti_bot:
         login_challenge["enabled"] = False
         rate_challenge["enabled"] = False
@@ -1731,10 +1735,8 @@ def normalize_bot_protection_config(value, enabled_value=None) -> dict:
             "bypassRateLimit": normalize_bool(verified.get("bypassRateLimit") if "bypassRateLimit" in verified else verified.get("bypass_rate_limit"), True),
         },
         "verifiedAIBots": {
-            "enabled": normalize_bool(verified_ai.get("enabled"), False),
-            "allowedProviders": normalize_verified_ai_provider_ids(
-                verified_ai.get("allowedProviders") or verified_ai.get("allowed_providers")
-            ),
+            "enabled": verified_ai_enabled and bool(allowed_providers),
+            "allowedProviders": allowed_providers,
             "bypassChallenge": normalize_bool(
                 verified_ai.get("bypassChallenge") if "bypassChallenge" in verified_ai else verified_ai.get("bypass_challenge"),
                 True,
@@ -1756,6 +1758,10 @@ def normalize_bot_protection_config(value, enabled_value=None) -> dict:
             "enabled": replay_enabled,
         },
     }
+
+
+def normalize_verified_ai_provider_ids(values) -> list[str]:
+    return [item for item in normalize_string_list(values) if item in VERIFIED_AI_BOT_PROVIDERS]
 
 
 def normalize_bot_login_challenge_config(value, anti_bot_enabled: bool) -> dict:
@@ -2035,11 +2041,6 @@ def normalize_string_list(values, uppercase: bool = False) -> list[str]:
 
 def normalize_id_list(values) -> list[str]:
     return [item for item in normalize_string_list(values) if re.match(r"^[A-Za-z0-9_.:-]+$", item)]
-
-
-def normalize_verified_ai_provider_ids(values) -> list[str]:
-    allowed = set(VERIFIED_AI_BOT_PROVIDERS)
-    return [item for item in normalize_id_list(values) if item in allowed]
 
 
 def normalize_username(value) -> str:

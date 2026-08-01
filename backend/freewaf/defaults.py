@@ -104,7 +104,6 @@ VERIFIED_BOT_PROVIDERS = {
     },
 }
 
-
 VERIFIED_AI_BOT_PROVIDERS = {
     "openai_search": {
         "id": "ipgroup-verified-openai-searchbot",
@@ -736,7 +735,6 @@ def create_default_state(now: str | None = None) -> dict:
                     },
                     "verifiedAIBots": {
                         "enabled": False,
-                        "allowedProviders": [],
                         "bypassChallenge": True,
                         "bypassRateLimit": True,
                     },
