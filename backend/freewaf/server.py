@@ -2622,6 +2622,8 @@ def ensure_certbot_webroot(webroot: str) -> Path:
 def ensure_http01_challenge_server(domains: list[str], webroot: str, state: dict | None = None) -> dict | None:
     if os.environ.get("CERTBOT_PREPARE_HTTP01_SERVER", "true").lower() in {"0", "false", "no", "off"}:
         return None
+    if state and http01_domains_have_site_listener(domains, state):
+        return None
 
     site_dir = nginx_site_config_dir(ROOT_DIR)
     output_file = nginx_output_file(ROOT_DIR)

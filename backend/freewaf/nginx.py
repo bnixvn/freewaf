@@ -252,9 +252,9 @@ def render_domain_config_files(state: dict) -> dict[str, str]:
     certificates = {certificate["id"]: certificate for certificate in state.get("certificates", [])}
     configs = {}
     for site in enabled_sites:
-        for hostname in site_hostnames(site):
-            filename = domain_config_filename(site, hostname)
-            configs[filename] = render_site_server(site, state, certificates, hostname)
+        hostname = site_hostnames(site)[0] if site_hostnames(site) else None
+        filename = site_config_filename(site)
+        configs[filename] = render_site_server(site, state, certificates, hostname)
     return configs
 
 
@@ -1074,14 +1074,13 @@ def site_hostnames(site: dict) -> list[str]:
     return values or ["_"]
 
 
-def domain_config_filename(site: dict, hostname: str) -> str:
+def site_config_filename(site: dict) -> str:
     site_id = safe_identifier(site.get("id") or site.get("name") or "site")
-    domain_id = domain_identifier(hostname)
-    return f"{site_id}__{domain_id}.conf"
+    return f"{site_id}.conf"
 
 
 def render_site_server(site: dict, state: dict, certificates: dict[str, dict], hostname: str | None = None) -> str:
-    hostnames = [hostname] if hostname else site_hostnames(site)
+    hostnames = site_hostnames(site)
     defaults = application_defaults(state)
     proxy = site_proxy(site, defaults.get("proxy"))
     modsecurity = site_modsecurity(site, defaults.get("modSecurity"))
@@ -1090,7 +1089,7 @@ def render_site_server(site: dict, state: dict, certificates: dict[str, dict], h
     app_type = application_type(site)
     upstreams = site_upstreams(site)
     upstream_scheme = urlparse(upstreams[0]).scheme if upstreams else "http"
-    upstream_name = backend_name(site, hostname)
+    upstream_name = backend_name(site)
     tls = site.get("tls") or {}
     certificate = certificates.get(tls.get("certificateId"))
     has_tls = bool(tls.get("enabled") and certificate)
@@ -1546,13 +1545,7 @@ def site_upstreams(site: dict) -> list[str]:
 
 
 def backend_name(site: dict, hostname: str | None = None) -> str:
-    suffix = f"_{domain_identifier(hostname)}" if hostname else ""
-    return f"backend_{safe_identifier(site.get('id') or site.get('name') or 'site')}{suffix}"
-
-
-def domain_identifier(hostname: str) -> str:
-    value = str(hostname or "_").replace("*.", "wildcard_").replace("*", "catchall")
-    return safe_identifier(value)
+    return f"backend_{safe_identifier(site.get('id') or site.get('name') or 'site')}"
 
 
 def site_ports(site: dict) -> list[tuple[int, bool]]:

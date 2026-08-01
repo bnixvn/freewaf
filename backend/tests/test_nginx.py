@@ -11,6 +11,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from freewaf import nginx as nginx_module
+from freewaf.server import ensure_http01_challenge_server
 from freewaf.defaults import BUILTIN_RULES, DEFAULT_SETTINGS, SAFELINE_COMPATIBILITY_RULES, VERIFIED_AI_BOT_PROVIDERS, VERIFIED_BOT_PROVIDERS
 from freewaf.nginx import generate_nginx_config, parse_nginx_logs, write_nginx_config
 
@@ -56,7 +57,7 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("listen 0.0.0.0:8080;", config)
         self.assertIn("server_name localhost;", config)
         self.assertIn("server 127.0.0.1:9090;", config)
-        self.assertIn("proxy_pass http://backend_site_demo_localhost;", config)
+        self.assertIn("proxy_pass http://backend_site_demo;", config)
         self.assertIn("location = /.safeline/forbidden_page", config)
 
     def test_generates_safe_http_defaults_without_sites(self):
@@ -178,7 +179,7 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertEqual(entries[0]["host"], "valid.example")
         self.assertEqual(entries[0]["path"], "/valid")
 
-    def test_writes_one_nginx_file_per_domain(self):
+    def test_writes_one_nginx_file_per_site(self):
         state = make_state(
             sites=[
                 {
@@ -203,11 +204,10 @@ class NginxGeneratorTests(unittest.TestCase):
 
             self.assertIn("include ", main_config)
             self.assertIn("/nginx/generated/sites/*.conf;", main_config.replace("\\", "/"))
-            self.assertEqual(len(site_files), 2)
-            self.assertTrue(any("shop_example_test" in file.name for file in site_files))
-            self.assertTrue(any("www_shop_example_test" in file.name for file in site_files))
-            self.assertTrue(any("server_name shop.example.test;" in file.read_text(encoding="utf-8") for file in site_files))
-            self.assertTrue(any("server_name www.shop.example.test;" in file.read_text(encoding="utf-8") for file in site_files))
+            self.assertEqual(len(site_files), 1)
+            self.assertTrue(any("site_shop" in file.name for file in site_files))
+            self.assertIn("server_name shop.example.test www.shop.example.test;", site_files[0].read_text(encoding="utf-8"))
+            self.assertIn("upstream backend_site_shop", site_files[0].read_text(encoding="utf-8"))
 
     def test_exact_and_wildcard_domains_use_distinct_upstream_names(self):
         state = make_state(
@@ -233,12 +233,11 @@ class NginxGeneratorTests(unittest.TestCase):
             site_config = "\n".join(file.read_text(encoding="utf-8") for file in site_files)
 
         upstream_names = re.findall(r"^upstream\s+(\S+)\s+\{", site_config, re.MULTILINE)
-        self.assertEqual(len(site_files), 2)
-        self.assertEqual(len(upstream_names), 2)
-        self.assertEqual(len(set(upstream_names)), 2)
-        self.assertIn("upstream backend_site_manguon_manguon_top", site_config)
-        self.assertIn("upstream backend_site_manguon_wildcard_manguon_top", site_config)
-        self.assertIn("server_name *.manguon.top;", site_config)
+        self.assertEqual(len(site_files), 1)
+        self.assertEqual(len(upstream_names), 1)
+        self.assertEqual(len(set(upstream_names)), 1)
+        self.assertIn("upstream backend_site_manguon", site_config)
+        self.assertIn("server_name manguon.top *.manguon.top;", site_config)
 
     def test_writing_nginx_config_removes_stale_domain_files(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -296,6 +295,39 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertGreater(redirect_index, challenge_index)
         self.assertIn("root /var/www/freewaf-acme;", http_server)
         self.assertIn("try_files $uri =404;", http_server)
+
+    def test_http01_challenge_server_is_not_needed_when_site_listener_exists(self):
+        state = make_state(
+            settings=make_settings(proxy={"forceHttps": True}),
+            sites=[
+                {
+                    "id": "site-demo",
+                    "name": "Demo",
+                    "hostnames": ["example.test"],
+                    "origin": "http://127.0.0.1:9090",
+                    "ports": ["80", "443_ssl"],
+                    "listen": 443,
+                    "tls": {
+                        "enabled": True,
+                        "certificateId": "cert-demo",
+                        "redirectHttp": True,
+                        "httpListen": 80,
+                        "http2": True,
+                    },
+                    "proxy": {"forceHttps": True},
+                    "mode": "block",
+                    "enabled": True,
+                }
+            ],
+        )
+
+        with mock.patch("freewaf.server.write_nginx_config") as write_nginx_config, \
+            mock.patch("freewaf.server.run_nginx_command") as run_nginx_command:
+            snapshot = ensure_http01_challenge_server(["example.test"], "/var/www/freewaf-acme", state)
+
+        self.assertIsNone(snapshot)
+        write_nginx_config.assert_not_called()
+        run_nginx_command.assert_not_called()
 
     def test_generates_blocking_rule_for_builtin_sqli(self):
         config = generate_nginx_config(make_state())
@@ -715,8 +747,8 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("access_log ./logs/freewaf/accesslog_site_shop freewaf;", config)
         self.assertIn("add_header Strict-Transport-Security \"max-age=15768000;\" always;", config)
         self.assertIn("proxy_ssl_server_name on;", config)
-        self.assertIn("proxy_pass https://backend_site_shop_shop_example_test;", config)
-        self.assertIn("proxy_pass https://backend_site_shop_www_shop_example_test;", config)
+        self.assertIn("proxy_pass https://backend_site_shop;", config)
+        self.assertNotIn("backend_site_shop_shop_example_test", config)
         self.assertIn("location ~ ^/wp-content/cache/min/1/(.+)$", config)
         self.assertIn("rewrite ^/wp-content/cache/min/1/(.+)$ /$1 last;", config)
 
