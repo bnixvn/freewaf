@@ -3692,7 +3692,6 @@ function LimitEditFields({ prefix, form, updateLimit, includeStatusCodes = false
 
 function SiteModal({ site, certificates, onClose, onSave }) {
   const [submitting, setSubmitting] = useState(false);
-  const [wizardStep, setWizardStep] = useState(1);
   const domainFieldRef = useRef(null);
   const [form, setForm] = useState(() => ({
     ...defaultSite,
@@ -3766,7 +3765,7 @@ function SiteModal({ site, certificates, onClose, onSave }) {
     return form.listeningPorts.some((row) => row.protocol === 'https');
   }
 
-  function canAdvanceSiteStep(step = wizardStep) {
+  function canAdvanceSiteStep(step) {
     const hostnames = currentHostnames();
     if (step === 1) {
       if (!hostnames.length) {
@@ -3801,14 +3800,6 @@ function SiteModal({ site, certificates, onClose, onSave }) {
       }
     }
     return true;
-  }
-
-  function nextStep() {
-    if (canAdvanceSiteStep()) setWizardStep((current) => Math.min(3, current + 1));
-  }
-
-  function previousStep() {
-    setWizardStep((current) => Math.max(1, current - 1));
   }
 
   function updatePort(index, patch) {
@@ -3850,10 +3841,6 @@ function SiteModal({ site, certificates, onClose, onSave }) {
   async function submit(event) {
     event.preventDefault();
     if (submitting) return;
-    if (wizardStep < 3) {
-      nextStep();
-      return;
-    }
     if (!canAdvanceSiteStep(1) || !canAdvanceSiteStep(2)) return;
     const hostnames = currentHostnames();
     const httpsPortSelected = hasHttpsPort();
@@ -3887,203 +3874,168 @@ function SiteModal({ site, certificates, onClose, onSave }) {
   return (
     <Modal title={site ? 'Edit Application' : 'Add Application'} onClose={onClose} wide>
       <form onSubmit={submit}>
-        <div className="wizard-steps">
-          {['Application', 'SSL', 'WAF'].map((label, index) => {
-            const step = index + 1;
-            return (
-              <button
-                type="button"
-                key={label}
-                className={`wizard-step ${wizardStep === step ? 'active' : ''} ${wizardStep > step ? 'done' : ''}`}
-                onClick={() => {
-                  if (step < wizardStep || canAdvanceSiteStep(wizardStep)) setWizardStep(step);
-                }}
-              >
-                <span>{step}</span>
-                {label}
-              </button>
-            );
-          })}
-        </div>
         <div className="safe-form">
-          {wizardStep === 1 && (
-            <>
-              <DomainChipField ref={domainFieldRef} label="Domain" value={form.hostnames} onChange={(value) => update('hostnames', value)} placeholder="example.com, *.example.com" required />
+          <DomainChipField ref={domainFieldRef} label="Domain" value={form.hostnames} onChange={(value) => update('hostnames', value)} placeholder="example.com, *.example.com" required />
 
-              <TextField label="Application Name" value={form.name} onChange={(value) => update('name', value)} placeholder="Application Name" full required />
+          <TextField label="Application Name" value={form.name} onChange={(value) => update('name', value)} placeholder="Application Name" full required />
 
-              <div className="mode-grid">
-                <ModeChoice active={form.applicationType === 'reverse_proxy'} label="Reverse Proxy" onClick={() => update('applicationType', 'reverse_proxy')} />
-                <ModeChoice active={form.applicationType === 'static_files'} label="Static Files" onClick={() => update('applicationType', 'static_files')} />
-                <ModeChoice active={form.applicationType === 'redirect'} label="Redirect" onClick={() => update('applicationType', 'redirect')} />
+          <div className="mode-grid">
+            <ModeChoice active={form.applicationType === 'reverse_proxy'} label="Reverse Proxy" onClick={() => update('applicationType', 'reverse_proxy')} />
+            <ModeChoice active={form.applicationType === 'static_files'} label="Static Files" onClick={() => update('applicationType', 'static_files')} />
+            <ModeChoice active={form.applicationType === 'redirect'} label="Redirect" onClick={() => update('applicationType', 'redirect')} />
+          </div>
+
+          <div className="safe-fieldset">
+            {form.listeningPorts.map((row, index) => (
+              <div className="listen-row" key={`${index}-${row.protocol}`}>
+                <TextField label="Port" value={row.port} onChange={(value) => updatePort(index, { port: value })} required />
+                <ProtocolToggle value={row.protocol} onChange={(protocol) => updatePort(index, { protocol })} />
+                <button type="button" className="table-action ghost" onClick={() => removePort(index)} title="Remove port" disabled={form.listeningPorts.length <= 1}>
+                  <Trash2 size={17} />
+                </button>
               </div>
+            ))}
+            <button type="button" className="outline-action" onClick={addPort}><Plus size={16} /> Add Listening Port</button>
+          </div>
 
-              <div className="safe-fieldset">
-                {form.listeningPorts.map((row, index) => (
-                  <div className="listen-row" key={`${index}-${row.protocol}`}>
-                    <TextField label="Port" value={row.port} onChange={(value) => updatePort(index, { port: value })} required />
-                    <ProtocolToggle value={row.protocol} onChange={(protocol) => updatePort(index, { protocol })} />
-                    <button type="button" className="table-action ghost" onClick={() => removePort(index)} title="Remove port" disabled={form.listeningPorts.length <= 1}>
-                      <Trash2 size={17} />
-                    </button>
-                  </div>
-                ))}
-                <button type="button" className="outline-action" onClick={addPort}><Plus size={16} /> Add Listening Port</button>
-              </div>
-
-              {form.applicationType === 'reverse_proxy' && (
-                <div className="safe-fieldset">
-                  {form.upstreams.map((upstream, index) => (
-                    <div className="upstream-row" key={index}>
-                      <TextField label="Upstream" value={upstream} onChange={(value) => updateUpstream(index, value)} placeholder="http://192.168.1.10:8080, not support path" full required />
-                      <button type="button" className="table-action ghost" onClick={() => removeUpstream(index)} title="Remove upstream" disabled={form.upstreams.length <= 1}>
-                        <Trash2 size={17} />
-                      </button>
-                    </div>
-                  ))}
-                  <button type="button" className="outline-action" onClick={addUpstream}><Plus size={16} /> Add Upstream</button>
+          {form.applicationType === 'reverse_proxy' && (
+            <div className="safe-fieldset">
+              {form.upstreams.map((upstream, index) => (
+                <div className="upstream-row" key={index}>
+                  <TextField label="Upstream" value={upstream} onChange={(value) => updateUpstream(index, value)} placeholder="http://192.168.1.10:8080, not support path" full required />
+                  <button type="button" className="table-action ghost" onClick={() => removeUpstream(index)} title="Remove upstream" disabled={form.upstreams.length <= 1}>
+                    <Trash2 size={17} />
+                  </button>
                 </div>
-              )}
-
-              {form.applicationType === 'static_files' && (
-                <div className="notice full">
-                  After the site is successfully added, you can manage static files on the site details page.
-                </div>
-              )}
-
-              {form.applicationType === 'redirect' && (
-                <div className="redirect-grid">
-                  <SelectField label="Status Code" value={form.redirectStatusCode} onChange={(value) => update('redirectStatusCode', value)} options={['301', '302', '307', '308']} />
-                  <TextField label="Address" value={form.redirectAddress} onChange={(value) => update('redirectAddress', value)} placeholder="http://192.168.1.10:8080, not support path" required />
-                </div>
-              )}
-            </>
+              ))}
+              <button type="button" className="outline-action" onClick={addUpstream}><Plus size={16} /> Add Upstream</button>
+            </div>
           )}
 
-          {wizardStep === 2 && (
+          {form.applicationType === 'static_files' && (
+            <div className="notice full">
+              After the site is successfully added, you can manage static files on the site details page.
+            </div>
+          )}
+
+          {form.applicationType === 'redirect' && (
+            <div className="redirect-grid">
+              <SelectField label="Status Code" value={form.redirectStatusCode} onChange={(value) => update('redirectStatusCode', value)} options={['301', '302', '307', '308']} />
+              <TextField label="Address" value={form.redirectAddress} onChange={(value) => update('redirectAddress', value)} placeholder="http://192.168.1.10:8080, not support path" required />
+            </div>
+          )}
+
+          {!hasHttpsPort() && (
+            <div className="notice full">
+              This application only has HTTP listeners. Add an HTTPS listening port if you want SSL.
+            </div>
+          )}
+          <div className="cert-source-grid">
+            <button type="button" className={`cert-source-choice ${form.sslMode === 'none' ? 'active' : ''}`} onClick={() => update('sslMode', 'none')} disabled={hasHttpsPort()}>
+              <span className="radio-dot" />
+              No SSL
+            </button>
+            <button type="button" className={`cert-source-choice ${form.sslMode === 'existing' ? 'active' : ''}`} onClick={() => update('sslMode', 'existing')}>
+              <span className="radio-dot" />
+              Existing Cert
+            </button>
+            {!isEditing && (
+              <>
+                <button type="button" className={`cert-source-choice ${form.sslMode === 'certbot' ? 'active' : ''}`} onClick={() => update('sslMode', 'certbot')}>
+                  <span className="radio-dot" />
+                  Let's Encrypt
+                </button>
+                <button type="button" className={`cert-source-choice ${form.sslMode === 'cloudflare' ? 'active' : ''}`} onClick={() => update('sslMode', 'cloudflare')}>
+                  <span className="radio-dot" />
+                  Cloudflare DNS
+                </button>
+              </>
+            )}
+          </div>
+
+          {hasHttpsPort() && form.sslMode === 'existing' && (
+            <SelectField label="SSL Cert" value={form.certificateId} onChange={(value) => update('certificateId', value)} options={[
+              { value: '', label: 'Select certificate' },
+              ...certificates.map((certificate) => ({ value: certificate.id, label: certificate.name || certificate.id }))
+            ]} full />
+          )}
+
+          {hasHttpsPort() && ['certbot', 'cloudflare'].includes(form.sslMode) && (
             <>
-              {!hasHttpsPort() && (
-                <div className="notice full">
-                  This application only has HTTP listeners. Add an HTTPS listening port in step 1 if you want SSL.
-                </div>
-              )}
-              <div className="cert-source-grid">
-                <button type="button" className={`cert-source-choice ${form.sslMode === 'none' ? 'active' : ''}`} onClick={() => update('sslMode', 'none')} disabled={hasHttpsPort()}>
-                  <span className="radio-dot" />
-                  No SSL
-                </button>
-                <button type="button" className={`cert-source-choice ${form.sslMode === 'existing' ? 'active' : ''}`} onClick={() => update('sslMode', 'existing')}>
-                  <span className="radio-dot" />
-                  Existing Cert
-                </button>
-                {!isEditing && (
-                  <>
-                    <button type="button" className={`cert-source-choice ${form.sslMode === 'certbot' ? 'active' : ''}`} onClick={() => update('sslMode', 'certbot')}>
-                      <span className="radio-dot" />
-                      Let's Encrypt
-                    </button>
-                    <button type="button" className={`cert-source-choice ${form.sslMode === 'cloudflare' ? 'active' : ''}`} onClick={() => update('sslMode', 'cloudflare')}>
-                      <span className="radio-dot" />
-                      Cloudflare DNS
-                    </button>
-                  </>
-                )}
-              </div>
-
-              {hasHttpsPort() && form.sslMode === 'existing' && (
-                <SelectField label="SSL Cert" value={form.certificateId} onChange={(value) => update('certificateId', value)} options={[
-                  { value: '', label: 'Select certificate' },
-                  ...certificates.map((certificate) => ({ value: certificate.id, label: certificate.name || certificate.id }))
-                ]} full />
-              )}
-
-              {hasHttpsPort() && ['certbot', 'cloudflare'].includes(form.sslMode) && (
+              <TextField label="Let's Encrypt Email" type="email" value={form.sslEmail} onChange={(value) => update('sslEmail', value)} placeholder="admin@example.com" full required />
+              {form.sslMode === 'cloudflare' && (
                 <>
-                  <TextField label="Let's Encrypt Email" type="email" value={form.sslEmail} onChange={(value) => update('sslEmail', value)} placeholder="admin@example.com" full required />
-                  {form.sslMode === 'cloudflare' && (
-                    <>
-                      <TextField label="Cloudflare API Token" type="password" value={form.sslCloudflareApiToken} onChange={(value) => update('sslCloudflareApiToken', value)} placeholder="Paste API token value only" full required />
-                      <TextField label="DNS Propagation Seconds" type="number" value={form.sslCloudflarePropagationSeconds} onChange={(value) => update('sslCloudflarePropagationSeconds', value)} full />
-                    </>
-                  )}
-                  <div className="notice full">
-                    {form.sslMode === 'cloudflare'
-                      ? 'Uses DNS-01 and supports wildcard domains. The token is stored in a protected certbot credentials file.'
-                      : 'Uses HTTP-01. Make sure port 80 for this domain reaches this FreeWAF server.'}
-                  </div>
+                  <TextField label="Cloudflare API Token" type="password" value={form.sslCloudflareApiToken} onChange={(value) => update('sslCloudflareApiToken', value)} placeholder="Paste API token value only" full required />
+                  <TextField label="DNS Propagation Seconds" type="number" value={form.sslCloudflarePropagationSeconds} onChange={(value) => update('sslCloudflarePropagationSeconds', value)} full />
                 </>
               )}
-
-              <div className="feature-toggle-grid">
-                <ApplicationOption label="Enable HTTP/2" checked={boolValue(form.http2)} onChange={(value) => update('http2', String(value))} />
-                <ApplicationOption label="Redirect HTTP to HTTPS" checked={boolValue(form.proxyForceHttps)} onChange={(value) => update('proxyForceHttps', String(value))} />
-                <ApplicationOption label="Enable HSTS" checked={boolValue(form.proxyHsts)} onChange={(value) => update('proxyHsts', String(value))} />
+              <div className="notice full">
+                {form.sslMode === 'cloudflare'
+                  ? 'Uses DNS-01 and supports wildcard domains. The token is stored in a protected certbot credentials file.'
+                  : 'Uses HTTP-01. Make sure port 80 for this domain reaches this FreeWAF server.'}
               </div>
-              {boolValue(form.proxyHsts) && (
-                <TextField label="HSTS Max Age (seconds)" value={form.proxyHstsMaxAge} onChange={(value) => update('proxyHstsMaxAge', value)} type="number" full />
-              )}
             </>
           )}
 
-          {wizardStep === 3 && (
-            <>
-              <div className="feature-toggle-grid">
-                <ApplicationOption label="ModSecurity" checked={boolValue(form.modSecurityEnabled)} onChange={(value) => update('modSecurityEnabled', String(value))} />
-                <ApplicationOption label="HTTP Flood" checked={boolValue(form.featureHttpFlood)} onChange={(value) => update('featureHttpFlood', String(value))} />
-                <ApplicationOption label="BOT Protect" checked={boolValue(form.featureBotProtection)} onChange={(value) => update('featureBotProtection', String(value))} />
-                <ApplicationOption label="GEO Block" checked={boolValue(form.featureGeoBlock)} onChange={(value) => update('featureGeoBlock', String(value))} />
-                <ApplicationOption label="Gzip Compression" checked={boolValue(form.proxyGzip)} onChange={(value) => update('proxyGzip', String(value))} />
-                <ApplicationOption label="Brotli Compression" checked={boolValue(form.proxyBrotli)} onChange={(value) => update('proxyBrotli', String(value))} />
-              </div>
+          <div className="feature-toggle-grid">
+            <ApplicationOption label="Enable HTTP/2" checked={boolValue(form.http2)} onChange={(value) => update('http2', String(value))} />
+            <ApplicationOption label="Redirect HTTP to HTTPS" checked={boolValue(form.proxyForceHttps)} onChange={(value) => update('proxyForceHttps', String(value))} />
+            <ApplicationOption label="Enable HSTS" checked={boolValue(form.proxyHsts)} onChange={(value) => update('proxyHsts', String(value))} />
+          </div>
+          {boolValue(form.proxyHsts) && (
+            <TextField label="HSTS Max Age (seconds)" value={form.proxyHstsMaxAge} onChange={(value) => update('proxyHstsMaxAge', value)} type="number" full />
+          )}
 
-              {boolValue(form.modSecurityEnabled) && (
-                <div className="redirect-grid">
-                  <SelectField label="Rule Set" value={form.modSecurityRuleset} onChange={(value) => update('modSecurityRuleset', value)} options={modSecurityRulesetOptions} />
-                  <SelectField
-                    label="Engine Mode"
-                    value={form.modSecurityMode}
-                    onChange={(value) => update('modSecurityMode', value)}
-                    options={[
-                      { value: 'on', label: 'Block' },
-                      { value: 'detection_only', label: 'Detection Only' }
-                    ]}
-                  />
-                  <TextField label="Request Body Limit (bytes)" value={form.modSecurityRequestBodyLimit} onChange={(value) => update('modSecurityRequestBodyLimit', value)} type="number" />
-                </div>
+          <div className="feature-toggle-grid">
+            <ApplicationOption label="ModSecurity" checked={boolValue(form.modSecurityEnabled)} onChange={(value) => update('modSecurityEnabled', String(value))} />
+            <ApplicationOption label="HTTP Flood" checked={boolValue(form.featureHttpFlood)} onChange={(value) => update('featureHttpFlood', String(value))} />
+            <ApplicationOption label="BOT Protect" checked={boolValue(form.featureBotProtection)} onChange={(value) => update('featureBotProtection', String(value))} />
+            <ApplicationOption label="GEO Block" checked={boolValue(form.featureGeoBlock)} onChange={(value) => update('featureGeoBlock', String(value))} />
+            <ApplicationOption label="Gzip Compression" checked={boolValue(form.proxyGzip)} onChange={(value) => update('proxyGzip', String(value))} />
+            <ApplicationOption label="Brotli Compression" checked={boolValue(form.proxyBrotli)} onChange={(value) => update('proxyBrotli', String(value))} />
+          </div>
+
+          {boolValue(form.modSecurityEnabled) && (
+            <div className="redirect-grid">
+              <SelectField label="Rule Set" value={form.modSecurityRuleset} onChange={(value) => update('modSecurityRuleset', value)} options={modSecurityRulesetOptions} />
+              <SelectField
+                label="Engine Mode"
+                value={form.modSecurityMode}
+                onChange={(value) => update('modSecurityMode', value)}
+                options={[
+                  { value: 'on', label: 'Block' },
+                  { value: 'detection_only', label: 'Detection Only' }
+                ]}
+              />
+              <TextField label="Request Body Limit (bytes)" value={form.modSecurityRequestBodyLimit} onChange={(value) => update('modSecurityRequestBodyLimit', value)} type="number" />
+            </div>
+          )}
+
+          <div className="feature-toggle-grid">
+            <ApplicationOption label="Clear and Rewrite X-Forwarded-For" checked={boolValue(form.proxyResetXff)} onChange={(value) => update('proxyResetXff', String(value))} />
+            <ApplicationOption label="Modify Host Header" checked={boolValue(form.proxyModifyHostHeader)} onChange={(value) => update('proxyModifyHostHeader', String(value))} />
+            <ApplicationOption label="Pass Forwarded Headers" checked={boolValue(form.proxyForwardedHeaders)} onChange={(value) => update('proxyForwardedHeaders', String(value))} />
+            <ApplicationOption label="Proxy SSL Server Name" checked={boolValue(form.proxySslServerName)} onChange={(value) => update('proxySslServerName', String(value))} />
+          </div>
+
+          {(boolValue(form.proxyModifyHostHeader) || boolValue(form.proxyForwardedHeaders)) && (
+            <div className="redirect-grid">
+              {boolValue(form.proxyModifyHostHeader) && <TextField label="Host Header" value={form.proxyHostHeader} onChange={(value) => update('proxyHostHeader', value)} placeholder="$http_host" />}
+              {boolValue(form.proxyForwardedHeaders) && (
+                <>
+                  <TextField label="X-Forwarded-Host" value={form.proxyXForwardedHost} onChange={(value) => update('proxyXForwardedHost', value)} placeholder="$http_host" />
+                  <TextField label="X-Forwarded-Proto" value={form.proxyXForwardedProto} onChange={(value) => update('proxyXForwardedProto', value)} placeholder="$scheme" />
+                </>
               )}
-
-              <div className="feature-toggle-grid">
-                <ApplicationOption label="Clear and Rewrite X-Forwarded-For" checked={boolValue(form.proxyResetXff)} onChange={(value) => update('proxyResetXff', String(value))} />
-                <ApplicationOption label="Modify Host Header" checked={boolValue(form.proxyModifyHostHeader)} onChange={(value) => update('proxyModifyHostHeader', String(value))} />
-                <ApplicationOption label="Pass Forwarded Headers" checked={boolValue(form.proxyForwardedHeaders)} onChange={(value) => update('proxyForwardedHeaders', String(value))} />
-                <ApplicationOption label="Proxy SSL Server Name" checked={boolValue(form.proxySslServerName)} onChange={(value) => update('proxySslServerName', String(value))} />
-              </div>
-
-              {(boolValue(form.proxyModifyHostHeader) || boolValue(form.proxyForwardedHeaders)) && (
-                <div className="redirect-grid">
-                  {boolValue(form.proxyModifyHostHeader) && <TextField label="Host Header" value={form.proxyHostHeader} onChange={(value) => update('proxyHostHeader', value)} placeholder="$http_host" />}
-                  {boolValue(form.proxyForwardedHeaders) && (
-                    <>
-                      <TextField label="X-Forwarded-Host" value={form.proxyXForwardedHost} onChange={(value) => update('proxyXForwardedHost', value)} placeholder="$http_host" />
-                      <TextField label="X-Forwarded-Proto" value={form.proxyXForwardedProto} onChange={(value) => update('proxyXForwardedProto', value)} placeholder="$scheme" />
-                    </>
-                  )}
-                </div>
-              )}
-            </>
+            </div>
           )}
         </div>
         <div className="modal-footer">
           <button type="button" className="tool-button" onClick={onClose} disabled={submitting}>Cancel</button>
-          {wizardStep > 1 && <button type="button" className="tool-button" onClick={previousStep} disabled={submitting}>Back</button>}
-          {wizardStep < 3 ? (
-            <button type="button" className="tool-button primary" onClick={nextStep} disabled={submitting}>Next</button>
-          ) : (
-            <button className="tool-button primary" disabled={submitting}>
-              {submitting && <Loader2 size={17} className="spin" />}
-              {submitting ? (form.sslMode === 'certbot' || form.sslMode === 'cloudflare' ? 'Issuing...' : 'Saving...') : 'Submit'}
-            </button>
-          )}
+          <button className="tool-button primary" disabled={submitting}>
+            {submitting && <Loader2 size={17} className="spin" />}
+            {submitting ? (form.sslMode === 'certbot' || form.sslMode === 'cloudflare' ? 'Issuing...' : 'Saving...') : 'Submit'}
+          </button>
         </div>
       </form>
     </Modal>
