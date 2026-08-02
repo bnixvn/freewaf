@@ -255,6 +255,78 @@ class CertificateServerTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
+    def test_bulk_under_attack_updates_all_sites_and_applies_nginx_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = Store(Path(temp_dir) / "state.json")
+            store.init()
+            store.upsert_user({"username": "admin", "password": "secret-pass", "enabled": True})
+            store.upsert_site(
+                {
+                    "name": "First",
+                    "hostnames": ["first.example.test"],
+                    "origin": "http://127.0.0.1:9001",
+                }
+            )
+            store.upsert_site(
+                {
+                    "name": "Second",
+                    "hostnames": ["second.example.test"],
+                    "origin": "http://127.0.0.1:9002",
+                    "underAttack": {"enabled": True},
+                }
+            )
+            initial_sites = store.get_state()["sites"]
+            server = self.start_admin_server(store)
+            cookie = self.login_cookie(server)
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{server.server_port}/api/sites/under-attack",
+                data=json.dumps({"enabled": True}).encode("utf-8"),
+                headers={"content-type": "application/json", "Cookie": cookie},
+                method="PATCH",
+            )
+
+            with mock.patch("freewaf.server.apply_nginx_or_raise", return_value={"ok": True}) as apply_nginx:
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertEqual(response.status, 200)
+            self.assertEqual(
+                payload["updatedCount"],
+                sum(not site.get("underAttack", {}).get("enabled", False) for site in initial_sites),
+            )
+            self.assertTrue(all(site["underAttack"]["enabled"] for site in payload["sites"]))
+            apply_nginx.assert_called_once_with(store)
+
+    def test_bulk_under_attack_skips_nginx_when_state_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = Store(Path(temp_dir) / "state.json")
+            store.init()
+            store.upsert_user({"username": "admin", "password": "secret-pass", "enabled": True})
+            store.upsert_site(
+                {
+                    "name": "Demo",
+                    "hostnames": ["demo.example.test"],
+                    "origin": "http://127.0.0.1:9001",
+                    "underAttack": {"enabled": True},
+                }
+            )
+            store.set_all_sites_under_attack(True)
+            server = self.start_admin_server(store)
+            cookie = self.login_cookie(server)
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{server.server_port}/api/sites/under-attack",
+                data=json.dumps({"enabled": True}).encode("utf-8"),
+                headers={"content-type": "application/json", "Cookie": cookie},
+                method="PATCH",
+            )
+
+            with mock.patch("freewaf.server.apply_nginx_or_raise") as apply_nginx:
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertEqual(payload["updatedCount"], 0)
+            apply_nginx.assert_not_called()
+
     def test_static_frontend_responses_disable_cache(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

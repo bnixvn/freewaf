@@ -369,7 +369,15 @@ If you use Let's Encrypt, also back up or be ready to reissue:
 
 ## Update
 
-Update from Git:
+The recommended update command works for installer-based deployments that do not contain a `.git` directory:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bnixvn/freewaf/main/update.sh | sudo bash
+```
+
+The **Settings ? System Update** action uses the same update flow: clone the approved repository, run the latest installer, validate Nginx, then restart FreeWAF after the update job finishes.
+
+For a Git checkout, you can still update manually:
 
 ```bash
 cd /opt/freewaf
@@ -386,6 +394,14 @@ sudo FREEWAF_REPO_URL=https://github.com/bnixvn/freewaf.git bash install.sh
 ```
 
 When `FREEWAF_REPO_URL` is set, the installer clones the requested branch before copying files, so it updates even if the local `install.sh` came from an older checkout. The installer keeps local `data/`, logs, and certificates, and writes timestamped backups under `/opt/freewaf/data/backups/`.
+
+Update source settings are stored in `/etc/freewaf/freewaf.env`:
+
+```text
+FREEWAF_UPDATE_REPO_URL=https://github.com/bnixvn/freewaf.git
+FREEWAF_UPDATE_BRANCH=main
+FREEWAF_UPDATE_RESTART_CMD="systemctl restart freewaf"
+```
 
 ## Development
 

@@ -885,6 +885,36 @@ h2 {
   margin-bottom: 12px;
 }
 
+.site-heading-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.under-attack-summary {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.under-attack-summary.active {
+  color: #b42318;
+}
+
+.under-attack-all-button {
+  border-color: #ead3d0;
+  background: #fffafa;
+  color: #9c5b55;
+}
+
+.under-attack-all-button.active {
+  border-color: #e28c84;
+  background: #fff0ef;
+  color: #b42318;
+}
+
 .panel-heading.compact {
   margin-bottom: 0;
 }

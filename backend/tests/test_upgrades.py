@@ -242,8 +242,11 @@ class SystemUpdatePlanTests(unittest.TestCase):
         self.assertEqual(plan["mode"], "installer")
         self.assertEqual(plan["steps"][0]["command"][:3], ["git", "clone", "--depth"])
         install_step = plan["steps"][1]
-        self.assertEqual(install_step["command"], ["bash", "install.sh"])
+        self.assertEqual(install_step["command"], ["bash", "update.sh"])
         self.assertEqual(install_step["env"]["FREEWAF_APP_DIR"], str(root_dir))
+        self.assertEqual(install_step["env"]["FREEWAF_UPDATE_REPO_URL"], "https://github.com/bnixvn/freewaf.git")
+        self.assertEqual(install_step["env"]["FREEWAF_UPDATE_BRANCH"], "main")
+        self.assertTrue(install_step["env"]["FREEWAF_UPDATE_SOURCE_DIR"].endswith("freewaf"))
         self.assertEqual(install_step["env"]["FREEWAF_SKIP_SERVICE_RESTART"], "true")
 
     def test_unapproved_update_repo_is_rejected(self):

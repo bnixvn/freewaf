@@ -463,6 +463,29 @@ class Store:
             self.persist()
             return deepcopy(saved)
 
+    def set_all_sites_under_attack(self, enabled: bool) -> dict:
+        with self.lock:
+            sites = self._state()["sites"]
+            updated_count = 0
+            now = utc_now()
+
+            for site in sites:
+                under_attack = normalize_under_attack_config(site.get("underAttack") or site.get("under_attack"))
+                if under_attack["enabled"] == enabled:
+                    continue
+                site["underAttack"] = {**under_attack, "enabled": enabled}
+                site["updatedAt"] = now
+                updated_count += 1
+
+            if updated_count:
+                self.persist()
+
+            return {
+                "enabled": enabled,
+                "updatedCount": updated_count,
+                "sites": deepcopy(sites),
+            }
+
     def delete_site(self, site_id: str) -> None:
         with self.lock:
             before = len(self._state()["sites"])

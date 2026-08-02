@@ -504,6 +504,27 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
         def do_PATCH(self):
             if self.path.startswith("/api/") and not self.require_auth(self.path):
                 return
+            if self.path == "/api/sites/under-attack":
+                try:
+                    payload = self.read_payload()
+                    if not isinstance(payload.get("enabled"), bool):
+                        raise StoreError(400, "enabled must be a boolean")
+                    saved = store.set_all_sites_under_attack(payload["enabled"])
+                    if saved["updatedCount"]:
+                        apply_nginx_or_raise(store)
+                    self.record_audit(
+                        action="sites.under-attack",
+                        target="sites",
+                        status=200,
+                        payload={"enabled": saved["enabled"]},
+                        extra={"updatedCount": saved["updatedCount"]},
+                    )
+                    self.send_json(200, saved)
+                except StoreError as error:
+                    self.send_json(error.status, error_payload(error))
+                except ValueError as error:
+                    self.send_json(400, {"error": str(error)})
+                return
             if self.path == "/api/settings":
                 try:
                     payload = self.read_payload()
@@ -1243,12 +1264,13 @@ def build_system_update_plan(root_dir: Path) -> dict:
         ),
         update_step(
             "install latest FreeWAF",
-            ["bash", "install.sh"],
+            ["bash", "update.sh"],
             checkout_dir,
             {
                 "FREEWAF_APP_DIR": str(root_dir),
-                "FREEWAF_REPO_URL": repo_url,
-                "FREEWAF_REPO_BRANCH": repo_branch,
+                "FREEWAF_UPDATE_REPO_URL": repo_url,
+                "FREEWAF_UPDATE_BRANCH": repo_branch,
+                "FREEWAF_UPDATE_SOURCE_DIR": str(checkout_dir),
                 "FREEWAF_SKIP_SERVICE_RESTART": "true",
             },
         ),

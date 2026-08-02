@@ -574,6 +574,43 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(challenge["waitSeconds"], 10)
         self.assertTrue(state["sites"][0]["underAttack"]["enabled"])
 
+    def test_set_all_sites_under_attack_updates_every_site_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_file = Path(directory) / "state.json"
+            store = Store(state_file)
+            store.init()
+            first = store.upsert_site(
+                {
+                    "name": "First",
+                    "hostnames": ["first.example.test"],
+                    "origin": "http://127.0.0.1:9001",
+                    "underAttack": {"enabled": False},
+                }
+            )
+            second = store.upsert_site(
+                {
+                    "name": "Second",
+                    "hostnames": ["second.example.test"],
+                    "origin": "http://127.0.0.1:9002",
+                    "underAttack": {"enabled": True},
+                }
+            )
+
+            initial_sites = store.get_state()["sites"]
+            enabled = store.set_all_sites_under_attack(True)
+            unchanged = store.set_all_sites_under_attack(True)
+            disabled = store.set_all_sites_under_attack(False)
+
+            self.assertEqual(
+                enabled["updatedCount"],
+                sum(not site.get("underAttack", {}).get("enabled", False) for site in initial_sites),
+            )
+            self.assertTrue(all(site["underAttack"]["enabled"] for site in enabled["sites"]))
+            self.assertEqual(unchanged["updatedCount"], 0)
+            self.assertEqual(disabled["updatedCount"], len(enabled["sites"]))
+            self.assertFalse(any(site["underAttack"]["enabled"] for site in disabled["sites"]))
+            self.assertTrue({first["id"], second["id"]}.issubset({site["id"] for site in disabled["sites"]}))
+
     def test_safeline_application_fields_are_normalized(self):
         state = normalize_state(
             {

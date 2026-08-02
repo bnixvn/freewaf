@@ -749,6 +749,33 @@ export default function App() {
     });
   }
 
+  async function toggleAllUnderAttack(enabled) {
+    await withActionPending('sites:underAttack', async () => {
+      setData((current) => (
+        current
+          ? {
+              ...current,
+              sites: (current.sites || []).map((site) => ({
+                ...site,
+                underAttack: { ...(site.underAttack || {}), enabled }
+              }))
+            }
+          : current
+      ));
+      try {
+        const saved = await api('/api/sites/under-attack', {
+          method: 'PATCH',
+          body: { enabled }
+        });
+        setData((current) => (current ? { ...current, sites: saved.sites || current.sites } : current));
+        showToast(enabled ? 'Under Attack Mode enabled for all applications' : 'Under Attack Mode disabled for all applications');
+      } catch (error) {
+        showToast(error.message, true);
+        await loadViewData('sites', { manageLoading: false, force: true });
+      }
+    });
+  }
+
   async function toggleRule(rule, enabled) {
     await withActionPending(`rule:${rule.id}:enabled`, async () => {
       updateDataItem('rules', rule.id, { enabled });
@@ -1356,6 +1383,7 @@ export default function App() {
       setModal,
       toggleSite,
       toggleUnderAttack,
+      toggleAllUnderAttack,
       toggleRule,
       toggleIpGroup,
       toggleAccessRule,
@@ -2023,17 +2051,37 @@ function CompactInsightColumn({ title, pill, rows, empty, maxValue, label, barVa
   );
 }
 
-function SitesView({ data, setModal, toggleSite, toggleUnderAttack, deleteSite, downloadCertificate, pendingActions }) {
+function SitesView({ data, setModal, toggleSite, toggleUnderAttack, toggleAllUnderAttack, deleteSite, downloadCertificate, pendingActions = {} }) {
+  const sites = data.sites || [];
+  const underAttackCount = sites.filter((site) => site.underAttack?.enabled).length;
+  const allUnderAttack = sites.length > 0 && underAttackCount === sites.length;
+  const underAttackPending = Object.keys(pendingActions).some((key) => key.endsWith(':underAttack'));
+
   return (
     <section className="panel">
       <div className="panel-heading">
         <h2>Applications</h2>
-        <button className="tool-button primary" onClick={() => setModal({ type: 'site', site: null })}>
-          <Plus size={18} /> Add Application
-        </button>
+        <div className="site-heading-actions">
+          <span className={`under-attack-summary ${underAttackCount ? 'active' : ''}`}>
+            {underAttackCount}/{sites.length} under attack
+          </span>
+          <button
+            className={`tool-button under-attack-all-button ${allUnderAttack ? 'active' : ''}`}
+            type="button"
+            onClick={() => toggleAllUnderAttack(!allUnderAttack)}
+            disabled={!sites.length || underAttackPending}
+            title={allUnderAttack ? 'Disable Under Attack Mode for every application' : 'Enable Under Attack Mode for every application'}
+          >
+            {underAttackPending ? <Loader2 size={16} className="spin" /> : <ShieldAlert size={16} />}
+            {underAttackPending ? 'Updating all' : allUnderAttack ? 'Disable for all' : 'Enable for all'}
+          </button>
+          <button className="tool-button primary" onClick={() => setModal({ type: 'site', site: null })}>
+            <Plus size={18} /> Add Application
+          </button>
+        </div>
       </div>
       <div className="application-grid">
-        {data.sites.map((site) => {
+        {sites.map((site) => {
           const certificate = data.certificates?.find((item) => item.id === site.tls?.certificateId);
           return (
             <ApplicationCard
@@ -2047,7 +2095,7 @@ function SitesView({ data, setModal, toggleSite, toggleUnderAttack, deleteSite, 
               onToggle={(checked) => toggleSite(site, checked)}
               onToggleUnderAttack={(checked) => toggleUnderAttack(site, checked)}
               defensePending={Boolean(pendingActions[`site:${site.id}:enabled`])}
-              underAttackPending={Boolean(pendingActions[`site:${site.id}:underAttack`])}
+              underAttackPending={underAttackPending || Boolean(pendingActions[`site:${site.id}:underAttack`])}
               onConfigureFlood={() => setModal({ type: 'httpFlood', site })}
               onConfigureBot={() => setModal({ type: 'botProtect', site })}
               onConfigureGeo={() => setModal({ type: 'geoBlock', site })}
