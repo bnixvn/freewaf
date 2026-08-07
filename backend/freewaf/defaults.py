@@ -396,7 +396,6 @@ _WOOCOMMERCE_CART_CONFLICT_PATTERN = (
 )
 _GHOSTSCRIPT_PATTERN = r"(?:(?:\.ps|\.eps|\.pdf)(?:$|\?|/)|-dSAFER|\.forceput|%pipe%|\.setdevice|/invalidaccess)"
 _DRUPALGEDDON_PATTERN = r"(?:(?:_drupal_ajax=1|ajax_form=1).*?(?:element_parents|form_id)|element_parents=.*%23(?:value|post_render)|form_id=user_(?:register|password)_form|/user/(?:register|password).*(?:%23|#)post_render)"
-_IMAGE_MAGICK_PATTERN = r"(?:(?:\.mvg)(?:$|\?)|mvg:|ephemeral:|push graphic-context|fill 'url\(|delegate|caption:|label:)"
 
 # Only PHP / WordPress / Laravel / Drupal / Joomla / general-web SafeLine rules.
 SAFELINE_COMPATIBILITY_RULES = [
@@ -411,9 +410,6 @@ SAFELINE_COMPATIBILITY_RULES = [
     # Ghostscript
     _safeline_rule(131085, "CVE-2018-14715 Ghostscript Command Execution", _GHOSTSCRIPT_PATTERN, target="all", severity="critical", suffix="command-execution"),
     _safeline_rule(131085, "CVE-2018-17961 Ghostscript Arbitrary File IO", _GHOSTSCRIPT_PATTERN, target="all", severity="critical", suffix="file-io"),
-    # ImageMagick RCE (CVE-2016-3714) - kept for PHP image processing security
-    # NOTE: ImageMagick DoS (65739) removed - causes false positives on WP sites using imagick for image optimization
-    _safeline_rule(65548, "ImageMagick RCE (CVE-2016-3714)", _IMAGE_MAGICK_PATTERN, target="all", severity="critical"),
     # PHP / PHP-FPM / PHP-CGI
     _safeline_rule(131088, "PHP FastCGI parsing vulnerability", _PHP_FASTCGI_PATTERN, severity="critical"),
     _safeline_rule(65849, "PHP-CGI Windows Platform Remote Code Execution Vulnerability (CVE-2024-4577)", _PHP_FASTCGI_PATTERN, severity="critical"),
@@ -505,9 +501,6 @@ _SAFELINE_KEEP_IDS: set[str] = {
     "builtin-safeline-65845",               # Vtiger (PHP)
     "builtin-safeline-65773",               # Nextcloud (PHP)
     "builtin-safeline-65583",               # Horde Groupware (PHP)
-    # Image processing (commonly used by PHP)
-    # NOTE: 65739 (ImageMagick DoS) removed - causes false positives on WP imagick
-    "builtin-safeline-65548",               # ImageMagick RCE
     # Apache HTTPD (common PHP web server)
     "builtin-safeline-65713",               # Apache HTTPD SSRF
 }
