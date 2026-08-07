@@ -1800,7 +1800,9 @@ def dashboard_stats_snapshot(store: Store, state: dict | None = None, site_id: s
         return cached["data"]
     request_dashboard_state_refresh(store, key)
     source_state = state or store.get_state_fields("sites", "settings")
-    return build_stats({**source_state, "logs": []}, site_id=site_id)
+    # Build with real logs so timelines are populated on first load
+    recent_logs = combined_stats_logs(store)
+    return build_stats({**source_state, "logs": recent_logs}, site_id=site_id)
 
 
 def nginx_stats_summary(retention_days: int | None = None) -> dict:
