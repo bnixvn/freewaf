@@ -629,7 +629,29 @@ SAFELINE_COMPATIBILITY_RULES = [
     _safeline_rule(65545, "JIRA OAuth SSRF (CVE-2017-9506)", _JIRA_SSRF_PATTERN, target="all", severity="critical"),
 ]
 
-BUILTIN_RULES.extend(SAFELINE_COMPATIBILITY_RULES)
+def _deduplicate_safeline_rules(rules: list[dict]) -> list[dict]:
+    """Merge SafeLine rules that share the same (target, pattern) into one rule.
+
+    Keeps the first-seen rule per unique key and appends merged SafeLine IDs to
+    the description so operators can still trace provenance.
+    """
+    seen: dict[tuple[str, str], dict] = {}
+    order: list[tuple[str, str]] = []
+    for rule in rules:
+        key = (rule.get("target", "url"), rule.get("pattern", ""))
+        if key in seen:
+            # Append the SafeLine ID from the duplicate into the kept rule's description.
+            kept = seen[key]
+            kept["description"] = (
+                kept.get("description", "")
+                + f" | also covers SL-{rule.get('id', '')}"
+            ).strip(" |")
+            continue
+        seen[key] = rule
+        order.append(key)
+    return [seen[key] for key in order]
+
+BUILTIN_RULES.extend(_deduplicate_safeline_rules(SAFELINE_COMPATIBILITY_RULES))
 
 
 def utc_now() -> str:

@@ -2284,15 +2284,75 @@ function RulesView({ data, filter, setFilter, setModal, toggleRule, deleteRule, 
 }
 
 function AccessView({ data, setModal, toggleAccessRule, deleteAccessRule, pendingActions }) {
+  const [wlOpen, setWlOpen] = useState(false);
+  const [wlUrls, setWlUrls] = useState('');
+  const [wlSiteId, setWlSiteId] = useState('*');
   const siteName = (id) => (id === '*' ? 'All sites' : data.sites.find((site) => site.id === id)?.name || id);
+
+  function openUrlWhitelistModal() {
+    const patterns = wlUrls.split('\n').map((line) => line.trim()).filter(Boolean);
+    if (!patterns.length) { window.alert('Enter at least one URL pattern.'); return; }
+    const fakeRule = {
+      name: `URL Whitelist (${patterns.length} patterns)`,
+      description: `Whitelisted: ${patterns.slice(0, 5).join(', ')}${patterns.length > 5 ? '...' : ''}`,
+      action: 'allow',
+      siteId: wlSiteId,
+      insertPosition: 'first',
+      enabled: true,
+      continueDetect: true,
+      conditionGroups: [{
+        conditions: patterns.map((pattern) => ({
+          target: 'uri',
+          operator: pattern.includes('*') || pattern.includes('[') || pattern.includes('(') ? 'regex' : 'contains',
+          content: pattern
+        }))
+      }]
+    };
+    setModal({ type: 'accessRule', rule: fakeRule });
+    setWlUrls('');
+    setWlOpen(false);
+  }
+
   return (
     <section className="table-panel">
       <div className="panel-heading">
         <h2>Access Rules</h2>
-        <button className="tool-button primary" onClick={() => setModal({ type: 'accessRule', rule: null })}>
-          <Plus size={18} /> Add Access Rule
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="tool-button" onClick={() => setWlOpen(!wlOpen)} title="Quick-add URL whitelist">
+            <ShieldCheck size={16} /> URL Whitelist
+          </button>
+          <button className="tool-button primary" onClick={() => setModal({ type: 'accessRule', rule: null })}>
+            <Plus size={18} /> Add Access Rule
+          </button>
+        </div>
       </div>
+      {wlOpen && (
+        <div className="url-whitelist-panel" style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', background: 'var(--panel-bg, #fafbfc)' }}>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'end' }}>
+            <label className="field" style={{ flex: 1, margin: 0 }}>
+              <span>URL patterns (one per line)</span>
+              <textarea
+                value={wlUrls}
+                onChange={(e) => setWlUrls(e.target.value)}
+                placeholder={'/api/health\n/webhook/stripe\n/wp-json/wp/v2/posts\n^/admin/public/.*'}
+                rows={4}
+                style={{ fontFamily: 'monospace', fontSize: 13 }}
+              />
+              <small className="field-hint">Plain text = substring match. Use regex patterns (e.g. <code>^/api/v[12]/</code>) for advanced matching.</small>
+            </label>
+            <label className="field" style={{ minWidth: 180, margin: 0 }}>
+              <span>Application</span>
+              <select value={wlSiteId} onChange={(e) => setWlSiteId(e.target.value)}>
+                <option value="*">All applications</option>
+                {(data.sites || []).map((site) => <option key={site.id} value={site.id}>{site.name || site.id}</option>)}
+              </select>
+            </label>
+            <button className="tool-button primary" onClick={openUrlWhitelistModal} style={{ whiteSpace: 'nowrap' }}>
+              <ShieldCheck size={16} /> Review &amp; Save
+            </button>
+          </div>
+        </div>
+      )}
       <div className="table-wrap">
         <table>
           <thead>

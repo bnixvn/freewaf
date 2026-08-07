@@ -1138,9 +1138,14 @@ def render_shared_builtin_rule_maps(state: dict) -> list[str]:
         result_variable = shared_builtin_source_var(source_variable)
         result_variables.append(f"${result_variable}")
         lines.extend([f"map {source_variable} ${result_variable} {{", "    default 0;"])
+        seen_patterns: set[str] = set()
         for index, rule in reversed(indexed_rules):
             pattern = nginx_regex(rule.get("pattern") or "")
-            lines.append(f'    "~*{pattern[1:-1]}" {index};')
+            raw = pattern[1:-1]
+            if raw in seen_patterns:
+                continue
+            seen_patterns.add(raw)
+            lines.append(f'    "~*{raw}" {index};')
         lines.extend(["}", ""])
 
     combined_source = ":".join(result_variables)
