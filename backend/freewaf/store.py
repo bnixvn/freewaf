@@ -376,6 +376,17 @@ class Store:
                 stored_rule.update(updated_rule)
                 changed = True
 
+        # Remove builtin rules that are no longer in BUILTIN_RULES (e.g. after
+        # upstream cleanup of Safeline compatibility rules).
+        builtin_ids = {rule["id"] for rule in BUILTIN_RULES}
+        before_count = len(self.state["rules"])
+        self.state["rules"] = [
+            rule for rule in self.state["rules"]
+            if not rule.get("builtin") or rule["id"] in builtin_ids
+        ]
+        if len(self.state["rules"]) != before_count:
+            changed = True
+
         if not self.state["ipGroups"]:
             self.state["ipGroups"].append(
                 {
