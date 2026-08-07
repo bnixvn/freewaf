@@ -411,8 +411,8 @@ SAFELINE_COMPATIBILITY_RULES = [
     # Ghostscript
     _safeline_rule(131085, "CVE-2018-14715 Ghostscript Command Execution", _GHOSTSCRIPT_PATTERN, target="all", severity="critical", suffix="command-execution"),
     _safeline_rule(131085, "CVE-2018-17961 Ghostscript Arbitrary File IO", _GHOSTSCRIPT_PATTERN, target="all", severity="critical", suffix="file-io"),
-    # ImageMagick (commonly used by PHP)
-    _safeline_rule(65739, "ImageMagick DoS Attack (CVE-2022-44267)", _IMAGE_MAGICK_PATTERN, target="all", severity="high"),
+    # ImageMagick RCE (CVE-2016-3714) - kept for PHP image processing security
+    # NOTE: ImageMagick DoS (65739) removed - causes false positives on WP sites using imagick for image optimization
     _safeline_rule(65548, "ImageMagick RCE (CVE-2016-3714)", _IMAGE_MAGICK_PATTERN, target="all", severity="critical"),
     # PHP / PHP-FPM / PHP-CGI
     _safeline_rule(131088, "PHP FastCGI parsing vulnerability", _PHP_FASTCGI_PATTERN, severity="critical"),
@@ -506,7 +506,7 @@ _SAFELINE_KEEP_IDS: set[str] = {
     "builtin-safeline-65773",               # Nextcloud (PHP)
     "builtin-safeline-65583",               # Horde Groupware (PHP)
     # Image processing (commonly used by PHP)
-    "builtin-safeline-65739",               # ImageMagick DoS
+    # NOTE: 65739 (ImageMagick DoS) removed - causes false positives on WP imagick
     "builtin-safeline-65548",               # ImageMagick RCE
     # Apache HTTPD (common PHP web server)
     "builtin-safeline-65713",               # Apache HTTPD SSRF
