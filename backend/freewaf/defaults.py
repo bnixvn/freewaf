@@ -422,7 +422,9 @@ SAFELINE_COMPATIBILITY_RULES = [
     _safeline_rule(65628, "Nginx code parsing vulnerability", r"(?:/[^?]+\.(?:jpg|png|gif|txt|css|js)/[^?]+\.php|%00\.php|\.php/(?:\.\./|%2e%2e))", severity="critical"),
     # WordPress
     _safeline_rule(65885, "WooCommerce cart action conflict", _WOOCOMMERCE_CART_CONFLICT_PATTERN, severity="medium"),
-    _safeline_rule(65720, "Code Injection vulnerability (against WordPress)", r"(?:/(?:wp-admin/admin-ajax\.php|wp-json/|wp-content/plugins/[^?]+/(?:ajax|upload|download))(?:[^\s]*(?:[?&](?:action|cmd|exec|page|include|file|path|load)=|/)(?:assert|eval|system|exec|passthru|shell_exec|popen|proc_open)|[^\s]*<(?:php|script|\?))|(?:action|cmd|exec|page|include|file)=.*(?:assert|eval|system|exec|passthru|shell_exec|popen|proc_open|preg_replace))", target="all", severity="critical"),
+    # WordPress code injection rule (65720) removed - too aggressive for modern WP.
+    # wp-json/ matches ALL REST API (Gutenberg, Customizer, plugin settings).
+    # action= is ubiquitous in admin-ajax.php. WP core has nonce+capability checks.
     # Laravel
     _safeline_rule(65701, "Laravel Debug Mode RCE (CVE-2021-3129)", r"(?:/_ignition/execute-solution|/vendor/facade/ignition|solution=Facade\\Ignition)", target="all", severity="critical"),
     # Drupal
@@ -486,7 +488,7 @@ _SAFELINE_KEEP_IDS: set[str] = {
     "builtin-safeline-65628",               # Nginx code parsing (PHP-FPM)
     # WordPress
     "builtin-safeline-65885",               # WooCommerce cart conflict
-    "builtin-safeline-65720",               # WordPress code injection
+    # WordPress code injection (65720) removed - too broad for modern WP
     # Laravel
     "builtin-safeline-65701",               # Laravel Debug Mode RCE
     # Drupal
