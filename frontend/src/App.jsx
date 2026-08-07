@@ -1690,9 +1690,13 @@ function DashboardView({ data, dashboardSiteId, setDashboardSiteId, dashboardPer
   const protectedTotal = Number(stats.protected ?? (Number(stats.blocked || 0) + Number(stats.challenged || 0)));
   const blockedTotal = Number(stats.blocked || 0);
   const fallbackStatusTimeline = buildFallbackStatusTimeline(stats);
-  const statusTimeline = hasTimelineData(rawStatusTimeline, ['total', 'blocked', 'challenged', 'protected'])
+  // Use raw timeline if it has multiple points (even all-zero), same as QPS chart.
+  // Only fall back to single-point when timeline data is completely absent.
+  const statusTimeline = (Array.isArray(rawStatusTimeline) && rawStatusTimeline.length > 1)
     ? rawStatusTimeline
-    : (hasTimelineData(timeline, ['total', 'blocked', 'challenged', 'protected']) ? timeline : fallbackStatusTimeline);
+    : (Array.isArray(timeline) && timeline.length > 1)
+      ? timeline
+      : fallbackStatusTimeline;
   const botTypes = stats.botTypes || [];
   const userClientOs = stats.userClientOs || [];
   const userClientBrowsers = stats.userClientBrowsers || [];
