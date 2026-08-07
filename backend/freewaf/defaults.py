@@ -372,8 +372,8 @@ def _safeline_rule(
     id_suffix = f"-{suffix}" if suffix else ""
     return {
         "id": f"builtin-safeline-{rule_id}{id_suffix}",
-        "name": f"[SafeLine {rule_id}] {name}",
-        "description": f"Compatibility signature for SafeLine rule {rule_id}: {name}.",
+        "name": f"[Rule {rule_id}] {name}",
+        "description": f"WAF signature rule {rule_id}: {name}.",
         "builtin": True,
         "enabled": True,
         "siteId": "*",
