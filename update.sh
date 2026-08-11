@@ -43,6 +43,30 @@ wait_for_port() {
   return 1
 }
 
+ensure_git_repo() {
+  cd "$APP_DIR"
+  if [ -d .git ]; then
+    # Verify remote points to the right repo
+    local current_url
+    current_url="$(git remote get-url origin 2>/dev/null || true)"
+    if [ "$current_url" != "$REPO_URL" ]; then
+      log "Fixing git remote: ${current_url} -> ${REPO_URL}"
+      git remote set-url origin "$REPO_URL" 2>/dev/null || git remote add origin "$REPO_URL"
+    fi
+    return 0
+  fi
+
+  # No .git directory — initialise from existing files
+  log "No git repo found in ${APP_DIR}, initialising..."
+  git init
+  git remote add origin "$REPO_URL"
+  # Stash any local changes so reset --hard works
+  git add -A 2>/dev/null || true
+  git commit -m "local state before update" --allow-empty 2>/dev/null || true
+  git fetch origin "$REPO_BRANCH" --depth 1 || fail "Cannot reach ${REPO_URL}. Check DNS/network: ping github.com"
+  git checkout -B "$REPO_BRANCH" "origin/${REPO_BRANCH}"
+}
+
 # --- main ------------------------------------------------------------------
 
 main() {
@@ -53,11 +77,12 @@ main() {
   local admin_port
   admin_port="$(read_env ADMIN_PORT 7001)"
 
-  # 1. Pull latest code
+  # 1. Ensure git repo exists and pull latest code
   log "Pulling latest code from ${REPO_URL} (${REPO_BRANCH})"
+  ensure_git_repo
+
   cd "$APP_DIR"
-  git fetch --all --prune
-  git checkout "$REPO_BRANCH"
+  git fetch origin "$REPO_BRANCH" --depth 1 || fail "git fetch failed. Check DNS: ping github.com"
   git reset --hard "origin/${REPO_BRANCH}"
   local revision
   revision="$(git rev-parse --short HEAD)"
