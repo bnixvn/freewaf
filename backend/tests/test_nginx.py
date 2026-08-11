@@ -924,7 +924,7 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertNotIn("freewaf_site_native_bot_count", config)
         self.assertNotIn("freewaf_site_native_flood_count", config)
         self.assertIn("map $http_user_agent $sfl_bad_bot_ua", config)
-        self.assertIn("limit_req_zone $sfl_acl_key_site_native zone=sfl_acl_site_native:2m rate=20r/s;", config)
+        self.assertIn("limit_req_zone $sfl_acl_key_site_native zone=sfl_acl_site_native:1m rate=20r/s;", config)
         self.assertIn("set $sfl_challenge 1;", config)
 
     def test_site_settings_override_application_defaults_for_transport_and_modsecurity(self):
@@ -1334,7 +1334,7 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn('    ~^1: "";', config)
         self.assertIn('    ~^[^:]+:1$ "";', config)
         self.assertIn("set $sfl_verified_rate_bypass 1;", config)
-        self.assertIn("limit_req_zone $sfl_global_rate_key zone=freewaf_rate:2m", config)
+        self.assertIn("limit_req_zone $sfl_global_rate_key zone=freewaf_rate:1m", config)
         self.assertIn("if ($sfl_verified_search_bot = 1)", config)
         self.assertIn("set $sfl_under_attack_challenge 0;", config)
         self.assertIn('SecRule REMOTE_ADDR "@ipMatch 66.249.64.0/27"', config)
@@ -1512,7 +1512,7 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertNotIn("map $http_user_agent $sfl_bad_bot_ua", config)
         self.assertNotIn("Bot protection protected login path", config)
         self.assertNotIn("freewaf_site_demo_bot_count", config)
-        self.assertIn('limit_req_zone "$sfl_client_ip|$request_method|$request_uri|$http_user_agent" zone=sfl_replay_site_demo:2m rate=1r/s;', config)
+        self.assertIn('limit_req_zone "$sfl_client_ip|$request_method|$request_uri|$http_user_agent" zone=sfl_replay_site_demo:1m rate=1r/s;', config)
         self.assertIn("limit_req zone=sfl_replay_site_demo burst=1 nodelay;", config)
         self.assertIn('add_header X-FreeWAF-Dynamic-Protection "html,watermark" always;', config)
 
@@ -1577,8 +1577,8 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("map $cookie_freewaf_challenge $sfl_acl_key_site_demo", config)
         self.assertIn("map $cookie_freewaf_challenge $sfl_acl_key_site_demo_fp", config)
         self.assertIn("passed \"\";", config)
-        self.assertIn("limit_req_zone $sfl_acl_key_site_demo zone=sfl_acl_site_demo:2m", config)
-        self.assertIn("limit_req_zone $sfl_acl_key_site_demo_fp zone=sfl_acl_site_demo_fp:2m", config)
+        self.assertIn("limit_req_zone $sfl_acl_key_site_demo zone=sfl_acl_site_demo:1m", config)
+        self.assertIn("limit_req_zone $sfl_acl_key_site_demo_fp zone=sfl_acl_site_demo_fp:1m", config)
         self.assertIn("limit_req zone=sfl_acl_site_demo burst=200 nodelay;", config)
         self.assertIn("limit_req zone=sfl_acl_site_demo_fp burst=200 nodelay;", config)
         self.assertIn("error_page 429 = @freewaf_challenge;", config)
@@ -1612,7 +1612,7 @@ class NginxGeneratorTests(unittest.TestCase):
         config = generate_nginx_config(state)
 
         self.assertIn("map $sfl_wordpress_rate_bypass $sfl_global_rate_key", config)
-        self.assertIn("limit_req_zone $sfl_global_rate_key zone=freewaf_rate:2m", config)
+        self.assertIn("limit_req_zone $sfl_global_rate_key zone=freewaf_rate:1m", config)
         self.assertIn("limit_req zone=freewaf_rate burst=600 nodelay;", config)
         self.assertNotIn("zone=sfl_acl_site_demo", config)
 
@@ -1641,8 +1641,8 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("map $args $sfl_wordpress_rest_route_rate_bypass", config)
         self.assertIn("wordpress_logged_in_", config)
         self.assertIn('    1 "";', config)
-        self.assertIn("limit_req_zone $sfl_global_rate_key zone=freewaf_rate:2m", config)
-        self.assertIn("limit_req_zone $sfl_global_rate_fingerprint_key zone=freewaf_rate_fingerprint:2m", config)
+        self.assertIn("limit_req_zone $sfl_global_rate_key zone=freewaf_rate:1m", config)
+        self.assertIn("limit_req_zone $sfl_global_rate_fingerprint_key zone=freewaf_rate_fingerprint:1m", config)
 
     def test_waiting_room_queues_without_nodelay(self):
         state = make_state(

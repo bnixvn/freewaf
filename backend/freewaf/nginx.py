@@ -159,8 +159,8 @@ def env_int(name: str, fallback: int, minimum: int = 1) -> int:
 
 
 def nginx_limit_zone_size() -> str:
-    value = os.environ.get("NGINX_LIMIT_ZONE_SIZE", "2m").strip()
-    return value.lower() if NGINX_SIZE_RE.match(value) else "2m"
+    value = os.environ.get("NGINX_LIMIT_ZONE_SIZE", "1m").strip()
+    return value.lower() if NGINX_SIZE_RE.match(value) else "1m"
 
 
 def nginx_hash_tuning_directives() -> list[str]:
@@ -1325,7 +1325,7 @@ def render_upstream(name: str, upstreams: list[str]) -> str:
     for upstream in upstreams:
         parsed = urlparse(upstream)
         lines.append(f"    server {nginx_path(parsed.netloc)};")
-    lines.extend(["    keepalive 128;", "    keepalive_timeout 75;", "}"])
+    lines.extend(["    keepalive 16;", "    keepalive_timeout 30;", "}"])
     return "\n".join(lines)
 
 
@@ -1529,7 +1529,7 @@ def render_wordpress_admin_timeout_location(
         *render_proxy_ssl(upstream_scheme, proxy),
         "        proxy_buffering on;",
         "        proxy_buffer_size 32k;",
-        "        proxy_buffers 16 32k;",
+        "        proxy_buffers 8 32k;",
         "        proxy_busy_buffers_size 64k;",
         "        proxy_connect_timeout 30s;",
         "        proxy_read_timeout 300s;",
@@ -1544,7 +1544,7 @@ def render_wordpress_admin_timeout_location(
         *render_proxy_ssl(upstream_scheme, proxy),
         "        proxy_buffering on;",
         "        proxy_buffer_size 16k;",
-        "        proxy_buffers 8 32k;",
+        "        proxy_buffers 4 32k;",
         "        proxy_busy_buffers_size 64k;",
         "        proxy_connect_timeout 30s;",
         "        proxy_read_timeout 300s;",
@@ -1804,17 +1804,17 @@ def render_application_location(site: dict, state: dict, upstream_name: str, ups
             *render_hsts_header(proxy, is_ssl),
             *render_dynamic_protection_headers(site),
             *render_proxy_ssl(upstream_scheme, proxy),
-            # Proxy buffering: larger buffers prevent slow transfers for
-            # WordPress admin pages that return big HTML / JSON responses.
+            # Proxy buffering: moderate buffers for general traffic.
+            # wp-admin/wp-json get larger buffers via dedicated locations.
             "        proxy_buffering on;",
-            "        proxy_buffer_size 16k;",
-            "        proxy_buffers 8 32k;",
-            "        proxy_busy_buffers_size 64k;",
-            # Generous timeouts for wp-admin / Gutenberg / Customizer which
-            # can take a while on the upstream (heavy PHP, remote calls).
-            "        proxy_connect_timeout 30s;",
-            "        proxy_read_timeout 180s;",
-            "        proxy_send_timeout 120s;",
+            "        proxy_buffer_size 8k;",
+            "        proxy_buffers 4 16k;",
+            "        proxy_busy_buffers_size 32k;",
+            # Timeouts for general traffic. wp-admin/wp-json get longer
+            # timeouts via dedicated locations.
+            "        proxy_connect_timeout 15s;",
+            "        proxy_read_timeout 60s;",
+            "        proxy_send_timeout 30s;",
             *render_rate_limit(state, site),
             *render_bot_replay_limit(site),
             f"        proxy_pass {upstream_scheme}://{upstream_name};",
