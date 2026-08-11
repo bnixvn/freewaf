@@ -45,6 +45,7 @@ from .nginx import (
     write_nginx_config,
 )
 from . import ipset_manager
+from . import blocked_traffic_logger
 from .defaults import (
     challenge_secret,
     utc_now,
@@ -119,6 +120,12 @@ def main() -> None:
             print(f"ipset synced {len(blocked)} blocked IP(s)")
     except Exception as exc:
         print(f"ipset init failed (non-fatal): {exc}")
+
+    # Start blocked traffic logger (tails kernel log for iptables LOG entries)
+    try:
+        blocked_traffic_logger.start(ROOT_DIR, store.get_state)
+    except Exception as exc:
+        print(f"blocked_traffic_logger start failed (non-fatal): {exc}")
 
     admin_server = ThreadingHTTPServer(
         ("0.0.0.0", admin_port),

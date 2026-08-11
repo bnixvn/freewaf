@@ -310,6 +310,7 @@ USER_ROLES = {"admin", "viewer"}
 PASSWORD_ITERATIONS = 200_000
 BOT_RATE_WINDOW_SECONDS = {5, 10, 15, 20, 30, 60}
 BOT_RATE_BLOCK_MINUTES = {10, 30, 60}
+IPSET_THRESHOLD = 100  # blocked IPs above this count use ipset+iptables instead of nginx deny
 
 
 class StoreError(Exception):
@@ -709,6 +710,18 @@ class Store:
         with self.lock:
             self._state()["blockedIps"] = list(dict.fromkeys(str(ip).strip() for ip in ips if str(ip).strip()))
             self.persist()
+
+    def partition_blocked_ips(self) -> tuple[list[str], list[str]]:
+        """Split blockedIps into (nginx_list, ipset_list).
+
+        Lists with <= IPSET_THRESHOLD entries stay in nginx (deny directives,
+        full access logs).  Larger lists move to ipset+iptables (kernel-level
+        blocking, logged via blocked_traffic_logger).
+        """
+        blocked = list(self._state().get("blockedIps", []))
+        if len(blocked) <= IPSET_THRESHOLD:
+            return blocked, []
+        return [], blocked
 
     def update_settings(self, payload: dict) -> dict:
         with self.lock:

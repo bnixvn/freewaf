@@ -29,6 +29,7 @@ from .defaults import (
 
 NATIVE_TARGETS = {"all", "url", "headers", "method", "ip"}
 BOT_RULE_IDS = {"builtin-scanner-agent"}
+_IPSET_THRESHOLD = 100  # blocked IPs above this count use ipset+iptables
 BOT_BLOCK_UA_PATTERN = (
     r"(?:sqlmap|nikto|acunetix|nessus|nuclei|wpscan|masscan|nmap|zgrab|gobuster|"
     r"dirbuster|ffuf|jaeles|zmeu|commix|havij|netsparker|openvas|arachni)"
@@ -125,6 +126,10 @@ def nginx_modsecurity_ip_list_dir(root_dir: Path) -> Path:
 
 def nginx_access_log_file(root_dir: Path) -> Path:
     configured = Path(os.environ.get("NGINX_ACCESS_LOG", "./logs/freewaf_access.log"))
+    return configured if configured.is_absolute() else root_dir / configured
+
+def nginx_blocked_log_file(root_dir: Path) -> Path:
+    configured = Path(os.environ.get("BLOCKED_TRAFFIC_LOG", "./logs/freewaf_blocked.log"))
     return configured if configured.is_absolute() else root_dir / configured
 
 
@@ -780,6 +785,10 @@ def nginx_log_files(root_dir: Path) -> list[Path]:
     site_log_dir = nginx_site_log_dir(root_dir)
     if site_log_dir.exists():
         log_files.extend(sorted(p for p in site_log_dir.glob("accesslog_*") if is_active_site_access_log(p)))
+    # Include blocked traffic log written by blocked_traffic_logger
+    blocked_log = nginx_blocked_log_file(root_dir)
+    if blocked_log.exists() and blocked_log.is_file():
+        log_files.append(blocked_log)
     return log_files
 
 
@@ -1577,12 +1586,24 @@ def render_wordpress_admin_timeout_location(
     ]
 
 
-def render_blocked_ips_directives(state: dict) -> list[str]:
-    """Generate nginx deny directives for IPs blocked via ipset."""
-    blocked_ips = state.get("blockedIps", []) if isinstance(state.get("blockedIps"), list) else []
+def render_blocked_ips_directives(state: dict, nginx_ips: list[str] | None = None) -> list[str]:
+    """Generate nginx deny directives for IPs blocked via nginx.
+
+    When *nginx_ips* is provided it is used directly (the caller already
+    partitioned the full list).  Otherwise the full ``blockedIps`` list is
+    read from *state* and partitioned: lists with <= ``_IPSET_THRESHOLD``
+    entries stay in nginx; larger lists are handled by ipset+iptables.
+    """
+    if nginx_ips is not None:
+        blocked_ips = nginx_ips
+    else:
+        blocked_ips = state.get("blockedIps", []) if isinstance(state.get("blockedIps"), list) else []
+        # Large lists go to ipset+iptables; skip nginx deny directives.
+        if len(blocked_ips) > _IPSET_THRESHOLD:
+            return []
     if not blocked_ips:
         return []
-    lines = ["    # Blocked IPs (managed by FreeWAF ipset)"]
+    lines = ["    # Blocked IPs (small list - nginx deny)"]
     for blocked_ip in blocked_ips:
         ip = str(blocked_ip).strip()
         if ip:
