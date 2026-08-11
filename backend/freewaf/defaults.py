@@ -581,8 +581,8 @@ def create_default_state(now: str | None = None) -> dict:
                     "accessLimit": {
                         "enabled": True,
                         "period": 10,
-                        "count": 500,
-                        "blockCount": 1200,
+                        "count": 1000,
+                        "blockCount": 2000,
                         "action": "challenge_v1",
                         "blockMin": 60,
                     },
