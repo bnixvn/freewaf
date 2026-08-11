@@ -583,7 +583,7 @@ def create_default_state(now: str | None = None) -> dict:
                         "period": 10,
                         "count": 500,
                         "blockCount": 1200,
-                        "action": "challenge_v1",
+                        "action": "block",
                         "blockMin": 60,
                     },
                     "attackLimit": {
@@ -609,7 +609,7 @@ def create_default_state(now: str | None = None) -> dict:
                 },
                 "botProtection": {
                     "enabled": True,
-                    "antiBotChallenge": True,
+                    "antiBotChallenge": False,
                     "verifiedSearchBots": {
                         "enabled": True,
                         "bypassChallenge": True,
@@ -621,7 +621,7 @@ def create_default_state(now: str | None = None) -> dict:
                         "bypassRateLimit": True,
                     },
                     "loginChallenge": {
-                        "enabled": True,
+                        "enabled": False,
                         "pathPatterns": deepcopy(DEFAULT_BOT_LOGIN_PATH_PATTERNS),
                     },
                     "rateChallenge": deepcopy(DEFAULT_BOT_RATE_CHALLENGE),
