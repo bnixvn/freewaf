@@ -933,6 +933,15 @@ def render_bot_detection_maps() -> list[str]:
         "    ~*^(?:TRACE|TRACK|CONNECT)$ 1;",
         "}",
         "",
+        # Bypass bot challenge for authenticated WordPress users.
+        # The wordpress_logged_in_ cookie proves the user already passed
+        # the login flow, so re-challenging wp-admin/ requests is
+        # unnecessary and causes the Customizer / Gutenberg to stall.
+        "map $http_cookie $sfl_wp_logged_in_bypass {",
+        "    default 0;",
+        r"    ~*wordpress_logged_in_ 1;",
+        "}",
+        "",
     ]
 
 
@@ -1725,6 +1734,17 @@ def render_application_location(site: dict, state: dict, upstream_name: str, ups
             *render_hsts_header(proxy, is_ssl),
             *render_dynamic_protection_headers(site),
             *render_proxy_ssl(upstream_scheme, proxy),
+            # Proxy buffering: larger buffers prevent slow transfers for
+            # WordPress admin pages that return big HTML / JSON responses.
+            "        proxy_buffering on;",
+            "        proxy_buffer_size 16k;",
+            "        proxy_buffers 8 32k;",
+            "        proxy_busy_buffers_size 64k;",
+            # Generous timeouts for wp-admin / Gutenberg / Customizer which
+            # can take a while on the upstream (heavy PHP, remote calls).
+            "        proxy_connect_timeout 10s;",
+            "        proxy_read_timeout 120s;",
+            "        proxy_send_timeout 120s;",
             *render_rate_limit(state, site),
             *render_bot_replay_limit(site),
             f"        proxy_pass {upstream_scheme}://{upstream_name};",
@@ -2734,6 +2754,11 @@ def render_bot_protection(site: dict) -> list[str]:
             "    if ($sfl_challenge_passed = 1) {",
             "        set $sfl_bot_challenge 0;",
             "    }",
+            # Authenticated WordPress users should never be challenged on
+            # wp-admin / wp-login — the session cookie is proof enough.
+            "    if ($sfl_wp_logged_in_bypass = 1) {",
+            "        set $sfl_bot_challenge 0;",
+            "    }",
             *(
                 [
                     "    if ($sfl_verified_search_bot = 1) {",
@@ -2806,6 +2831,10 @@ def render_under_attack_protection(site: dict) -> list[str]:
         "        set $sfl_under_attack_challenge 0;",
         "    }",
         "    if ($sfl_challenge_passed = 1) {",
+        "        set $sfl_under_attack_challenge 0;",
+        "    }",
+        # Authenticated WordPress users bypass Under Attack challenge too.
+        "    if ($sfl_wp_logged_in_bypass = 1) {",
         "        set $sfl_under_attack_challenge 0;",
         "    }",
         *(
