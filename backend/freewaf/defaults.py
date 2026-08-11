@@ -395,9 +395,8 @@ _WOOCOMMERCE_CART_CONFLICT_PATTERN = (
     r"(?:[?&]remove_item=[0-9a-f]{32}(?:&[^#\s]*)?&add-to-cart=\d+(?:$|[&#])|[?&]add-to-cart=\d+(?:&[^#\s]*)?&remove_item=[0-9a-f]{32}(?:$|[&#]))"
 )
 _GHOSTSCRIPT_PATTERN = r"(?:(?:\.ps|\.eps|\.pdf)(?:$|\?|/)|-dSAFER|\.forceput|%pipe%|\.setdevice|/invalidaccess)"
-_DRUPALGEDDON_PATTERN = r"(?:(?:_drupal_ajax=1|ajax_form=1).*?(?:element_parents|form_id)|element_parents=.*%23(?:value|post_render)|form_id=user_(?:register|password)_form|/user/(?:register|password).*(?:%23|#)post_render)"
 
-# Only PHP / WordPress / Laravel / Drupal / Joomla / general-web SafeLine rules.
+# Only PHP / WordPress / Laravel / general-web SafeLine rules.
 SAFELINE_COMPATIBILITY_RULES = [
     # General web attacks
     _safeline_rule(131095, "%0a permission bypass", _HTTP_SPLITTING_PATTERN, severity="medium", suffix="line-break"),
@@ -427,14 +426,6 @@ SAFELINE_COMPATIBILITY_RULES = [
     # action= is ubiquitous in admin-ajax.php. WP core has nonce+capability checks.
     # Laravel
     _safeline_rule(65701, "Laravel Debug Mode RCE (CVE-2021-3129)", r"(?:/_ignition/execute-solution|/vendor/facade/ignition|solution=Facade\\Ignition)", target="all", severity="critical"),
-    # Drupal
-    _safeline_rule(65710, "Drupalgeddon2 - Drupal Core Remote Code Execution", _DRUPALGEDDON_PATTERN, target="all", severity="critical"),
-    _safeline_rule(65706, "Drupal core remote code execution vulnerability (CVE-2018-7602)", _DRUPALGEDDON_PATTERN, target="all", severity="critical"),
-    _safeline_rule(65707, "Drupal Mail Command Injection", r"(?:/user/password.*(?:name%5B%23post_render%5D|mail%5B%23type%5D)|mail\[#post_render\]|sendmail_path)", target="all", severity="critical"),
-    _safeline_rule(65607, "Drupal PHP Code Execution vulnerability", _DRUPALGEDDON_PATTERN, target="all", severity="critical"),
-    # Joomla
-    _safeline_rule(65854, "Joomla 3.4.6 remote code execution vulnerability", r"(?:/index\.php(?:\?option=com_users&view=registration|/component/users/)|(?:jform|user)\[groups\]|%7B%7B.*jndi)", target="all", severity="critical"),
-    _safeline_rule(65744, "Joomla Unauthorized access (CVE-2023-23752)", r"(?:/api/index\.php/v1/(?:config/application|users|banners|contacts)|/index\.php/v1/config/application)", severity="critical"),
     # Other PHP apps
     _safeline_rule(65845, "Vtiger deserialization vulnerability", r"(?:/vtigercrm|/index\.php\?module=Users&action=Login|__vtrftk|file_put_contents|VtigerCRM)", target="all", severity="critical"),
     _safeline_rule(65773, "Nextcloud FileRead", r"(?:/index\.php/apps/files/.*(?:\.\./|%2e%2e)|/remote\.php/(?:dav|webdav)|/config/config\.php|/apps/files_sharing/)", severity="high"),
@@ -463,8 +454,8 @@ def _deduplicate_safeline_rules(rules: list[dict]) -> list[dict]:
         order.append(key)
     return [seen[key] for key in order]
 
-# SafeLine rule IDs that are relevant to PHP / WordPress / Laravel / Drupal /
-# Joomla or general web attacks.  Everything else targets Java, .NET, VMware,
+# SafeLine rule IDs that are relevant to PHP / WordPress / Laravel or general
+# web attacks.  Everything else targets Java, .NET, VMware,
 # F5, network appliances, etc. and is removed to reduce noise and nginx size.
 _SAFELINE_KEEP_IDS: set[str] = {
     # General web attacks
@@ -491,14 +482,6 @@ _SAFELINE_KEEP_IDS: set[str] = {
     # WordPress code injection (65720) removed - too broad for modern WP
     # Laravel
     "builtin-safeline-65701",               # Laravel Debug Mode RCE
-    # Drupal
-    "builtin-safeline-65710",               # Drupalgeddon2
-    "builtin-safeline-65706",               # Drupal core RCE
-    "builtin-safeline-65707",               # Drupal Mail Command Injection
-    "builtin-safeline-65607",               # Drupal PHP Code Execution
-    # Joomla
-    "builtin-safeline-65854",               # Joomla RCE
-    "builtin-safeline-65744",               # Joomla unauthorized access
     # Other PHP apps
     "builtin-safeline-65845",               # Vtiger (PHP)
     "builtin-safeline-65773",               # Nextcloud (PHP)
@@ -508,7 +491,7 @@ _SAFELINE_KEEP_IDS: set[str] = {
 }
 
 def _filter_safeline_rules(rules: list[dict]) -> list[dict]:
-    """Keep only SafeLine rules relevant to PHP/WordPress/Laravel."""
+    """Keep only SafeLine rules relevant to PHP/WordPress/Laravel/general web."""
     return [rule for rule in rules if rule.get("id") in _SAFELINE_KEEP_IDS]
 
 BUILTIN_RULES.extend(_deduplicate_safeline_rules(_filter_safeline_rules(SAFELINE_COMPATIBILITY_RULES)))
