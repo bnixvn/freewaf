@@ -19,7 +19,7 @@ DEFAULT_SETTINGS = {
     "rateLimit": {
         "enabled": True,
         "windowMs": 60000,
-        "max": 600,
+        "max": 1200,
     },
     "clientIp": {
         "source": "socket",
@@ -581,8 +581,8 @@ def create_default_state(now: str | None = None) -> dict:
                     "accessLimit": {
                         "enabled": True,
                         "period": 10,
-                        "count": 1000,
-                        "blockCount": 2000,
+                        "count": 2000,
+                        "blockCount": 4000,
                         "action": "challenge_v1",
                         "blockMin": 60,
                     },
@@ -694,3 +694,6 @@ def create_default_state(now: str | None = None) -> dict:
         "users": [],
         "logs": [],
     }
+
+
+
