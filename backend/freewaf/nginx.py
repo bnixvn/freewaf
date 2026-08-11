@@ -1458,6 +1458,7 @@ def render_proxy_server(
             *render_internal_waf_locations(site, state),
             "",
             *render_wordpress_cache_min_fallback_location(site),
+            *render_wordpress_admin_timeout_location(site, state, upstream_name, upstream_scheme, proxy, is_ssl),
             "    location / {",
             "        if ($sfl_block = 1) {",
             "            return 460;",
@@ -1480,6 +1481,75 @@ def render_wordpress_cache_min_fallback_location(site: dict) -> list[str]:
     return [
         "    location ~ ^/wp-content/cache/min/1/(.+)$ {",
         "        rewrite ^/wp-content/cache/min/1/(.+)$ /$1 last;",
+        "    }",
+        "",
+    ]
+
+def render_wordpress_admin_timeout_location(
+    site: dict,
+    state: dict,
+    upstream_name: str,
+    upstream_scheme: str,
+    proxy: dict,
+    is_ssl: bool,
+) -> list[str]:
+    """Dedicated location for wp-admin / wp-login / admin-ajax / wp-json.
+
+    Sets ``proxy_read_timeout`` to 300 s so heavy WordPress operations
+    (plugin updates, WooCommerce batch jobs, import/export, Customizer
+    saves) do not trigger 504 Gateway Timeout.
+    """
+    if application_type(site) != "reverse_proxy":
+        return []
+
+    headers: list[str] = [
+        "        proxy_http_version 1.1;",
+        "        proxy_set_header Upgrade $http_upgrade;",
+        "        proxy_set_header Connection $sfl_connection_upgrade;",
+        "        proxy_set_header X-Real-IP $sfl_client_ip;",
+    ]
+    if proxy.get("modifyHostHeader"):
+        headers.append(f"        proxy_set_header Host {proxy.get('hostHeader') or '$http_host'};")
+    if proxy.get("forwardedHeaders"):
+        headers.extend(
+            [
+                f"        proxy_set_header X-Forwarded-For {xff_value(proxy)};",
+                f"        proxy_set_header X-Forwarded-Proto {proxy.get('xForwardedProto') or '$scheme'};",
+                f"        proxy_set_header X-Forwarded-Host {proxy.get('xForwardedHost') or '$http_host'};",
+            ]
+        )
+
+    return [
+        "",
+        "    # WordPress admin / login / AJAX / REST API — longer timeout",
+        "    # for heavy operations (plugin updates, WooCommerce, imports).",
+        "    location ~ ^/(?:wp-admin|wp-login\\.php|wp-json)(?:/|$) {",
+        *headers,
+        "        proxy_set_header X-FreeWAF $sfl_verdict;",
+        *render_proxy_ssl(upstream_scheme, proxy),
+        "        proxy_buffering on;",
+        "        proxy_buffer_size 32k;",
+        "        proxy_buffers 16 32k;",
+        "        proxy_busy_buffers_size 64k;",
+        "        proxy_connect_timeout 30s;",
+        "        proxy_read_timeout 300s;",
+        "        proxy_send_timeout 120s;",
+        f"        proxy_pass {upstream_scheme}://{upstream_name};",
+        "    }",
+        "",
+        "    # admin-ajax.php — long-running background tasks (heartbeat, cron).",
+        "    location = /wp-admin/admin-ajax.php {",
+        *headers,
+        "        proxy_set_header X-FreeWAF $sfl_verdict;",
+        *render_proxy_ssl(upstream_scheme, proxy),
+        "        proxy_buffering on;",
+        "        proxy_buffer_size 16k;",
+        "        proxy_buffers 8 32k;",
+        "        proxy_busy_buffers_size 64k;",
+        "        proxy_connect_timeout 30s;",
+        "        proxy_read_timeout 300s;",
+        "        proxy_send_timeout 120s;",
+        f"        proxy_pass {upstream_scheme}://{upstream_name};",
         "    }",
         "",
     ]
@@ -1742,8 +1812,8 @@ def render_application_location(site: dict, state: dict, upstream_name: str, ups
             "        proxy_busy_buffers_size 64k;",
             # Generous timeouts for wp-admin / Gutenberg / Customizer which
             # can take a while on the upstream (heavy PHP, remote calls).
-            "        proxy_connect_timeout 10s;",
-            "        proxy_read_timeout 120s;",
+            "        proxy_connect_timeout 30s;",
+            "        proxy_read_timeout 180s;",
             "        proxy_send_timeout 120s;",
             *render_rate_limit(state, site),
             *render_bot_replay_limit(site),
