@@ -169,10 +169,38 @@ def main() -> None:
 
 
 def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, demo_enabled: bool, secure_cookie: bool = False):
+    SESSION_FILE = ROOT_DIR / "data" / "sessions.json"
     sessions: dict[str, dict] = {}
     sessions_lock = threading.RLock()
     login_attempts: dict[str, list[float]] = {}
     login_attempts_lock = threading.RLock()
+
+    def load_sessions() -> dict[str, dict]:
+        """Load persisted sessions from disk."""
+        if not SESSION_FILE.exists():
+            return {}
+        try:
+            with SESSION_FILE.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+        except (json.JSONDecodeError, OSError):
+            pass
+        return {}
+
+    def save_sessions() -> None:
+        """Persist sessions to disk (non-blocking best-effort)."""
+        try:
+            SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with SESSION_FILE.open("w", encoding="utf-8") as f:
+                json.dump(sessions, f)
+        except OSError:
+            pass
+
+    # Load existing sessions on startup
+    sessions = load_sessions()
+    prune_sessions(sessions)
+    save_sessions()
 
     def login_throttle_check(ip: str, username: str) -> tuple[bool, int]:
         """Returns (allowed, retry_after_seconds). Uses sliding windows on
@@ -796,6 +824,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     "expiresAt": time.time() + max_age,
                 }
                 prune_sessions(sessions)
+                save_sessions()
             self.send_json(
                 200,
                 {
@@ -811,6 +840,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
             if token:
                 with sessions_lock:
                     sessions.pop(token, None)
+                    save_sessions()
             self.send_json(
                 200,
                 {"authenticated": False},
