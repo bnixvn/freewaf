@@ -705,6 +705,11 @@ class Store:
                 raise StoreError(404, "Access rule not found")
             self.persist()
 
+    def set_blocked_ips(self, ips: list[str]) -> None:
+        with self.lock:
+            self._state()["blockedIps"] = list(dict.fromkeys(str(ip).strip() for ip in ips if str(ip).strip()))
+            self.persist()
+
     def update_settings(self, payload: dict) -> dict:
         with self.lock:
             current = deepcopy(self._state()["settings"])
@@ -892,6 +897,7 @@ def normalize_state(state: dict) -> dict:
         "certificates": [normalize_stored_certificate(certificate) for certificate in state.get("certificates", [])],
         "ipGroups": [normalize_stored_ip_group(group) for group in state.get("ipGroups", [])],
         "accessRules": [normalize_stored_access_rule(rule) for rule in state.get("accessRules", [])],
+        "blockedIps": [str(ip).strip() for ip in state.get("blockedIps", []) if str(ip).strip()] if isinstance(state.get("blockedIps"), list) else [],
         "users": [normalize_stored_user(user) for user in state.get("users", [])],
         "logs": state.get("logs", []) if isinstance(state.get("logs"), list) else [],
     }

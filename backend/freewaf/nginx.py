@@ -1340,6 +1340,14 @@ def render_redirect_server(site: dict, state: dict, server_name: str, port: int,
         *render_ipv6_listen(port, False, proxy, state),
         f"    server_name {server_name};",
         "",
+        "    # Proxy timeouts - 5 minutes",
+        "    proxy_connect_timeout 300;",
+        "    proxy_read_timeout 300;",
+        "    proxy_send_timeout 300;",
+        "    client_body_timeout 300;",
+        "    client_header_timeout 300;",
+        "    client_max_body_size 100m;",
+        "",
         "    set $sfl_block 0;",
         "    set $sfl_allow 0;",
         "    set $sfl_challenge 0;",
@@ -1355,6 +1363,7 @@ def render_redirect_server(site: dict, state: dict, server_name: str, port: int,
         "    error_page 461 = @freewaf_challenge;",
         *render_rate_limit_error_page(site),
         "",
+        *render_blocked_ips_directives(state),
         *render_modsecurity_directives(site),
         *render_site_waf_directives(site, state),
         "",
@@ -1440,6 +1449,19 @@ def render_proxy_server(
                 "",
             ]
         )
+
+    # Proxy timeouts - 5 minutes to avoid WordPress admin request timeouts
+    lines.extend([
+        "    proxy_connect_timeout 300;",
+        "    proxy_read_timeout 300;",
+        "    proxy_send_timeout 300;",
+        "    client_body_timeout 300;",
+        "    client_header_timeout 300;",
+        "    client_max_body_size 100m;",
+        "",
+    ])
+
+    lines.extend(render_blocked_ips_directives(state))
 
     if proxy.get("strictHost"):
         lines.extend(render_strict_host(site))
@@ -1554,6 +1576,19 @@ def render_wordpress_admin_timeout_location(
         "",
     ]
 
+
+def render_blocked_ips_directives(state: dict) -> list[str]:
+    """Generate nginx deny directives for IPs blocked via ipset."""
+    blocked_ips = state.get("blockedIps", []) if isinstance(state.get("blockedIps"), list) else []
+    if not blocked_ips:
+        return []
+    lines = ["    # Blocked IPs (managed by FreeWAF ipset)"]
+    for blocked_ip in blocked_ips:
+        ip = str(blocked_ip).strip()
+        if ip:
+            lines.append(f"    deny {ip};")
+    lines.append("")
+    return lines
 
 def render_acme_challenge_location() -> list[str]:
     webroot = nginx_path(os.environ.get("CERTBOT_WEBROOT", "/var/www/html")).rstrip("/") or "/var/www/html"
@@ -1922,6 +1957,9 @@ def site_modsecurity(site: dict, defaults: dict | None = None) -> dict:
 
 
 def render_modsecurity_directives(site: dict) -> list[str]:
+    # Temporarily disable all ModSecurity rules
+    if os.environ.get("FREEWAF_MODSECURITY_DISABLED", "false").lower() == "true":
+        return []
     config = site.get("modSecurity") if isinstance(site.get("modSecurity"), dict) else {}
     if not config.get("enabled"):
         return []
@@ -1976,6 +2014,8 @@ def http_flood_cooldown_required(site: dict) -> bool:
 
 
 def render_bot_rate_modsecurity_rules(site: dict, state: dict | None = None, indent: str = "        ") -> list[str]:
+    if os.environ.get("FREEWAF_MODSECURITY_DISABLED", "false").lower() == "true":
+        return []
     config = site.get("modSecurity") if isinstance(site.get("modSecurity"), dict) else {}
     protection = site_bot_protection(site)
     rate = protection.get("rateChallenge") or {}
@@ -2089,6 +2129,8 @@ def bot_rate_block_minutes(rate: dict) -> int:
 
 
 def render_http_flood_modsecurity_rules(site: dict, state: dict | None = None, indent: str = "        ") -> list[str]:
+    if os.environ.get("FREEWAF_MODSECURITY_DISABLED", "false").lower() == "true":
+        return []
     config = site.get("modSecurity") if isinstance(site.get("modSecurity"), dict) else {}
     if (
         not config.get("enabled")

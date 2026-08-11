@@ -690,6 +690,7 @@ def create_default_state(now: str | None = None) -> dict:
         ],
         "accessRules": [
         ],
+        "blockedIps": [],
         "users": [],
         "logs": [],
     }

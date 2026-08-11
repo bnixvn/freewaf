@@ -44,6 +44,7 @@ from .nginx import (
     site_ports,
     write_nginx_config,
 )
+from . import ipset_manager
 from .defaults import (
     challenge_secret,
     utc_now,
@@ -108,6 +109,16 @@ def main() -> None:
     state = store.get_state()
     panel = state.get("settings", {}).get("panel", {})
     admin_https = bool(panel.get("httpsEnabled"))
+
+    # Initialise ipset + iptables for IP blocking
+    try:
+        ipset_manager.initialise()
+        blocked = state.get("blockedIps", [])
+        if blocked:
+            ipset_manager.sync_ips(blocked)
+            print(f"ipset synced {len(blocked)} blocked IP(s)")
+    except Exception as exc:
+        print(f"ipset init failed (non-fatal): {exc}")
 
     admin_server = ThreadingHTTPServer(
         ("0.0.0.0", admin_port),
@@ -279,6 +290,17 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
 
             if parsed.path == "/api/certificates":
                 self.send_json(200, state_slice_payload(store, "certificates", query))
+                return
+
+            if parsed.path == "/api/blocked-ips":
+                state = store.get_state()
+                blocked = state.get("blockedIps", [])
+                ipset_ips = []
+                try:
+                    ipset_ips = ipset_manager.list_ips()
+                except Exception:
+                    pass
+                self.send_json(200, {"blockedIps": blocked, "ipsetIps": ipset_ips})
                 return
 
             resource, item_id, action = split_action_path(parsed.path)
@@ -485,6 +507,28 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     self.record_audit(action="nginx.apply", target="nginx", status=200, payload=payload, extra={"ok": bool(result.get("ok"))})
                     self.send_json(200, result)
                     return
+                if self.path == "/api/blocked-ips":
+                    ips = payload.get("ips", [])
+                    if not isinstance(ips, list):
+                        ips = [str(payload.get("ip", "")).strip()]
+                    ips = [str(ip).strip() for ip in ips if str(ip).strip()]
+                    if not ips:
+                        self.send_json(400, {"error": "No IPs provided"})
+                        return
+                    state = store.get_state()
+                    blocked = list(state.get("blockedIps", []))
+                    added = []
+                    for ip in ips:
+                        if ip not in blocked:
+                            blocked.append(ip)
+                            added.append(ip)
+                    store.set_blocked_ips(blocked)
+                    # Sync to ipset
+                    ipset_manager.initialise()
+                    ipset_manager.block_ips(added)
+                    self.record_audit(action="blocked-ips.block", target="blocked-ips", status=200, extra={"ips": added})
+                    self.send_json(200, {"blockedIps": blocked, "added": added})
+                    return
                 if self.path == "/api/system/update":
                     result, status_code = start_system_update()
                     self.record_audit(action="system.update", target="system", status=status_code, payload={}, extra={"status": result.get("status"), "running": result.get("running")})
@@ -577,6 +621,33 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     maybe_auto_write(store)
                     self.record_audit(action="access-rules.delete", target="access-rules", target_id=item_id, status=204)
                     self.send_empty(204)
+                    return
+                if self.path.startswith("/api/blocked-ips"):
+                    payload = self.read_payload() if hasattr(self, 'read_payload') else {}
+                    ips = payload.get("ips", []) if isinstance(payload, dict) else []
+                    if not isinstance(ips, list):
+                        ips = [str(payload.get("ip", "")).strip()] if isinstance(payload, dict) else []
+                    ips = [str(ip).strip() for ip in ips if str(ip).strip()]
+                    if not ips:
+                        # Try to get IP from URL path
+                        parts = [p for p in urlparse(self.path).path.split("/") if p]
+                        if len(parts) >= 3:
+                            ips = [parts[2]]
+                    state = store.get_state()
+                    blocked = list(state.get("blockedIps", []))
+                    removed = []
+                    for ip in ips:
+                        if ip in blocked:
+                            blocked.remove(ip)
+                            removed.append(ip)
+                    store.set_blocked_ips(blocked)
+                    # Sync to ipset
+                    try:
+                        ipset_manager.unblock_ips(removed)
+                    except Exception:
+                        pass
+                    self.record_audit(action="blocked-ips.unblock", target="blocked-ips", status=200, extra={"ips": removed})
+                    self.send_json(200, {"blockedIps": blocked, "removed": removed})
                     return
                 if resource == "users":
                     token_user = self.authenticated_user()
@@ -996,6 +1067,15 @@ def apply_nginx(store: Store, payload: dict) -> dict:
 
         snapshot = snapshot_nginx_bundle(ROOT_DIR) if payload.get("test") else None
         output_file = write_nginx_config(ROOT_DIR, state)
+
+        # Sync ipset with blocked IPs
+        try:
+            blocked = state.get("blockedIps", [])
+            ipset_manager.initialise()
+            ipset_manager.sync_ips(blocked)
+        except Exception:
+            pass
+
         result = {
             "ok": True,
             "outputFile": str(output_file),
@@ -3155,6 +3235,13 @@ def safe_file_stem(value: str) -> str:
 def maybe_auto_write(store: Store) -> None:
     if os.environ.get("NGINX_AUTO_WRITE", "false").lower() == "true":
         write_nginx_config(ROOT_DIR, store.get_state())
+        # Sync ipset with blocked IPs
+        try:
+            blocked = store.get_state().get("blockedIps", [])
+            ipset_manager.initialise()
+            ipset_manager.sync_ips(blocked)
+        except Exception:
+            pass
 
 
 def runtime_payload(state: dict, admin_port: int, demo_origin_port: int, demo_enabled: bool) -> dict:
