@@ -97,6 +97,12 @@ sudo FREEWAF_COMODO_RULES_FILE=/path/to/comodo-entry.conf \
 
 Comodo rules are distributed separately by the vendor. When no Comodo entry file is supplied, the `Comodo WAF Rules` application option safely falls back to the packaged OWASP Core Rule Set.
 
+## Automatic Rule Application
+
+FreeWAF automatically writes, tests, and reloads Nginx after WAF state changes such as rule toggles, access-rule edits, IP group updates, and block/unblock actions. Rapid changes coalesce into one reload after a short debounce (`NGINX_AUTO_APPLY_DELAY`, default 1.5 seconds), so you never need to manually click "Test + Reload" for rule changes to take effect.
+
+Set `NGINX_AUTO_APPLY=false` in `/etc/freewaf/freewaf.env` to disable this and fall back to manual reloads only.
+
 ## Operations
 
 Check service status:
@@ -307,6 +313,8 @@ NGINX_CERT_DIR=/opt/freewaf/nginx/certs
 NGINX_TEST_CMD="/usr/sbin/nginx -t"
 NGINX_RELOAD_CMD="/usr/sbin/nginx -s reload"
 NGINX_AUTO_WRITE=false
+NGINX_AUTO_APPLY=true
+NGINX_AUTO_APPLY_DELAY=1.5
 NGINX_STATIC_ROOT=/opt/freewaf/public/static
 NGINX_HAS_MODSECURITY=true
 NGINX_MODSECURITY_CMS_RULES_FILE=/etc/freewaf/modsecurity/cms-only.conf

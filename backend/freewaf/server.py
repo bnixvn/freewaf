@@ -92,6 +92,9 @@ UPDATE_STATUS_LOCK = threading.RLock()
 UPDATE_JOB_LOCK = threading.Lock()
 NGINX_APPLY_LOCK = threading.Lock()
 NGINX_APPLY_CACHE = {"signature": "", "result": None}
+_NGINX_AUTO_APPLY_LOCK = threading.Lock()
+_NGINX_AUTO_APPLY_TIMER = None
+_NGINX_AUTO_APPLY_DELAY = max(0.1, float(os.environ.get("NGINX_AUTO_APPLY_DELAY", "1.5")))
 UPDATE_LOG_TAIL_BYTES = 48 * 1024
 UPDATE_STALE_SECONDS = 60 * 60
 UPDATE_REPO_URL = "https://github.com/bnixvn/freewaf.git"
@@ -3269,7 +3272,50 @@ def safe_file_stem(value: str) -> str:
     return "".join(char if char.isalnum() or char in "-_." else "_" for char in value)[:80] or "cert"
 
 
+def schedule_nginx_apply(store: Store) -> None:
+    """Schedule a debounced Nginx write + test + reload.
+
+    Rapid WAF state changes (rule toggles, IP group edits, block/unblock)
+    coalesce into a single Nginx reload instead of one reload per change.
+    """
+    global _NGINX_AUTO_APPLY_TIMER
+    with _NGINX_AUTO_APPLY_LOCK:
+        if _NGINX_AUTO_APPLY_TIMER is not None:
+            _NGINX_AUTO_APPLY_TIMER.cancel()
+        _NGINX_AUTO_APPLY_TIMER = threading.Timer(
+            _NGINX_AUTO_APPLY_DELAY,
+            _run_scheduled_nginx_apply,
+            args=(store,),
+        )
+        _NGINX_AUTO_APPLY_TIMER.daemon = True
+        _NGINX_AUTO_APPLY_TIMER.start()
+
+
+def _run_scheduled_nginx_apply(store: Store) -> None:
+    global _NGINX_AUTO_APPLY_TIMER
+    with _NGINX_AUTO_APPLY_LOCK:
+        _NGINX_AUTO_APPLY_TIMER = None
+    try:
+        result = apply_nginx(store, {"test": True, "reload": True})
+        if not result.get("ok"):
+            print(
+                "[freewaf] auto nginx apply failed: " + json.dumps(result, default=str)[:2000],
+                file=sys.stderr,
+                flush=True,
+            )
+    except Exception as error:
+        print(f"[freewaf] auto nginx apply error: {error}", file=sys.stderr, flush=True)
+
+
 def maybe_auto_write(store: Store) -> None:
+    """Apply Nginx automatically after WAF state changes.
+
+    Enabled by default (set NGINX_AUTO_APPLY=false to disable). When enabled,
+    changes take effect without a manual Test + Reload in the panel.
+    """
+    if os.environ.get("NGINX_AUTO_APPLY", "true").lower() != "false":
+        schedule_nginx_apply(store)
+        return
     if os.environ.get("NGINX_AUTO_WRITE", "false").lower() == "true":
         write_nginx_config(ROOT_DIR, store.get_state())
         # Sync ipset with blocked IPs

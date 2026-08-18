@@ -35,6 +35,7 @@ BOT_BLOCK_UA_PATTERN = (
     r"dirbuster|ffuf|jaeles|zmeu|commix|havij|netsparker|openvas|arachni)"
 )
 GEO_CIDR_CACHE = {}
+_IP_GROUP_ITEMS_CACHE: dict[tuple, list[str]] = {}
 _BROTLI_SUPPORT_CACHE: dict[str, bool] = {}
 CLIENT_IP_SOURCES = {
     "socket",
@@ -3243,14 +3244,30 @@ def collect_access_ips(rule: dict, groups: dict[str, dict]) -> list[str]:
 def ip_group_items(group: dict | None) -> list[str]:
     if not group:
         return []
-    items = list(group.get("items") or [])
+    inline_items = list(group.get("items") or [])
     item_file = str(group.get("itemsFile") or "").strip()
+    file_stamp = None
+    path = None
     if item_file:
         path = Path(item_file)
-        if path.exists() and path.is_file():
-            file_items = [line.strip() for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
-            items.extend(file_items)
-    return list(dict.fromkeys(items))
+        try:
+            stat = path.stat()
+            if path.is_file():
+                file_stamp = (item_file, stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            file_stamp = None
+    cache_key = (str(group.get("id") or ""), tuple(inline_items), file_stamp)
+    cached = _IP_GROUP_ITEMS_CACHE.get(cache_key)
+    if cached is not None:
+        return list(cached)
+    if file_stamp is not None:
+        file_items = [line.strip() for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+        inline_items.extend(file_items)
+    result = list(dict.fromkeys(inline_items))
+    if len(_IP_GROUP_ITEMS_CACHE) > 64:
+        _IP_GROUP_ITEMS_CACHE.clear()
+    _IP_GROUP_ITEMS_CACHE[cache_key] = result
+    return result
 
 
 def render_rule_if(rule: dict, effect: str, index: int) -> list[str]:

@@ -46,6 +46,28 @@ def make_settings(proxy: dict | None = None, mod_security: dict | None = None) -
     return settings
 
 
+class IpGroupItemsCacheTests(unittest.TestCase):
+    def test_caches_by_file_stamp_and_invalidates_on_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            items_file = Path(tmp) / "ips.txt"
+            items_file.write_text("1.2.3.4\n5.6.7.8\n1.2.3.4\n")
+            group = {"id": "cache-test", "items": ["9.9.9.9"], "itemsFile": str(items_file)}
+            first = nginx_module.ip_group_items(group)
+            self.assertEqual(first, ["9.9.9.9", "1.2.3.4", "5.6.7.8"])
+            second = nginx_module.ip_group_items(group)
+            self.assertEqual(first, second)
+            self.assertIsNot(first, second)
+            os.utime(items_file, (os.path.getmtime(items_file) + 1, os.path.getmtime(items_file) + 1))
+            self.assertEqual(nginx_module.ip_group_items(group), first)
+
+    def test_handles_missing_items_file(self):
+        group = {"id": "missing-file", "items": ["1.1.1.1"], "itemsFile": "/nonexistent/ips.txt"}
+        self.assertEqual(nginx_module.ip_group_items(group), ["1.1.1.1"])
+
+    def test_empty_group_returns_empty_list(self):
+        self.assertEqual(nginx_module.ip_group_items(None), [])
+
+
 class NginxGeneratorTests(unittest.TestCase):
     def test_generates_server_block_for_enabled_site(self):
         config = generate_nginx_config(make_state())
