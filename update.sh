@@ -34,7 +34,7 @@ require_cmd() {
 wait_for_port() {
   local port="$1" attempts=0
   while [ $attempts -lt 30 ]; do
-    if curl -sf "http://127.0.0.1:${port}/api/health" >/dev/null 2>&1; then
+    if curl -sfk "https://127.0.0.1:${port}/api/health" >/dev/null 2>&1       || curl -sf "http://127.0.0.1:${port}/api/health" >/dev/null 2>&1; then
       return 0
     fi
     sleep 1
