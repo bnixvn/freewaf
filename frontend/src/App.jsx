@@ -1129,13 +1129,14 @@ export default function App() {
     if (!window.confirm(`Delete ${site.name}?`)) return;
     try {
       await api(`/api/sites/${site.id}`, { method: 'DELETE' });
-      removeDataItem('sites', site.id);
-      if (dashboardSiteId && String(dashboardSiteId) === String(site.id)) {
-        setDashboardSiteId('');
-      }
       showToast('Site deleted');
     } catch (error) {
       showToast(error.message, true);
+    } finally {
+      await loadViewData('sites', { force: true });
+      if (dashboardSiteId && String(dashboardSiteId) === String(site.id)) {
+        setDashboardSiteId('');
+      }
     }
   }
 
