@@ -1361,9 +1361,11 @@ def run_system_update_job(job_id: str) -> None:
 
 
 def build_system_update_plan(root_dir: Path) -> dict:
+    repo_branch = os.environ.get("FREEWAF_UPDATE_BRANCH", UPDATE_BRANCH).strip() or UPDATE_BRANCH
     if (root_dir / ".git").exists():
         steps = [
-            update_step("git pull --ff-only", ["git", "pull", "--ff-only"], root_dir),
+            update_step("git fetch", ["git", "fetch", "origin", repo_branch, "--depth", "1"], root_dir),
+            update_step("git reset --hard", ["git", "reset", "--hard", f"origin/{repo_branch}"], root_dir),
             update_step("npm ci", ["npm", "ci"], root_dir / "frontend"),
             update_step("npm run build", ["npm", "run", "build"], root_dir / "frontend"),
             update_step(
