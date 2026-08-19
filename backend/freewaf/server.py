@@ -518,7 +518,8 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     return
                 if self.path == "/api/certificates":
                     saved = store.upsert_certificate(prepare_certificate_payload(payload, state=store.get_state()))
-                    apply_nginx_or_raise(store)
+                    if certificate_in_use(store, saved.get("id", "")):
+                        apply_nginx_or_raise(store)
                     self.record_audit(action="certificates.create", target="certificates", target_id=saved.get("id", ""), status=201, payload=payload)
                     self.send_json(201, public_certificate(saved))
                     return
@@ -749,7 +750,8 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                             return
                         payload = {**current, **payload}
                     saved = store.upsert_certificate(prepare_certificate_payload(payload, item_id, state=store.get_state()), item_id)
-                    apply_nginx_or_raise(store)
+                    if certificate_in_use(store, saved.get("id", "")):
+                        apply_nginx_or_raise(store)
                     self.record_audit(action=f"certificates.{action_verb}", target="certificates", target_id=item_id, status=200, payload=payload)
                     self.send_json(200, public_certificate(saved))
                     return
@@ -1238,6 +1240,16 @@ def restore_http01_challenge_snapshot(snapshot: dict) -> dict:
 def cleanup_nginx_snapshot(snapshot: dict) -> None:
     backup_dir = Path(snapshot["backupDir"])
     shutil.rmtree(backup_dir, ignore_errors=True)
+
+
+def certificate_in_use(store: Store, certificate_id: str) -> bool:
+    state = store.get_state()
+    for site in state.get("sites", []):
+        if (site.get("tls") or {}).get("certificateId") == certificate_id:
+            return True
+    if (state.get("settings", {}).get("panel", {}) or {}).get("certificateId") == certificate_id:
+        return True
+    return False
 
 
 def apply_nginx_or_raise(store: Store) -> dict:
