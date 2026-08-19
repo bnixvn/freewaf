@@ -18,7 +18,7 @@ from typing import Iterable
 IPSET_NAME = "freewaf_blocked"
 IPTABLES_CHAIN = "INPUT"
 LOG_PREFIX = "FREEWAF_BLOCKED: "
-_lock = threading.Lock()
+_lock = threading.RLock()
 
 def _run(args: list[str], check: bool = False) -> subprocess.CompletedProcess:
     """Run a command, swallow errors unless *check* is True."""

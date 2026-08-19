@@ -453,7 +453,15 @@ class Store:
             payload = json.dumps(self._state(), indent=2, ensure_ascii=True)
             tmp_path = self.file_path.with_suffix(f"{self.file_path.suffix}.tmp")
             tmp_path.write_text(payload, encoding="utf-8")
+            try:
+                os.chmod(tmp_path, 0o600)
+            except OSError:
+                pass
             tmp_path.replace(self.file_path)
+            try:
+                os.chmod(self.file_path, 0o600)
+            except OSError:
+                pass
 
     def upsert_site(self, payload: dict, site_id: str | None = None) -> dict:
         with self.lock:
@@ -2110,8 +2118,14 @@ def normalize_user_role(value) -> str:
 
 def validate_password(password: str) -> str:
     value = str(password or "")
-    if len(value) < 10:
-        raise StoreError(400, "Password must be at least 10 characters")
+    if len(value) < 12:
+        raise StoreError(400, "Password must be at least 12 characters")
+    if not re.search(r"[a-z]", value):
+        raise StoreError(400, "Password must contain a lowercase letter")
+    if not re.search(r"[A-Z]", value):
+        raise StoreError(400, "Password must contain an uppercase letter")
+    if not re.search(r"[0-9]", value):
+        raise StoreError(400, "Password must contain a digit")
     return value
 
 

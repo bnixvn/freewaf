@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timezone
 import os
+import secrets
 
 
 DEFAULT_SETTINGS = {
@@ -171,8 +172,47 @@ def managed_verified_bot_providers() -> dict:
     return {**VERIFIED_BOT_PROVIDERS, **VERIFIED_AI_BOT_PROVIDERS}
 
 
+_PERSISTED_CHALLENGE_SECRET = ""
+
+
 def challenge_secret() -> str:
-    return os.environ.get("FREEWAF_CHALLENGE_SECRET", "").strip() or "freewaf-development-challenge-secret"
+    """Return the configured challenge secret.
+
+    Priority: FREEWAF_CHALLENGE_SECRET env var, then a random secret persisted to
+    the state directory so challenge tokens are not forgeable across installs.
+    """
+    global _PERSISTED_CHALLENGE_SECRET
+    configured = os.environ.get("FREEWAF_CHALLENGE_SECRET", "").strip()
+    if configured and configured != "freewaf-development-challenge-secret":
+        return configured
+    if not _PERSISTED_CHALLENGE_SECRET:
+        secret_file = os.environ.get("FREEWAF_CHALLENGE_SECRET_FILE", "")
+        if not secret_file:
+            data_dir = os.environ.get("FREEWAF_DATA_DIR", "")
+            if not data_dir:
+                data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+            secret_file = os.path.join(data_dir, "challenge_secret.key")
+        try:
+            if os.path.exists(secret_file):
+                with open(secret_file, "r", encoding="utf-8") as handle:
+                    value = handle.read().strip()
+                if value:
+                    _PERSISTED_CHALLENGE_SECRET = value
+                    return value
+            value = secrets.token_urlsafe(48)
+            directory = os.path.dirname(secret_file)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            with open(secret_file, "w", encoding="utf-8") as handle:
+                handle.write(value)
+            try:
+                os.chmod(secret_file, 0o600)
+            except OSError:
+                pass
+            _PERSISTED_CHALLENGE_SECRET = value
+        except OSError:
+            pass
+    return _PERSISTED_CHALLENGE_SECRET or secrets.token_urlsafe(48)
 
 
 BUILTIN_RULES = [

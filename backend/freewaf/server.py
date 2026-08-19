@@ -204,6 +204,10 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
             SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
             with SESSION_FILE.open("w", encoding="utf-8") as f:
                 json.dump(sessions, f)
+            try:
+                os.chmod(SESSION_FILE, 0o600)
+            except OSError:
+                pass
         except OSError:
             pass
 
@@ -261,10 +265,30 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
     class AdminHandler(BaseHTTPRequestHandler):
         server_version = "FreeWAFAdmin/1.0"
 
+        def _allowed_cors_origin(self) -> str:
+            origin = self.headers.get("origin", "").strip()
+            if not origin:
+                return ""
+            try:
+                panel_url = (store.get_state().get("settings", {}).get("panel", {}) or {}).get("publicUrl", "").strip()
+            except Exception:
+                panel_url = ""
+            if panel_url and origin.rstrip("/") == panel_url.rstrip("/"):
+                return origin
+            return ""
+
         def end_headers(self):
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "content-type,accept")
+            origin = self._allowed_cors_origin()
+            if origin:
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "content-type,accept")
+                self.send_header("Vary", "Origin")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
+            if secure_cookie:
+                self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
             super().end_headers()
 
         def do_OPTIONS(self):
@@ -485,7 +509,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     self.logout_user()
                     return
 
-                if self.path.startswith("/api/") and not self.require_auth(self.path):
+                if self.path.startswith("/api/") and not self.require_admin(self.path):
                     return
 
                 resource, item_id, action = split_action_path(self.path)
@@ -580,12 +604,12 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 self.send_json(400, {"error": str(error)})
 
         def do_PUT(self):
-            if self.path.startswith("/api/") and not self.require_auth(self.path):
+            if self.path.startswith("/api/") and not self.require_admin(self.path):
                 return
             self.handle_resource_update(replace=True)
 
         def do_PATCH(self):
-            if self.path.startswith("/api/") and not self.require_auth(self.path):
+            if self.path.startswith("/api/") and not self.require_admin(self.path):
                 return
             if self.path == "/api/sites/under-attack":
                 try:
@@ -623,7 +647,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
 
         def do_DELETE(self):
             try:
-                if self.path.startswith("/api/") and not self.require_auth(self.path):
+                if self.path.startswith("/api/") and not self.require_admin(self.path):
                     return
                 resource, item_id = split_resource_path(self.path)
                 if resource == "sites":
@@ -826,6 +850,15 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 return True
             self.send_json(401, {"error": "Login required"})
             return False
+
+        def require_admin(self, path: str) -> bool:
+            if not self.require_auth(path):
+                return False
+            user = self.authenticated_user()
+            if not user or user.get("role") != "admin":
+                self.send_json(403, {"error": "Admin role required"})
+                return False
+            return True
 
         def login_user(self, user: dict) -> None:
             token = secrets.token_urlsafe(32)
@@ -1747,7 +1780,7 @@ def secure_link_token(context: dict, expires: int) -> str:
 
 
 def challenge_cookie(name: str, value: str, max_age: int, secure: bool) -> str:
-    flags = "HttpOnly; SameSite=Lax; Path=/"
+    flags = "HttpOnly; SameSite=Strict; Path=/"
     if secure:
         flags += "; Secure"
     return f"{name}={value}; Max-Age={max_age}; {flags}"
@@ -1858,14 +1891,14 @@ def session_max_age_seconds(state: dict) -> int:
 
 
 def session_cookie(token: str, max_age: int, secure: bool) -> str:
-    flags = "HttpOnly; SameSite=Lax; Path=/"
+    flags = "HttpOnly; SameSite=Strict; Path=/"
     if secure:
         flags += "; Secure"
     return f"freewaf_session={token}; Max-Age={max_age}; {flags}"
 
 
 def expired_session_cookie(secure: bool) -> str:
-    flags = "HttpOnly; SameSite=Lax; Path=/"
+    flags = "HttpOnly; SameSite=Strict; Path=/"
     if secure:
         flags += "; Secure"
     return f"freewaf_session=; Max-Age=0; {flags}"

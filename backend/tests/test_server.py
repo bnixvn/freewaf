@@ -71,7 +71,7 @@ class CertificateServerTests(unittest.TestCase):
         server.server_close()
         thread.join(timeout=5)
 
-    def login_cookie(self, server, username="admin", password="secret-pass"):
+    def login_cookie(self, server, username="admin", password="SecretPass123"):
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_port}/api/auth/login",
             data=json.dumps({"username": username, "password": password}).encode("utf-8"),
@@ -259,7 +259,7 @@ class CertificateServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = Store(Path(temp_dir) / "state.json")
             store.init()
-            store.upsert_user({"username": "admin", "password": "secret-pass", "enabled": True})
+            store.upsert_user({"username": "admin", "password": "SecretPass123", "enabled": True})
             store.upsert_site(
                 {
                     "name": "First",
@@ -301,7 +301,7 @@ class CertificateServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = Store(Path(temp_dir) / "state.json")
             store.init()
-            store.upsert_user({"username": "admin", "password": "secret-pass", "enabled": True})
+            store.upsert_user({"username": "admin", "password": "SecretPass123", "enabled": True})
             store.upsert_site(
                 {
                     "name": "Demo",
@@ -806,7 +806,7 @@ class CertificateServerTests(unittest.TestCase):
 
             store = Store(root / "state.json")
             store.init()
-            store.upsert_user({"username": "admin", "password": "secret-pass", "enabled": True})
+            store.upsert_user({"username": "admin", "password": "SecretPass123", "enabled": True})
             store.upsert_certificate(
                 {
                     "id": "cert-demo",
@@ -850,7 +850,7 @@ class CertificateServerTests(unittest.TestCase):
 
             store = Store(root / "state.json")
             store.init()
-            store.upsert_user({"username": "admin", "password": "secret-pass", "enabled": True})
+            store.upsert_user({"username": "admin", "password": "SecretPass123", "enabled": True})
             store.upsert_certificate(
                 {
                     "id": "certbot-demo",
@@ -899,7 +899,7 @@ class CertificateServerTests(unittest.TestCase):
 
             store = Store(root / "state.json")
             store.init()
-            store.upsert_user({"username": "admin", "password": "secret-pass", "enabled": True})
+            store.upsert_user({"username": "admin", "password": "SecretPass123", "enabled": True})
             store.upsert_certificate(
                 {
                     "id": "certbot-symlink",
@@ -925,7 +925,7 @@ class CertificateServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = Store(Path(temp_dir) / "state.json")
             store.init()
-            store.upsert_user({"username": "admin", "password": "secret-pass", "enabled": True})
+            store.upsert_user({"username": "admin", "password": "SecretPass123", "enabled": True})
             server = self.start_admin_server(store)
             cookie = self.login_cookie(server)
 
@@ -945,7 +945,7 @@ class CertificateServerTests(unittest.TestCase):
 
             store = Store(root / "state.json")
             store.init()
-            store.upsert_user({"username": "admin", "password": "secret-pass", "enabled": True})
+            store.upsert_user({"username": "admin", "password": "SecretPass123", "enabled": True})
             store._state()["certificates"] = [
                 {"id": "missing-config", "name": "Missing config", "source": "upload", "domains": ["missing-config.test"], "certFile": "", "keyFile": ""},
                 {"id": "missing-file", "name": "Missing file", "source": "upload", "domains": ["missing-file.test"], "certFile": str(cert_dir / "missing.crt"), "keyFile": str(cert_dir / "missing.key")},
