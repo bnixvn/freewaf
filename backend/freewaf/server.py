@@ -1733,11 +1733,12 @@ def state_slice_payload(
     store: Store,
     section: str,
     query: dict | None = None,
+    account_id: str = "",
 ) -> dict:
     query = query or {}
+    state = store.filter_state_by_account(account_id)
 
     if section == "dashboard":
-        state = store.get_state_fields("sites", "settings")
         site_id = str((query.get("siteId") or query.get("site_id") or [""])[0]).strip()
         period_days = dashboard_period_days((query.get("periodDays") or query.get("period_days") or [""])[0])
         return {
@@ -1746,33 +1747,27 @@ def state_slice_payload(
             "settings": {"panel": state.get("settings", {}).get("panel", {})},
         }
     if section == "sites":
-        state = store.get_state_fields("sites", "certificates", "settings")
         return {
             "sites": state.get("sites", []),
             "certificates": [public_certificate(item) for item in state.get("certificates", [])],
             "settings": state.get("settings", {}),
         }
     if section == "rules":
-        state = store.get_state_fields("rules", "sites")
         return {
             "rules": state.get("rules", []),
             "sites": state.get("sites", []),
         }
     if section == "access":
-        state = store.get_state_fields("accessRules", "sites", "ipGroups")
         return {
             "accessRules": state.get("accessRules", []),
             "sites": state.get("sites", []),
             "ipGroups": state.get("ipGroups", []),
         }
     if section == "ip-groups":
-        state = store.get_state_fields("ipGroups")
         return {"ipGroups": state.get("ipGroups", [])}
     if section == "certificates":
-        state = store.get_state_fields("certificates")
         return {"certificates": [public_certificate(item) for item in state.get("certificates", [])]}
     if section == "settings":
-        state = store.get_state_fields("settings", "users", "certificates")
         return {
             "settings": state.get("settings", {}),
             "users": [public_user(user) for user in state.get("users", [])],
