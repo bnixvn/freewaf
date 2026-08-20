@@ -26,6 +26,7 @@ from .defaults import (
     BUILTIN_RULES,
     DEFAULT_BOT_LOGIN_PATH_PATTERNS,
     DEFAULT_BOT_RATE_CHALLENGE,
+    DEFAULT_PACKAGES,
     DEFAULT_SETTINGS,
     LEGACY_WHMCS_LOGIN_PATH_PATTERNS,
     VERIFIED_AI_BOT_PROVIDERS,
@@ -306,7 +307,7 @@ GEOIP_READER = None
 GEOIP_READER_PATH = None
 GEOIP_READER_MTIME = None
 ACCESS_INSERT_POSITIONS = {"first", "last"}
-USER_ROLES = {"admin", "viewer"}
+USER_ROLES = {"platform_admin", "account_admin", "account_editor", "account_viewer", "admin", "viewer"}
 PASSWORD_ITERATIONS = 200_000
 BOT_RATE_WINDOW_SECONDS = {5, 10, 15, 20, 30, 60}
 BOT_RATE_BLOCK_MINUTES = {10, 30, 60}
@@ -436,8 +437,187 @@ class Store:
                 self.state["ipGroups"][index] = prepared
                 changed = True
 
+        # Migration: multi-account support
+        if "accounts" not in self.state:
+            self.state["accounts"] = []
+            changed = True
+        if "packages" not in self.state or not self.state.get("packages"):
+            self.state["packages"] = deepcopy(DEFAULT_PACKAGES)
+            changed = True
+
+        default_account_id = "account-default"
+        if self.state["accounts"]:
+            default = next((acc for acc in self.state["accounts"] if acc["id"] == default_account_id), None)
+            if default:
+                default_account_id = default["id"]
+        else:
+            now_ts = now
+            self.state["accounts"] = [{
+                "id": default_account_id,
+                "name": "Default",
+                "slug": "default",
+                "packageId": "enterprise",
+                "enabled": True,
+                "limits": {},
+                "createdAt": now_ts,
+                "updatedAt": now_ts,
+            }]
+            changed = True
+
+        # Assign accountId to resources that lack one
+        for collection in ("sites", "certificates", "ipGroups", "accessRules"):
+            for item in self.state.get(collection, []):
+                if not item.get("accountId"):
+                    item["accountId"] = default_account_id
+                    changed = True
+
+        # Rules: builtin rules have no accountId (global), custom rules get default
+        for rule in self.state.get("rules", []):
+            if not rule.get("builtin") and not rule.get("accountId"):
+                rule["accountId"] = default_account_id
+                changed = True
+
+        # Users: assign platform_admin to existing users without accountId/role
+        for user in self.state.get("users", []):
+            if not user.get("accountId"):
+                user["accountId"] = ""  # platform_admin has no account
+                changed = True
+            # Map legacy roles
+            if user.get("role") == "admin":
+                user["role"] = "platform_admin"
+                changed = True
+            elif user.get("role") == "viewer":
+                user["role"] = "account_viewer"
+                user["accountId"] = user.get("accountId") or default_account_id
+                changed = True
+
         if changed:
             self.persist()
+
+    def upsert_account(self, payload: dict, account_id: str | None = None) -> dict:
+        with self.lock:
+            now = utc_now()
+            existing = None
+            if account_id or payload.get("id"):
+                existing = next((acc for acc in self._state()["accounts"] if acc["id"] == (account_id or payload.get("id"))), None)
+            account = normalize_account_input(payload, account_id or payload.get("id"), now, existing)
+            accounts = self._state()["accounts"]
+            index = find_index(accounts, account["id"])
+            if index >= 0:
+                account["createdAt"] = accounts[index].get("createdAt", now)
+                accounts[index] = {**accounts[index], **account, "updatedAt": now}
+                saved = accounts[index]
+            else:
+                accounts.append(account)
+                saved = account
+            self.persist()
+            return deepcopy(saved)
+
+    def delete_account(self, account_id: str) -> None:
+        with self.lock:
+            accounts = self._state()["accounts"]
+            before = len(accounts)
+            self._state()["accounts"] = [acc for acc in accounts if acc["id"] != account_id]
+            if len(self._state()["accounts"]) == before:
+                raise StoreError(404, "Account not found")
+            # Cascade: remove resources owned by account
+            for collection in ("sites", "certificates", "ipGroups", "accessRules"):
+                self._state()[collection] = [
+                    item for item in self._state().get(collection, [])
+                    if item.get("accountId") != account_id
+                ]
+            # Remove custom rules (not builtin) owned by account
+            self._state()["rules"] = [
+                rule for rule in self._state().get("rules", [])
+                if rule.get("builtin") or rule.get("accountId") != account_id
+            ]
+            # Disable users of this account
+            for user in self._state().get("users", []):
+                if user.get("accountId") == account_id:
+                    user["enabled"] = False
+            self.persist()
+
+    def upsert_package(self, payload: dict, package_id: str | None = None) -> dict:
+        with self.lock:
+            now = utc_now()
+            existing = None
+            if package_id or payload.get("id"):
+                existing = next((pkg for pkg in self._state()["packages"] if pkg["id"] == (package_id or payload.get("id"))), None)
+            package = normalize_package_input(payload, package_id or payload.get("id"), now, existing)
+            packages = self._state()["packages"]
+            index = find_index(packages, package["id"])
+            if index >= 0:
+                package["createdAt"] = packages[index].get("createdAt", now)
+                packages[index] = {**packages[index], **package, "updatedAt": now}
+                saved = packages[index]
+            else:
+                packages.append(package)
+                saved = package
+            self.persist()
+            return deepcopy(saved)
+
+    def delete_package(self, package_id: str) -> None:
+        with self.lock:
+            packages = self._state()["packages"]
+            # Prevent deleting a package in use by an account
+            in_use = any(acc.get("packageId") == package_id for acc in self._state().get("accounts", []))
+            if in_use:
+                raise StoreError(400, "Package is in use by one or more accounts")
+            before = len(packages)
+            self._state()["packages"] = [pkg for pkg in packages if pkg["id"] != package_id]
+            if len(self._state()["packages"]) == before:
+                raise StoreError(404, "Package not found")
+            self.persist()
+
+    def get_account_limits(self, account_id: str) -> dict:
+        with self.lock:
+            account = next((acc for acc in self._state()["accounts"] if acc["id"] == account_id), None)
+            if not account:
+                return {"maxSites": 0, "maxCertificates": 0, "maxIpGroups": 0, "maxAccessRules": 0}
+            return account_effective_limits(account, self._state().get("packages", []))
+
+    def check_quota(self, account_id: str, resource_type: str) -> None:
+        """Raise StoreError(403) if the account has reached its limit for resource_type."""
+        if not account_id:
+            return  # platform-level resources have no quota
+        limits = self.get_account_limits(account_id)
+        limit_key_map = {
+            "sites": "maxSites",
+            "certificates": "maxCertificates",
+            "ipGroups": "maxIpGroups",
+            "accessRules": "maxAccessRules",
+        }
+        limit_key = limit_key_map.get(resource_type)
+        if not limit_key:
+            return
+        max_count = limits.get(limit_key, 0)
+        if max_count == 0:
+            return  # 0 = unlimited
+        current = sum(
+            1 for item in self._state().get(resource_type, [])
+            if item.get("accountId") == account_id
+        )
+        if current >= max_count:
+            raise StoreError(403, f"Account has reached the {resource_type} limit ({max_count}) for its package")
+
+    def filter_state_by_account(self, account_id: str, include_global: bool = True) -> dict:
+        """Return a filtered copy of state containing only resources owned by account_id."""
+        with self.lock:
+            state = self._state()
+            if not account_id:
+                return deepcopy(state)
+            filtered = deepcopy(state)
+            for collection in ("sites", "certificates", "ipGroups", "accessRules"):
+                filtered[collection] = [
+                    item for item in filtered.get(collection, [])
+                    if item.get("accountId") == account_id
+                ]
+            # Rules: include builtin (global) + custom owned by account
+            filtered["rules"] = [
+                rule for rule in filtered.get("rules", [])
+                if (include_global and rule.get("builtin")) or rule.get("accountId") == account_id
+            ]
+            return filtered
 
     def get_state(self) -> dict:
         with self.lock:
@@ -1254,6 +1434,7 @@ def normalize_site_input(payload: dict, site_id: str | None, now: str) -> dict:
     return {
         "id": site_id or create_id("site"),
         "name": name,
+        "accountId": str(payload.get("accountId") or payload.get("account_id") or ""),
         "hostnames": normalize_hostnames(payload.get("hostnames")),
         "applicationType": application_type,
         "origin": upstreams[0] if upstreams else "",
@@ -1300,6 +1481,7 @@ def normalize_certificate_input(payload: dict, certificate_id: str | None, now: 
         "id": certificate_id or create_id("cert"),
         "name": name,
         "source": source,
+        "accountId": str(payload.get("accountId") or payload.get("account_id") or ""),
         "domains": domains,
         "email": email,
         "autoRenew": payload.get("autoRenew") is not False,
@@ -1326,6 +1508,7 @@ def normalize_ip_group_input(payload: dict, group_id: str | None, now: str) -> d
     return {
         "id": group_id or create_id("ipgroup"),
         "name": name,
+        "accountId": str(payload.get("accountId") or payload.get("account_id") or ""),
         "description": str(payload.get("description") or ""),
         "referenceUrl": normalize_reference_url(payload.get("referenceUrl") or payload.get("reference") or ""),
         "items": normalize_ip_items(items),
@@ -1348,6 +1531,7 @@ def normalize_access_rule_input(payload: dict, rule_id: str | None, now: str) ->
     rule = {
         "id": rule_id or create_id("access"),
         "name": name,
+        "accountId": str(payload.get("accountId") or payload.get("account_id") or ""),
         "description": str(payload.get("description") or ""),
         "enabled": payload.get("enabled") is not False,
         "siteId": str(payload.get("siteId") or "*"),
@@ -1392,6 +1576,7 @@ def normalize_user_input(payload: dict, user_id: str | None, now: str, existing:
         "username": username,
         "displayName": display_name or username,
         "role": role,
+        "accountId": str(payload.get("accountId") or payload.get("account_id") or ""),
         "enabled": enabled,
         "passwordSalt": (existing or {}).get("passwordSalt", ""),
         "passwordHash": (existing or {}).get("passwordHash", ""),
@@ -2113,7 +2298,14 @@ def normalize_username(value) -> str:
 
 def normalize_user_role(value) -> str:
     role = str(value or "admin").strip().lower()
-    return role if role in USER_ROLES else "admin"
+    if role in USER_ROLES:
+        return role
+    # Legacy role mapping
+    if role == "admin":
+        return "platform_admin"
+    if role == "viewer":
+        return "account_viewer"
+    return "platform_admin"
 
 
 def validate_password(password: str) -> str:
@@ -3059,6 +3251,67 @@ def find_index(items: list[dict], item_id: str) -> int:
         if item.get("id") == item_id:
             return index
     return -1
+
+
+def _int_or_default(value, fallback: int = 0) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return max(0, fallback)
+
+
+def normalize_account_input(payload: dict, account_id: str | None, now: str, existing: dict | None = None) -> dict:
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise StoreError(400, "Account name is required")
+    slug = str(payload.get("slug") or "").strip().lower() or re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-") or create_id("acc")
+    package_id = str(payload.get("packageId") or payload.get("package_id") or (existing or {}).get("packageId") or "free")
+    enabled = normalize_bool(payload.get("enabled"), (existing or {}).get("enabled", True))
+    return {
+        "id": account_id or create_id("acc"),
+        "name": name,
+        "slug": slug,
+        "packageId": package_id,
+        "enabled": enabled,
+        "limits": dict(payload.get("limits") or (existing or {}).get("limits") or {}),
+        "createdAt": (existing or {}).get("createdAt", now),
+        "updatedAt": now,
+    }
+
+
+def normalize_package_input(payload: dict, package_id: str | None, now: str, existing: dict | None = None) -> dict:
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise StoreError(400, "Package name is required")
+    return {
+        "id": package_id or create_id("pkg"),
+        "name": name,
+        "description": str(payload.get("description") or ""),
+        "maxSites": _int_or_default(payload.get("maxSites") or payload.get("max_sites"), (existing or {}).get("maxSites", 0)),
+        "maxCertificates": _int_or_default(payload.get("maxCertificates") or payload.get("max_certificates"), (existing or {}).get("maxCertificates", 0)),
+        "maxIpGroups": _int_or_default(payload.get("maxIpGroups") or payload.get("max_ip_groups"), (existing or {}).get("maxIpGroups", 0)),
+        "maxAccessRules": _int_or_default(payload.get("maxAccessRules") or payload.get("max_access_rules"), (existing or {}).get("maxAccessRules", 0)),
+        "features": dict(payload.get("features") or (existing or {}).get("features") or {}),
+        "createdAt": (existing or {}).get("createdAt", now),
+        "updatedAt": now,
+    }
+
+
+def account_effective_limits(account: dict, packages: list[dict]) -> dict:
+    """Return the effective limits for an account: package defaults + per-account overrides."""
+    package_id = str(account.get("packageId") or "free")
+    package = next((pkg for pkg in packages if pkg["id"] == package_id), None)
+    base = {
+        "maxSites": package.get("maxSites", 0) if package else 0,
+        "maxCertificates": package.get("maxCertificates", 0) if package else 0,
+        "maxIpGroups": package.get("maxIpGroups", 0) if package else 0,
+        "maxAccessRules": package.get("maxAccessRules", 0) if package else 0,
+    }
+    overrides = account.get("limits") or {}
+    for key in base:
+        if key in overrides and overrides[key] is not None:
+            base[key] = overrides[key]
+    return base
 
 
 def create_id(prefix: str) -> str:

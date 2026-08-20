@@ -331,27 +331,27 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 return
 
             if parsed.path == "/api/dashboard":
-                self.send_json(200, state_slice_payload(store, "dashboard", query))
+                self.send_json(200, state_slice_payload(store, "dashboard", query, account_id=self.actor_account_id()))
                 return
 
             if parsed.path == "/api/sites":
-                self.send_json(200, state_slice_payload(store, "sites", query))
+                self.send_json(200, state_slice_payload(store, "sites", query, account_id=self.actor_account_id()))
                 return
 
             if parsed.path == "/api/rules":
-                self.send_json(200, state_slice_payload(store, "rules", query))
+                self.send_json(200, state_slice_payload(store, "rules", query, account_id=self.actor_account_id()))
                 return
 
             if parsed.path in {"/api/access", "/api/access-rules"}:
-                self.send_json(200, state_slice_payload(store, "access", query))
+                self.send_json(200, state_slice_payload(store, "access", query, account_id=self.actor_account_id()))
                 return
 
             if parsed.path == "/api/ip-groups":
-                self.send_json(200, state_slice_payload(store, "ip-groups", query))
+                self.send_json(200, state_slice_payload(store, "ip-groups", query, account_id=self.actor_account_id()))
                 return
 
             if parsed.path == "/api/certificates":
-                self.send_json(200, state_slice_payload(store, "certificates", query))
+                self.send_json(200, state_slice_payload(store, "certificates", query, account_id=self.actor_account_id()))
                 return
 
             if parsed.path == "/api/blocked-ips":
@@ -387,6 +387,37 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 except StoreError as error:
                     self.send_json(error.status, error_payload(error))
                     return
+
+            if parsed.path == "/api/accounts":
+                if not self.require_platform_admin(self.path):
+                    return
+                state = store.get_state()
+                accounts = []
+                for acc in state.get("accounts", []):
+                    limits = store.get_account_limits(acc["id"])
+                    site_count = sum(1 for s in state.get("sites", []) if s.get("accountId") == acc["id"])
+                    cert_count = sum(1 for c in state.get("certificates", []) if c.get("accountId") == acc["id"])
+                    ip_group_count = sum(1 for g in state.get("ipGroups", []) if g.get("accountId") == acc["id"])
+                    access_rule_count = sum(1 for r in state.get("accessRules", []) if r.get("accountId") == acc["id"])
+                    accounts.append({
+                        **acc,
+                        "usage": {
+                            "sites": site_count,
+                            "certificates": cert_count,
+                            "ipGroups": ip_group_count,
+                            "accessRules": access_rule_count,
+                        },
+                        "effectiveLimits": limits,
+                    })
+                self.send_json(200, {"accounts": accounts})
+                return
+
+            if parsed.path == "/api/packages":
+                if not self.require_auth(self.path):
+                    return
+                state = store.get_state()
+                self.send_json(200, {"packages": state.get("packages", [])})
+                return
 
             if parsed.path == "/api/settings":
                 self.send_json(200, state_slice_payload(store, "settings", query))
@@ -528,7 +559,21 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     return
 
                 payload = self.read_payload()
+                if self.path == "/api/accounts":
+                    saved = store.upsert_account(payload)
+                    self.record_audit(action="accounts.create", target="accounts", target_id=saved.get("id", ""), status=201, payload=payload)
+                    self.send_json(201, saved)
+                    return
+                if self.path == "/api/packages":
+                    saved = store.upsert_package(payload)
+                    self.record_audit(action="packages.create", target="packages", target_id=saved.get("id", ""), status=201, payload=payload)
+                    self.send_json(201, saved)
+                    return
                 if self.path == "/api/sites":
+                    actor_account = self.actor_account_id()
+                    if actor_account:
+                        payload.setdefault("accountId", actor_account)
+                        store.check_quota(actor_account, "sites")
                     saved = store.upsert_site(payload)
                     apply_nginx_or_raise(store)
                     self.record_audit(action="sites.create", target="sites", target_id=saved.get("id", ""), status=201, payload=payload)
@@ -541,6 +586,10 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     self.send_json(201, saved)
                     return
                 if self.path == "/api/certificates":
+                    actor_account = self.actor_account_id()
+                    if actor_account:
+                        payload.setdefault("accountId", actor_account)
+                        store.check_quota(actor_account, "certificates")
                     saved = store.upsert_certificate(prepare_certificate_payload(payload, state=store.get_state()))
                     if certificate_in_use(store, saved.get("id", "")):
                         apply_nginx_or_raise(store)
@@ -548,6 +597,10 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     self.send_json(201, public_certificate(saved))
                     return
                 if self.path == "/api/ip-groups":
+                    actor_account = self.actor_account_id()
+                    if actor_account:
+                        payload.setdefault("accountId", actor_account)
+                        store.check_quota(actor_account, "ipGroups")
                     saved = store.upsert_ip_group(payload)
                     saved = maybe_sync_new_reference_ip_group(store, saved)
                     maybe_auto_write(store)
@@ -555,12 +608,19 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     self.send_json(201, saved)
                     return
                 if self.path == "/api/access-rules":
+                    actor_account = self.actor_account_id()
+                    if actor_account:
+                        payload.setdefault("accountId", actor_account)
+                        store.check_quota(actor_account, "accessRules")
                     saved = store.upsert_access_rule(payload)
                     maybe_auto_write(store)
                     self.record_audit(action="access-rules.create", target="access-rules", target_id=saved.get("id", ""), status=201, payload=payload)
                     self.send_json(201, saved)
                     return
                 if self.path == "/api/users":
+                    actor_account = self.actor_account_id()
+                    if actor_account:
+                        payload.setdefault("accountId", actor_account)
                     saved = store.upsert_user(payload)
                     self.record_audit(action="users.create", target="users", target_id=saved.get("id", ""), status=201, payload=payload)
                     self.send_json(201, public_user(saved, include_totp_secret=bool(saved.get("_totpSecretGenerated"))))
@@ -740,6 +800,20 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 state = store.get_state()
                 action_verb = "replace" if replace else "update"
 
+                if resource == "accounts":
+                    if not self.require_platform_admin(self.path):
+                        return
+                    saved = store.upsert_account(payload, item_id)
+                    self.record_audit(action="accounts.update", target="accounts", target_id=item_id, status=200, payload=payload)
+                    self.send_json(200, saved)
+                    return
+                if resource == "packages":
+                    if not self.require_platform_admin(self.path):
+                        return
+                    saved = store.upsert_package(payload, item_id)
+                    self.record_audit(action="packages.update", target="packages", target_id=item_id, status=200, payload=payload)
+                    self.send_json(200, saved)
+                    return
                 if resource == "sites":
                     if not replace:
                         current = next((item for item in state["sites"] if item["id"] == item_id), None)
@@ -852,13 +926,43 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
             return False
 
         def require_admin(self, path: str) -> bool:
+            """Require admin-level access: platform_admin or account_admin."""
             if not self.require_auth(path):
                 return False
             user = self.authenticated_user()
-            if not user or user.get("role") != "admin":
+            if not user or user.get("role") not in ("platform_admin", "account_admin", "admin"):
                 self.send_json(403, {"error": "Admin role required"})
                 return False
             return True
+
+        def require_platform_admin(self, path: str) -> bool:
+            """Require platform_admin for system-level operations."""
+            if not self.require_auth(path):
+                return False
+            user = self.authenticated_user()
+            if not user or user.get("role") not in ("platform_admin", "admin"):
+                self.send_json(403, {"error": "Platform admin role required"})
+                return False
+            return True
+
+        def actor_account_id(self) -> str:
+            """Return the account context for the current user.
+
+            platform_admin can switch accounts via ?accountId= query param.
+            Other users are scoped to their own accountId.
+            """
+            user = self.authenticated_user()
+            if not user:
+                return ""
+            role = user.get("role") or ""
+            if role in ("platform_admin", "admin"):
+                parsed = urlparse(self.path)
+                query = parse_qs(parsed.query)
+                requested = str((query.get("accountId") or query.get("account_id") or [""])[0]).strip()
+                if requested:
+                    return requested
+                return ""  # platform_admin sees all
+            return str(user.get("accountId") or "")
 
         def login_user(self, user: dict) -> None:
             token = secrets.token_urlsafe(32)
@@ -1602,7 +1706,8 @@ def public_user(user: dict | None, include_totp_secret: bool = False) -> dict | 
         "id": user.get("id"),
         "username": user.get("username"),
         "displayName": user.get("displayName") or user.get("username"),
-        "role": user.get("role") or "admin",
+        "role": user.get("role") or "platform_admin",
+        "accountId": user.get("accountId") or "",
         "enabled": user.get("enabled") is not False,
         "totpEnabled": bool(user.get("totpEnabled")),
         "lastLoginAt": user.get("lastLoginAt", ""),
@@ -2028,8 +2133,8 @@ def dashboard_state_file() -> Path:
     return configured if configured.is_absolute() else ROOT_DIR / configured
 
 
-def dashboard_state_key(site_id: str = "", retention_days: int | None = None) -> str:
-    return f"site:{site_id or '*'}|days:{dashboard_period_days(retention_days)}"
+def dashboard_state_key(site_id: str = "", retention_days: int | None = None, account_id: str = "") -> str:
+    return f"site:{site_id or '*'}|days:{dashboard_period_days(retention_days)}|acc:{account_id or 'all'}"
 
 
 def empty_dashboard_state_cache() -> dict:
@@ -2076,7 +2181,7 @@ def save_dashboard_state_entry(key: str, stats: dict) -> None:
 
 
 def dashboard_state_key_parts(key: str) -> tuple[str, int] | None:
-    match = re.fullmatch(r"site:(.*)\|days:(1|7)", str(key or ""))
+    match = re.fullmatch(r"site:(.*)\|days:(1|7)\|acc:(.*)", str(key or ""))
     if not match:
         return None
     site_id = "" if match.group(1) == "*" else match.group(1)

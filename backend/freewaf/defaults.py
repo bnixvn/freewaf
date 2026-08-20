@@ -541,6 +541,83 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+DEFAULT_PACKAGES = [
+    {
+        "id": "free",
+        "name": "Free",
+        "description": "Basic WAF protection for small sites",
+        "maxSites": 3,
+        "maxCertificates": 3,
+        "maxIpGroups": 5,
+        "maxAccessRules": 10,
+        "features": {
+            "botProtection": True,
+            "geoBlock": False,
+            "modSecurity": False,
+            "customSsl": True,
+        },
+    },
+    {
+        "id": "pro",
+        "name": "Pro",
+        "description": "Advanced protection for growing businesses",
+        "maxSites": 10,
+        "maxCertificates": 20,
+        "maxIpGroups": 20,
+        "maxAccessRules": 50,
+        "features": {
+            "botProtection": True,
+            "geoBlock": True,
+            "modSecurity": True,
+            "customSsl": True,
+        },
+    },
+    {
+        "id": "business",
+        "name": "Business",
+        "description": "Full protection for multiple sites",
+        "maxSites": 50,
+        "maxCertificates": 100,
+        "maxIpGroups": 100,
+        "maxAccessRules": 200,
+        "features": {
+            "botProtection": True,
+            "geoBlock": True,
+            "modSecurity": True,
+            "customSsl": True,
+        },
+    },
+    {
+        "id": "enterprise",
+        "name": "Enterprise",
+        "description": "Unlimited resources with all features",
+        "maxSites": 0,
+        "maxCertificates": 0,
+        "maxIpGroups": 0,
+        "maxAccessRules": 0,
+        "features": {
+            "botProtection": True,
+            "geoBlock": True,
+            "modSecurity": True,
+            "customSsl": True,
+        },
+    },
+]
+
+
+def package_limits(package_id: str | None) -> dict:
+    """Return the limits dict for a package id, falling back to free."""
+    for package in DEFAULT_PACKAGES:
+        if package["id"] == package_id:
+            return {
+                "maxSites": package["maxSites"],
+                "maxCertificates": package["maxCertificates"],
+                "maxIpGroups": package["maxIpGroups"],
+                "maxAccessRules": package["maxAccessRules"],
+            }
+    return {"maxSites": 3, "maxCertificates": 3, "maxIpGroups": 5, "maxAccessRules": 10}
+
+
 def create_default_state(now: str | None = None) -> dict:
     timestamp = now or utc_now()
     return {
@@ -714,6 +791,19 @@ def create_default_state(now: str | None = None) -> dict:
         "accessRules": [
         ],
         "blockedIps": [],
+        "accounts": [
+            {
+                "id": "account-default",
+                "name": "Default",
+                "slug": "default",
+                "packageId": "enterprise",
+                "enabled": True,
+                "limits": {},
+                "createdAt": timestamp,
+                "updatedAt": timestamp,
+            }
+        ],
+        "packages": deepcopy(DEFAULT_PACKAGES),
         "users": [],
         "logs": [],
     }
