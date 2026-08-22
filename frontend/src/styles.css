@@ -3364,6 +3364,23 @@ td .muted {
   min-width: 92px;
 }
 
+/* Marks a rule whose state differs from the shared default. */
+.pill.override {
+  font-weight: 640;
+}
+
+.pill.override.on {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.pill.override.off {
+  border-color: var(--amber-line);
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
 .detail-rule-actions {
   margin-top: 14px;
   padding-top: 14px;

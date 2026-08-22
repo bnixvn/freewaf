@@ -1123,19 +1123,43 @@ def shared_builtin_rules(state: dict) -> list[dict]:
     return [rule for rule in state.get("rules", []) if is_shared_builtin_rule(rule)]
 
 
-def site_disabled_rule_ids(site: dict) -> set[str]:
-    """Rule ids this application switched off for itself.
-
-    Empty unless the application opted into "custom" mode, so by default every
-    application follows the shared rule set.
-    """
+def site_rule_override_ids(site: dict, key: str) -> set[str]:
+    """One of the application's override lists, empty unless it is customised."""
     overrides = site.get("ruleOverrides") if isinstance(site.get("ruleOverrides"), dict) else {}
     if str(overrides.get("mode") or "global").strip().lower() != "custom":
         return set()
-    disabled = overrides.get("disabled")
-    if not isinstance(disabled, list):
+    values = overrides.get(key)
+    if not isinstance(values, list):
         return set()
-    return {str(item).strip() for item in disabled if str(item).strip()}
+    return {str(item).strip() for item in values if str(item).strip()}
+
+
+def site_disabled_rule_ids(site: dict) -> set[str]:
+    """Rule ids this application switched off for itself."""
+    return site_rule_override_ids(site, "disabled")
+
+
+def site_enabled_rule_ids(site: dict) -> set[str]:
+    """Rule ids this application switched on for itself.
+
+    These are usually rules kept off globally because they only suit one stack
+    (WordPress paths, for example) and would misfire on the other applications.
+    """
+    return site_rule_override_ids(site, "enabled")
+
+
+def site_rule_enabled(rule: dict, site: dict) -> bool:
+    """Whether a rule runs for this application.
+
+    Customised applications override the global flag per rule; everything they
+    did not name keeps following the shared rule set.
+    """
+    rule_id = str(rule.get("id") or "")
+    if rule_id and rule_id in site_enabled_rule_ids(site):
+        return True
+    if rule_id and rule_id in site_disabled_rule_ids(site):
+        return False
+    return bool(rule.get("enabled"))
 
 
 def site_shared_builtin_variable(site: dict, state: dict) -> str:
@@ -1692,24 +1716,23 @@ def render_acme_challenge_location() -> list[str]:
 
 
 def render_site_waf_directives(site: dict, state: dict) -> list[str]:
-    disabled_rule_ids = site_disabled_rule_ids(site)
+    # Rules the application switched on for itself are off globally, so they are
+    # never part of the shared http-level map and land here as ordinary checks.
     rules = [
         rule
         for rule in state.get("rules", [])
-        if rule.get("enabled")
+        if site_rule_enabled(rule, site)
         and rule.get("action") != "allow"
         and (rule.get("siteId") == "*" or rule.get("siteId") == site.get("id"))
-        and str(rule.get("id") or "") not in disabled_rule_ids
         and should_emit_rule_for_site(rule, site)
         and not is_shared_builtin_rule(rule)
     ]
     allow_rules = [
         rule
         for rule in state.get("rules", [])
-        if rule.get("enabled")
+        if site_rule_enabled(rule, site)
         and rule.get("action") == "allow"
         and (rule.get("siteId") == "*" or rule.get("siteId") == site.get("id"))
-        and str(rule.get("id") or "") not in disabled_rule_ids
     ]
     access_rules = [
         (index, rule)

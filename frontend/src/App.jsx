@@ -2456,8 +2456,13 @@ function SiteDetailView({
   });
   const isCustom = draft.mode === 'custom';
   const disabledSet = new Set(draft.disabled);
-  const globallyOn = applicableRules.filter((rule) => rule.enabled);
-  const activeCount = globallyOn.filter((rule) => !(isCustom && disabledSet.has(rule.id))).length;
+  const enabledSet = new Set(draft.enabled);
+  const ruleIsOn = (rule) => {
+    if (isCustom && enabledSet.has(rule.id)) return true;
+    if (isCustom && disabledSet.has(rule.id)) return false;
+    return Boolean(rule.enabled);
+  };
+  const activeCount = applicableRules.filter(ruleIsOn).length;
   const dirty = savedSignature !== JSON.stringify(draft);
   const saving = Boolean(pendingActions[`site:${site.id}:ruleOverrides`]);
   const ports = site.ports?.length ? site.ports : [String(site.listen || 8080)];
@@ -2467,15 +2472,17 @@ function SiteDetailView({
     setDraft((current) => ({ ...current, mode }));
   }
 
-  function toggleRuleForSite(ruleId, nextEnabled) {
+  // Only rules that differ from the shared default are recorded, so an
+  // application keeps following global changes for everything it never touched.
+  function toggleRuleForSite(rule, nextOn) {
     setDraft((current) => {
-      const next = new Set(current.disabled);
-      if (nextEnabled) {
-        next.delete(ruleId);
-      } else {
-        next.add(ruleId);
-      }
-      return { ...current, disabled: Array.from(next) };
+      const enabled = new Set(current.enabled);
+      const disabled = new Set(current.disabled);
+      enabled.delete(rule.id);
+      disabled.delete(rule.id);
+      if (nextOn && !rule.enabled) enabled.add(rule.id);
+      if (!nextOn && rule.enabled) disabled.add(rule.id);
+      return { ...current, enabled: Array.from(enabled), disabled: Array.from(disabled) };
     });
   }
 
@@ -2565,7 +2572,7 @@ function SiteDetailView({
           </div>
           <p className="muted">
             {isCustom
-              ? 'This application runs its own selection. Switch off any shared rule it should skip.'
+              ? 'This application runs its own selection. Switch on the rules made for its stack, and switch off any shared rule it should skip.'
               : 'This application follows the shared rule set. Every change made on the Detection Rules page applies here.'}
           </p>
         </div>
@@ -2579,9 +2586,8 @@ function SiteDetailView({
 
         <div className="detail-rule-list">
           {visibleRules.length ? visibleRules.map((rule) => {
-            const offGlobally = !rule.enabled;
-            const offHere = isCustom && disabledSet.has(rule.id);
-            const on = !offGlobally && !offHere;
+            const on = ruleIsOn(rule);
+            const overridden = isCustom && (enabledSet.has(rule.id) || disabledSet.has(rule.id));
             return (
               <div className={`detail-rule-row ${on ? '' : 'off'}`} key={rule.id}>
                 <div className="detail-rule-main">
@@ -2590,20 +2596,19 @@ function SiteDetailView({
                     <span className={`status ${rule.severity}`}>{rule.severity}</span>
                     <span className={`status ${rule.action}`}>{rule.action}</span>
                     {rule.siteId !== '*' && <span className="pill">this application only</span>}
+                    {overridden
+                      ? <span className={`pill override ${on ? 'on' : 'off'}`}>{on ? 'on for this app' : 'off for this app'}</span>
+                      : !rule.enabled && <span className="pill">off globally</span>}
                   </div>
                   <span className="muted">{rule.description || 'Custom rule'}</span>
                   <span className="code">{rule.pattern}</span>
                 </div>
                 <div className="detail-rule-state">
-                  {offGlobally ? (
-                    <span className="status disabled">off globally</span>
-                  ) : (
-                    <Switch
-                      checked={on}
-                      disabled={!isCustom}
-                      onChange={(checked) => toggleRuleForSite(rule.id, checked)}
-                    />
-                  )}
+                  <Switch
+                    checked={on}
+                    disabled={!isCustom}
+                    onChange={(checked) => toggleRuleForSite(rule, checked)}
+                  />
                 </div>
               </div>
             );
@@ -2653,6 +2658,7 @@ function ruleOverridesFromSite(site) {
   const source = site?.ruleOverrides && typeof site.ruleOverrides === 'object' ? site.ruleOverrides : {};
   return {
     mode: source.mode === 'custom' ? 'custom' : 'global',
+    enabled: Array.isArray(source.enabled) ? [...source.enabled] : [],
     disabled: Array.isArray(source.disabled) ? [...source.disabled] : []
   };
 }

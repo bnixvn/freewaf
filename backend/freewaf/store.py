@@ -2081,16 +2081,23 @@ def normalize_rule_overrides_config(value) -> dict:
     """Per-application rule selection.
 
     "global" (the default) means the application follows the shared rule set.
-    "custom" lets it switch individual rules off for itself; it can only
-    subtract from the shared set, never enable a globally disabled rule.
+    "custom" keeps following it for rules it never touched, but the two lists
+    override that per rule: "enabled" switches a rule on even when it is off
+    globally (so app-specific rules can stay off for everyone else), and
+    "disabled" switches one off for this application only.
     """
     source = value if isinstance(value, dict) else {}
     mode = str(source.get("mode") or "global").strip().lower()
     if mode not in {"global", "custom"}:
         mode = "global"
+    enabled = normalize_string_list(source.get("enabled"))
+    # A rule named by both lists stays on: for a WAF the safe reading of an
+    # ambiguous selection is more inspection, not less.
+    disabled = [item for item in normalize_string_list(source.get("disabled")) if item not in set(enabled)]
     return {
         "mode": mode,
-        "disabled": normalize_string_list(source.get("disabled")),
+        "enabled": enabled,
+        "disabled": disabled,
     }
 
 
