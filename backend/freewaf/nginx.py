@@ -1123,6 +1123,48 @@ def shared_builtin_rules(state: dict) -> list[dict]:
     return [rule for rule in state.get("rules", []) if is_shared_builtin_rule(rule)]
 
 
+def site_disabled_rule_ids(site: dict) -> set[str]:
+    """Rule ids this application switched off for itself.
+
+    Empty unless the application opted into "custom" mode, so by default every
+    application follows the shared rule set.
+    """
+    overrides = site.get("ruleOverrides") if isinstance(site.get("ruleOverrides"), dict) else {}
+    if str(overrides.get("mode") or "global").strip().lower() != "custom":
+        return set()
+    disabled = overrides.get("disabled")
+    if not isinstance(disabled, list):
+        return set()
+    return {str(item).strip() for item in disabled if str(item).strip()}
+
+
+def site_shared_builtin_variable(site: dict, state: dict) -> str:
+    """Variable holding the matched shared-rule id as this application sees it.
+
+    Applications that disabled none of the shared rules read the http-level
+    variable directly; the rest get a small per-site map that zeroes out the
+    rules they switched off, so the shared regexes are still compiled once.
+    """
+    if not site_disabled_shared_indices(site, state):
+        return "$sfl_builtin_rule_id"
+    return f"$sfl_builtin_rule_id_{nginx_identifier(site.get('id'))}"
+
+
+def site_disabled_shared_indices(site: dict, state: dict) -> list[int]:
+    disabled = site_disabled_rule_ids(site)
+    if not disabled:
+        return []
+    return [
+        index
+        for index, rule in enumerate(shared_builtin_rules(state), start=1)
+        if str(rule.get("id") or "") in disabled
+    ]
+
+
+def nginx_identifier(value) -> str:
+    return re.sub(r"[^a-zA-Z0-9]", "_", str(value or "")) or "site"
+
+
 def is_shared_builtin_rule(rule: dict) -> bool:
     return bool(
         rule.get("enabled")
@@ -1176,6 +1218,31 @@ def render_shared_builtin_rule_maps(state: dict) -> list[str]:
         reason = nginx_string(rule.get("name") or rule.get("id") or "Builtin WAF rule matched")
         lines.append(f'    {index} "{reason}";')
     lines.extend(["}", ""])
+    lines.extend(render_site_shared_builtin_filters(state))
+    return lines
+
+
+def render_site_shared_builtin_filters(state: dict) -> list[str]:
+    """One map per application that switched some shared rules off.
+
+    The shared regexes stay compiled once; this only remaps the resulting rule
+    id to 0 for the applications that opted out of that rule.
+    """
+    lines: list[str] = []
+    for site in state.get("sites", []):
+        disabled_indices = site_disabled_shared_indices(site, state)
+        if not disabled_indices:
+            continue
+        variable = site_shared_builtin_variable(site, state)
+        name = nginx_string(site.get("name") or site.get("id") or "")
+        lines.extend([
+            f'# Shared rules switched off for "{name}".',
+            f"map $sfl_builtin_rule_id {variable} {{",
+            "    default $sfl_builtin_rule_id;",
+        ])
+        for index in disabled_indices:
+            lines.append(f"    {index} 0;")
+        lines.extend(["}", ""])
     return lines
 
 
@@ -1625,12 +1692,14 @@ def render_acme_challenge_location() -> list[str]:
 
 
 def render_site_waf_directives(site: dict, state: dict) -> list[str]:
+    disabled_rule_ids = site_disabled_rule_ids(site)
     rules = [
         rule
         for rule in state.get("rules", [])
         if rule.get("enabled")
         and rule.get("action") != "allow"
         and (rule.get("siteId") == "*" or rule.get("siteId") == site.get("id"))
+        and str(rule.get("id") or "") not in disabled_rule_ids
         and should_emit_rule_for_site(rule, site)
         and not is_shared_builtin_rule(rule)
     ]
@@ -1640,6 +1709,7 @@ def render_site_waf_directives(site: dict, state: dict) -> list[str]:
         if rule.get("enabled")
         and rule.get("action") == "allow"
         and (rule.get("siteId") == "*" or rule.get("siteId") == site.get("id"))
+        and str(rule.get("id") or "") not in disabled_rule_ids
     ]
     access_rules = [
         (index, rule)
@@ -1684,7 +1754,7 @@ def render_shared_builtin_rule_directives(site: dict, state: dict) -> list[str]:
     verdict = "monitor" if site.get("mode") == "monitor" else "block"
     block_value = "0" if verdict == "monitor" else "1"
     return [
-        "    set $sfl_shared_builtin_rule $sfl_builtin_rule_id;",
+        f"    set $sfl_shared_builtin_rule {site_shared_builtin_variable(site, state)};",
         "    if ($sfl_allow = 1) {",
         "        set $sfl_shared_builtin_rule 0;",
         "    }",

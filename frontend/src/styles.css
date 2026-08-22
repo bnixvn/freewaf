@@ -3197,6 +3197,189 @@ td .muted {
   color: var(--accent-strong);
 }
 
+/* Per-application configuration page */
+.site-detail {
+  display: grid;
+  gap: 14px;
+}
+
+.detail-breadcrumb .link-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.detail-fact-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 14px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.detail-fact {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.detail-fact span {
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.detail-fact strong {
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.detail-switch-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.detail-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+
+.detail-switch strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.detail-switch small {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+
+.detail-protection-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 16px;
+}
+
+.detail-protection-row .feature-chip {
+  min-height: 30px;
+  padding: 4px 12px;
+  font-size: 11px;
+}
+
+.detail-rule-mode {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.detail-rule-mode p {
+  flex: 1 1 280px;
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.detail-rule-search {
+  max-width: 340px;
+  margin-bottom: 12px;
+}
+
+.detail-rule-list {
+  display: grid;
+  gap: 8px;
+  max-height: 620px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.detail-rule-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  transition: border-color 0.12s, opacity 0.12s;
+}
+
+.detail-rule-row:hover {
+  border-color: var(--line-strong);
+}
+
+.detail-rule-row.off {
+  opacity: 0.62;
+}
+
+.detail-rule-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.detail-rule-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.detail-rule-title strong {
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.detail-rule-main > .muted {
+  font-size: 12px;
+}
+
+.detail-rule-main > .code {
+  justify-self: start;
+  max-width: 100%;
+}
+
+.detail-rule-state {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 92px;
+}
+
+.detail-rule-actions {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+@media (max-width: 640px) {
+  .detail-rule-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .detail-rule-state {
+    justify-content: flex-start;
+  }
+}
+
 /* ---------- 12. Logs, settings ------------------------------------------- */
 
 .log-filters {

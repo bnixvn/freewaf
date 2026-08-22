@@ -342,6 +342,10 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 self.send_json(200, state_slice_payload(store, "rules", query, account_id=self.actor_account_id()))
                 return
 
+            if parsed.path == "/api/site-detail":
+                self.send_json(200, state_slice_payload(store, "site-detail", query, account_id=self.actor_account_id()))
+                return
+
             if parsed.path in {"/api/access", "/api/access-rules"}:
                 self.send_json(200, state_slice_payload(store, "access", query, account_id=self.actor_account_id()))
                 return
@@ -1756,6 +1760,14 @@ def state_slice_payload(
         return {
             "rules": state.get("rules", []),
             "sites": state.get("sites", []),
+        }
+    if section == "site-detail":
+        # The per-application config page needs the rule catalogue alongside the
+        # site itself; certificates back the TLS summary.
+        return {
+            "sites": state.get("sites", []),
+            "rules": state.get("rules", []),
+            "certificates": [public_certificate(item) for item in state.get("certificates", [])],
         }
     if section == "access":
         return {

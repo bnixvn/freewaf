@@ -46,7 +46,8 @@ const viewTitles = {
   ipGroups: 'IP Groups',
   certificates: 'Certificates',
   logs: 'Access Logs',
-  settings: 'Settings'
+  settings: 'Settings',
+  siteDetail: 'Application'
 };
 
 // Sub-line under each page title, so every view says what it is for.
@@ -58,7 +59,8 @@ const viewSubtitles = {
   ipGroups: 'Reusable IP and CIDR lists',
   certificates: 'TLS certificates and issuance',
   logs: 'Per-request decisions with filters and export',
-  settings: 'Panel security, defaults and maintenance'
+  settings: 'Panel security, defaults and maintenance',
+  siteDetail: 'Per-application configuration'
 };
 
 // Nav grouped by concern instead of one flat list.
@@ -145,6 +147,7 @@ function viewDataEndpoint(view, dashboardSiteId = '', dashboardPeriodDays = '1')
   }
   return {
     sites: '/api/sites',
+    siteDetail: '/api/site-detail',
     rules: '/api/rules',
     access: '/api/access-rules',
     ipGroups: '/api/ip-groups',
@@ -444,6 +447,7 @@ export default function App() {
   const [logPage, setLogPage] = useState(1);
   const [logPageSize, setLogPageSize] = useState(50);
   const [logResult, setLogResult] = useState({ logs: [], total: 0, page: 1, pages: 1, domains: [], siteOptions: [] });
+  const [detailSiteId, setDetailSiteId] = useState('');
   const [dashboardSiteId, setDashboardSiteId] = useState('');
   const [dashboardPeriodDays, setDashboardPeriodDays] = useState('1');
   const [systemUpdate, setSystemUpdate] = useState(null);
@@ -816,6 +820,30 @@ export default function App() {
       } catch (error) {
         showToast(error.message, true);
         await loadViewData('sites', { manageLoading: false, force: true });
+      }
+    });
+  }
+
+  function openSiteDetail(site) {
+    setDetailSiteId(site.id);
+    setActiveView('siteDetail');
+  }
+
+  // Saved explicitly rather than per toggle: every site PATCH regenerates and
+  // reloads the nginx config on the server.
+  async function saveSiteRuleOverrides(site, ruleOverrides) {
+    await withActionPending(`site:${site.id}:ruleOverrides`, async () => {
+      try {
+        const saved = await api(`/api/sites/${site.id}`, {
+          method: 'PATCH',
+          body: { ruleOverrides }
+        });
+        updateDataItem('sites', site.id, saved);
+        showToast(ruleOverrides.mode === 'custom' ? 'Custom rule set saved' : 'Application follows the shared rules');
+      } catch (error) {
+        showToast(error.message, true);
+        await loadViewData('siteDetail', { manageLoading: false, force: true });
+        throw error;
       }
     });
   }
@@ -1445,6 +1473,8 @@ export default function App() {
     showToast('User deleted');
   }
 
+  const detailSite = (data?.sites || []).find((site) => site.id === detailSiteId) || null;
+
   const content = useMemo(() => {
     if (!data) return <LoadingPanel />;
     if (activeView !== 'dashboard' && !loadedViews[activeView]) return <LoadingPanel />;
@@ -1495,6 +1525,10 @@ export default function App() {
       setLogPage,
       logPageSize,
       setLogPageSize,
+      detailSiteId,
+      openSiteDetail,
+      saveSiteRuleOverrides,
+      setActiveView,
       dashboardSiteId,
       setDashboardSiteId,
       dashboardPeriodDays,
@@ -1503,6 +1537,7 @@ export default function App() {
       logout
     };
     if (activeView === 'sites') return <SitesView {...props} />;
+    if (activeView === 'siteDetail') return <SiteDetailView {...props} />;
     if (activeView === 'rules') return <RulesView {...props} />;
     if (activeView === 'access') return <AccessView {...props} />;
     if (activeView === 'ipGroups') return <IpGroupsView {...props} />;
@@ -1510,7 +1545,7 @@ export default function App() {
     if (activeView === 'logs') return <LogsView {...props} />;
     if (activeView === 'settings') return <SettingsView {...props} />;
     return <DashboardView {...props} />;
-  }, [activeView, data, loadedViews, filter, auth, pendingActions, logsLoading, logResult, logSiteId, logDomain, logVerdict, logPage, logPageSize, dashboardSiteId, dashboardPeriodDays, systemUpdate]);
+  }, [activeView, data, loadedViews, filter, auth, pendingActions, logsLoading, logResult, logSiteId, logDomain, logVerdict, logPage, logPageSize, detailSiteId, dashboardSiteId, dashboardPeriodDays, systemUpdate]);
 
   if (auth.loading) {
     return <LoadingPanel />;
@@ -1569,7 +1604,7 @@ export default function App() {
               {group.items.map((item) => (
                 <NavButton
                   key={item.view}
-                  active={activeView === item.view}
+                  active={activeView === item.view || (item.view === 'sites' && activeView === 'siteDetail')}
                   icon={item.icon}
                   label={item.label}
                   count={item.count ? item.count(data) : undefined}
@@ -1604,8 +1639,12 @@ export default function App() {
               <Menu size={20} />
             </button>
             <div className="topbar-heading">
-              <h1>{viewTitles[activeView]}</h1>
-              <p className="eyebrow">{viewSubtitles[activeView]}</p>
+              <h1>{activeView === 'siteDetail' ? (detailSite?.name || viewTitles.siteDetail) : viewTitles[activeView]}</h1>
+              <p className="eyebrow">
+                {activeView === 'siteDetail'
+                  ? (detailSite?.hostnames?.[0] || viewSubtitles.siteDetail)
+                  : viewSubtitles[activeView]}
+              </p>
             </div>
           </div>
           <div className="toolbar">
@@ -2186,7 +2225,7 @@ function CompactInsightColumn({ title, pill, rows, empty, maxValue, label, barVa
   );
 }
 
-function SitesView({ data, setModal, toggleSite, toggleUnderAttack, toggleAllUnderAttack, deleteSite, downloadCertificate, pendingActions = {} }) {
+function SitesView({ data, setModal, toggleSite, toggleUnderAttack, toggleAllUnderAttack, deleteSite, downloadCertificate, openSiteDetail, pendingActions = {} }) {
   const sites = data.sites || [];
   const underAttackCount = sites.filter((site) => site.underAttack?.enabled).length;
   const allUnderAttack = sites.length > 0 && underAttackCount === sites.length;
@@ -2237,6 +2276,7 @@ function SitesView({ data, setModal, toggleSite, toggleUnderAttack, toggleAllUnd
               certificate={certificate}
               stats={data.stats?.siteStats?.find((item) => item.siteId === site.id)}
               onEdit={() => setModal({ type: 'site', site })}
+              onOpenDetail={() => openSiteDetail(site)}
               onDelete={() => deleteSite(site)}
               onDownloadCertificate={() => downloadCertificate(certificate)}
               onToggle={(checked) => toggleSite(site, checked)}
@@ -2259,6 +2299,7 @@ function ApplicationCard({
   certificate,
   stats,
   onEdit,
+  onOpenDetail,
   onDelete,
   onDownloadCertificate,
   onToggle,
@@ -2317,7 +2358,10 @@ function ApplicationCard({
                 <Download size={17} />
               </button>
             )}
-            <button className="link-button" onClick={onEdit}>DETAIL</button>
+            <button className="table-action" onClick={onEdit} title="Edit application" aria-label="Edit application">
+              <Edit3 size={17} />
+            </button>
+            <button className="link-button" onClick={onOpenDetail}>DETAIL</button>
             <button className="table-action delete-action" onClick={onDelete} title="Delete application" aria-label="Delete application">
               <Trash2 size={17} />
             </button>
@@ -2366,6 +2410,251 @@ function ApplicationCard({
       </div>
     </article>
   );
+}
+
+function SiteDetailView({
+  data,
+  detailSiteId,
+  setActiveView,
+  setModal,
+  toggleSite,
+  toggleUnderAttack,
+  saveSiteRuleOverrides,
+  downloadCertificate,
+  pendingActions = {}
+}) {
+  const site = (data.sites || []).find((item) => item.id === detailSiteId);
+  const [ruleFilter, setRuleFilter] = useState('');
+  const [draft, setDraft] = useState(() => ruleOverridesFromSite(site));
+
+  // Reset the draft whenever the saved overrides change (save, refresh, app switch).
+  const savedSignature = JSON.stringify(ruleOverridesFromSite(site));
+  useEffect(() => {
+    setDraft(ruleOverridesFromSite(site));
+  }, [savedSignature]);
+
+  if (!site) {
+    return (
+      <EmptyState
+        icon={<Server size={26} />}
+        title="Application not found"
+        hint="It may have been deleted. Go back to the application list."
+        action={<button className="tool-button primary" onClick={() => setActiveView('sites')}>Back to Applications</button>}
+      />
+    );
+  }
+
+  const certificate = (data.certificates || []).find((item) => item.id === site.tls?.certificateId);
+  const features = normalizedSiteFeatures(site);
+  const applicableRules = (data.rules || []).filter((rule) => rule.siteId === '*' || rule.siteId === site.id);
+  const visibleRules = applicableRules.filter((rule) => {
+    if (!ruleFilter.trim()) return true;
+    return [rule.name, rule.description, rule.pattern, rule.target, rule.action, rule.severity]
+      .join(' ')
+      .toLowerCase()
+      .includes(ruleFilter.trim().toLowerCase());
+  });
+  const isCustom = draft.mode === 'custom';
+  const disabledSet = new Set(draft.disabled);
+  const globallyOn = applicableRules.filter((rule) => rule.enabled);
+  const activeCount = globallyOn.filter((rule) => !(isCustom && disabledSet.has(rule.id))).length;
+  const dirty = savedSignature !== JSON.stringify(draft);
+  const saving = Boolean(pendingActions[`site:${site.id}:ruleOverrides`]);
+  const ports = site.ports?.length ? site.ports : [String(site.listen || 8080)];
+  const upstreams = site.upstreams?.length ? site.upstreams : [site.origin].filter(Boolean);
+
+  function setMode(mode) {
+    setDraft((current) => ({ ...current, mode }));
+  }
+
+  function toggleRuleForSite(ruleId, nextEnabled) {
+    setDraft((current) => {
+      const next = new Set(current.disabled);
+      if (nextEnabled) {
+        next.delete(ruleId);
+      } else {
+        next.add(ruleId);
+      }
+      return { ...current, disabled: Array.from(next) };
+    });
+  }
+
+  return (
+    <div className="site-detail">
+      <div className="detail-breadcrumb">
+        <button type="button" className="link-button" onClick={() => setActiveView('sites')}>
+          <ChevronsLeft size={14} /> All applications
+        </button>
+      </div>
+
+      <section className="panel detail-overview">
+        <div className="panel-heading">
+          <h2>Overview</h2>
+          <div className="row-actions">
+            <button className="tool-button" onClick={() => setModal({ type: 'site', site })}>
+              <Edit3 size={16} /> Edit
+            </button>
+            {certificate?.certFile && (
+              <button className="tool-button" onClick={() => downloadCertificate(certificate)}>
+                <Download size={16} /> Certificate
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="detail-fact-grid">
+          <DetailFact label="Type" value={applicationTypeLabel(site.applicationType)} />
+          <DetailFact label="Domains" value={site.hostnames?.join(', ') || '-'} />
+          <DetailFact label="Listening ports" value={ports.join(', ')} />
+          <DetailFact
+            label={site.applicationType === 'redirect' ? 'Redirect to' : 'Upstreams'}
+            value={site.applicationType === 'redirect' ? (site.redirect?.address || '-') : (upstreams.join(', ') || '-')}
+          />
+          <DetailFact label="TLS certificate" value={certificate?.name || (site.tls?.enabled ? 'Enabled, no certificate' : 'Not enabled')} />
+          <DetailFact label="Detection mode" value={site.mode === 'monitor' ? 'Monitor only' : 'Block'} />
+        </div>
+
+        <div className="detail-switch-row">
+          <div className="detail-switch">
+            <div>
+              <strong>Defense</strong>
+              <small>Serve this application through the WAF.</small>
+            </div>
+            <Switch
+              checked={Boolean(site.enabled)}
+              pending={Boolean(pendingActions[`site:${site.id}:enabled`])}
+              onChange={(checked) => toggleSite(site, checked)}
+            />
+          </div>
+          <div className="detail-switch">
+            <div>
+              <strong>Under Attack Mode</strong>
+              <small>Challenge every new visitor until it is switched off.</small>
+            </div>
+            <Switch
+              checked={Boolean(site.underAttack?.enabled)}
+              pending={Boolean(pendingActions[`site:${site.id}:underAttack`])}
+              onChange={(checked) => toggleUnderAttack(site, checked)}
+            />
+          </div>
+        </div>
+
+        <div className="detail-protection-row">
+          <button className={`feature-chip feature-chip-button ${features.httpFlood ? 'active' : ''}`} type="button" onClick={() => setModal({ type: 'httpFlood', site })}>
+            <SlidersHorizontal size={13} /> HTTP FLOOD
+          </button>
+          <button className={`feature-chip feature-chip-button ${features.botProtection ? 'active' : ''}`} type="button" onClick={() => setModal({ type: 'botProtect', site })}>
+            <ShieldCheck size={13} /> BOT PROTECT
+          </button>
+          <button className={`feature-chip feature-chip-button ${features.geoBlock ? 'active' : ''}`} type="button" onClick={() => setModal({ type: 'geoBlock', site })}>
+            <Globe2 size={13} /> GEO BLOCK
+          </button>
+        </div>
+      </section>
+
+      <section className="panel detail-rules">
+        <div className="panel-heading">
+          <h2>Detection Rules</h2>
+          <span className="pill">{activeCount} of {applicableRules.length} active</span>
+        </div>
+
+        <div className="detail-rule-mode">
+          <div className="segmented">
+            <button type="button" className={!isCustom ? 'active' : ''} onClick={() => setMode('global')}>Use Global</button>
+            <button type="button" className={isCustom ? 'active' : ''} onClick={() => setMode('custom')}>Customize</button>
+          </div>
+          <p className="muted">
+            {isCustom
+              ? 'This application runs its own selection. Switch off any shared rule it should skip.'
+              : 'This application follows the shared rule set. Every change made on the Detection Rules page applies here.'}
+          </p>
+        </div>
+
+        <input
+          className="search detail-rule-search"
+          value={ruleFilter}
+          onChange={(event) => setRuleFilter(event.target.value)}
+          placeholder="Filter rules"
+        />
+
+        <div className="detail-rule-list">
+          {visibleRules.length ? visibleRules.map((rule) => {
+            const offGlobally = !rule.enabled;
+            const offHere = isCustom && disabledSet.has(rule.id);
+            const on = !offGlobally && !offHere;
+            return (
+              <div className={`detail-rule-row ${on ? '' : 'off'}`} key={rule.id}>
+                <div className="detail-rule-main">
+                  <div className="detail-rule-title">
+                    <strong>{rule.name}</strong>
+                    <span className={`status ${rule.severity}`}>{rule.severity}</span>
+                    <span className={`status ${rule.action}`}>{rule.action}</span>
+                    {rule.siteId !== '*' && <span className="pill">this application only</span>}
+                  </div>
+                  <span className="muted">{rule.description || 'Custom rule'}</span>
+                  <span className="code">{rule.pattern}</span>
+                </div>
+                <div className="detail-rule-state">
+                  {offGlobally ? (
+                    <span className="status disabled">off globally</span>
+                  ) : (
+                    <Switch
+                      checked={on}
+                      disabled={!isCustom}
+                      onChange={(checked) => toggleRuleForSite(rule.id, checked)}
+                    />
+                  )}
+                </div>
+              </div>
+            );
+          }) : (
+            <p className="muted">No rules match this filter.</p>
+          )}
+        </div>
+
+        <div className="settings-actions detail-rule-actions">
+          <LoadingButton
+            type="button"
+            pending={saving}
+            pendingText="Saving..."
+            className="tool-button primary"
+            disabled={!dirty}
+            onClick={() => saveSiteRuleOverrides(site, draft).catch(() => {})}
+          >
+            <Save size={16} /> Save rule selection
+          </LoadingButton>
+          <button
+            type="button"
+            className="tool-button"
+            disabled={!dirty || saving}
+            onClick={() => setDraft(ruleOverridesFromSite(site))}
+          >
+            Discard changes
+          </button>
+          <span className="form-note">
+            {dirty ? 'Unsaved changes. Saving reloads the nginx config.' : 'Saved.'}
+          </span>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function DetailFact({ label, value }) {
+  return (
+    <div className="detail-fact">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function ruleOverridesFromSite(site) {
+  const source = site?.ruleOverrides && typeof site.ruleOverrides === 'object' ? site.ruleOverrides : {};
+  return {
+    mode: source.mode === 'custom' ? 'custom' : 'global',
+    disabled: Array.isArray(source.disabled) ? [...source.disabled] : []
+  };
 }
 
 function RulesView({ data, filter, setFilter, setModal, toggleRule, deleteRule, pendingActions }) {

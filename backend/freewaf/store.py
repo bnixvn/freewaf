@@ -1247,6 +1247,7 @@ def normalize_stored_site(site: dict) -> dict:
     bot_protection = normalize_bot_protection_config(site.get("botProtection") or site.get("bot_protection"), features.get("botProtection"))
     geo_block = normalize_geo_block_config(site.get("geoBlock") or site.get("geo_block"), features.get("geoBlock"))
     under_attack = normalize_under_attack_config(site.get("underAttack") or site.get("under_attack"))
+    rule_overrides = normalize_rule_overrides_config(site.get("ruleOverrides") or site.get("rule_overrides"))
     mode = site.get("mode") if site.get("mode") in MODES else "block"
     modsecurity = normalize_modsecurity_config(site.get("modSecurity") or site.get("modsecurity"), mode)
     features["botProtection"] = bot_protection["enabled"]
@@ -1270,6 +1271,7 @@ def normalize_stored_site(site: dict) -> dict:
         "botProtection": bot_protection,
         "geoBlock": geo_block,
         "underAttack": under_attack,
+        "ruleOverrides": rule_overrides,
         "modSecurity": modsecurity,
         "mode": mode,
         "enabled": normalize_bool(enabled_value, False),
@@ -1427,6 +1429,7 @@ def normalize_site_input(payload: dict, site_id: str | None, now: str) -> dict:
     bot_protection = normalize_bot_protection_config(payload.get("botProtection") or payload.get("bot_protection"), features.get("botProtection"))
     geo_block = normalize_geo_block_config(payload.get("geoBlock") or payload.get("geo_block"), features.get("geoBlock"))
     under_attack = normalize_under_attack_config(payload.get("underAttack") or payload.get("under_attack"))
+    rule_overrides = normalize_rule_overrides_config(payload.get("ruleOverrides") or payload.get("rule_overrides"))
     mode = payload.get("mode") if payload.get("mode") in MODES else "block"
     modsecurity = normalize_modsecurity_config(payload.get("modSecurity") or payload.get("modsecurity"), mode)
     features["botProtection"] = bot_protection["enabled"]
@@ -1451,6 +1454,7 @@ def normalize_site_input(payload: dict, site_id: str | None, now: str) -> dict:
         "botProtection": bot_protection,
         "geoBlock": geo_block,
         "underAttack": under_attack,
+        "ruleOverrides": rule_overrides,
         "modSecurity": modsecurity,
         "mode": mode,
         "enabled": payload.get("enabled") is not False,
@@ -2070,6 +2074,23 @@ def normalize_under_attack_config(value) -> dict:
     source = value if isinstance(value, dict) else {}
     return {
         "enabled": normalize_bool(source.get("enabled"), False),
+    }
+
+
+def normalize_rule_overrides_config(value) -> dict:
+    """Per-application rule selection.
+
+    "global" (the default) means the application follows the shared rule set.
+    "custom" lets it switch individual rules off for itself; it can only
+    subtract from the shared set, never enable a globally disabled rule.
+    """
+    source = value if isinstance(value, dict) else {}
+    mode = str(source.get("mode") or "global").strip().lower()
+    if mode not in {"global", "custom"}:
+        mode = "global"
+    return {
+        "mode": mode,
+        "disabled": normalize_string_list(source.get("disabled")),
     }
 
 
