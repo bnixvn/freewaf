@@ -4580,7 +4580,7 @@ function AccessRuleModal({ rule, sites, ipGroups, onClose, onSave }) {
     continueDetect: String(rule?.continueDetect ?? false),
     conditionGroups: accessGroupsFromRule(rule, ipGroups)
   }));
-  const siteOptions = [{ value: '*', label: 'All applications' }, ...sites.map((site) => ({ value: site.id, label: site.name || site.id }))];
+  const siteOptions = siteSelectOptions(sites);
 
   function update(name, value) {
     setForm((current) => ({ ...current, [name]: value }));
@@ -4778,7 +4778,7 @@ function RuleModal({ rule, sites, onClose, onSave }) {
     ...(rule || {}),
     enabled: String(rule?.enabled ?? true)
   }));
-  const siteOptions = ['*', ...sites.map((site) => site.id)];
+  const siteOptions = siteSelectOptions(sites);
 
   function update(name, value) {
     setForm((current) => ({ ...current, [name]: value }));
@@ -4800,7 +4800,7 @@ function RuleModal({ rule, sites, onClose, onSave }) {
       <form onSubmit={submit}>
         <div className="form-grid">
           <TextField label="Name" value={form.name} onChange={(value) => update('name', value)} required />
-          <SelectField label="Site" value={form.siteId} onChange={(value) => update('siteId', value)} options={siteOptions} />
+          <SelectField label="Application" value={form.siteId} onChange={(value) => update('siteId', value)} options={siteOptions} />
           <SelectField label="Target" value={form.target} onChange={(value) => update('target', value)} options={['all', 'url', 'headers', 'body', 'method', 'ip']} />
           <SelectField label="Matcher" value={form.matcher} onChange={(value) => update('matcher', value)} options={['regex', 'contains', 'equals']} />
           <SelectField label="Action" value={form.action} onChange={(value) => update('action', value)} options={['block', 'monitor', 'allow']} />
@@ -5419,6 +5419,17 @@ function accessConditionSummary(condition, ipGroups) {
     content = ipGroups.find((group) => group.id === condition.content)?.name || condition.content;
   }
   return `${targetLabel} ${operatorLabel} ${content}`;
+}
+
+// Rule and access-rule modals both target an application: show its name, never the raw id.
+function siteSelectOptions(sites = []) {
+  return [
+    { value: '*', label: 'All applications' },
+    ...sites.map((site) => ({
+      value: site.id,
+      label: site.name || site.hostnames?.[0] || site.id
+    }))
+  ];
 }
 
 function escapeRegex(value) {
