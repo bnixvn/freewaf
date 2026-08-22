@@ -1,11 +1,14 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { Fragment, forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import worldMap from '@svg-maps/world';
 import {
   Activity,
   BarChart3,
+  ChevronsLeft,
+  ChevronsRight,
   Copy,
   Download,
   Edit3,
+  FileText,
   Globe2,
   Info,
   KeyRound,
@@ -14,6 +17,8 @@ import {
   ListFilter,
   LogOut,
   Menu,
+  Monitor,
+  Moon,
   Network,
   Plus,
   QrCode,
@@ -25,6 +30,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   SlidersHorizontal,
+  Sun,
   Trash2,
   UploadCloud,
   Upload,
@@ -40,8 +46,48 @@ const viewTitles = {
   ipGroups: 'IP Groups',
   certificates: 'Certificates',
   logs: 'Access Logs',
-  settings: 'Panel Security'
+  settings: 'Settings'
 };
+
+// Sub-line under each page title, so every view says what it is for.
+const viewSubtitles = {
+  dashboard: 'Live traffic, protection verdicts and geography',
+  sites: 'Protected applications and their upstreams',
+  rules: 'Signature rules evaluated on every request',
+  access: 'Allow and deny rules applied before detection',
+  ipGroups: 'Reusable IP and CIDR lists',
+  certificates: 'TLS certificates and issuance',
+  logs: 'Per-request decisions with filters and export',
+  settings: 'Panel security, defaults and maintenance'
+};
+
+// Nav grouped by concern instead of one flat list.
+const navGroups = [
+  {
+    label: 'Overview',
+    items: [{ view: 'dashboard', label: 'Dashboard', icon: <Activity /> }]
+  },
+  {
+    label: 'Protection',
+    items: [
+      { view: 'sites', label: 'Applications', icon: <Server />, count: (data) => data?.sites?.length },
+      { view: 'rules', label: 'Detection Rules', icon: <ShieldCheck />, count: (data) => data?.rules?.length },
+      { view: 'access', label: 'Access Control', icon: <ListFilter />, count: (data) => data?.accessRules?.length },
+      { view: 'ipGroups', label: 'IP Groups', icon: <Network />, count: (data) => data?.ipGroups?.length }
+    ]
+  },
+  {
+    label: 'Operations',
+    items: [
+      { view: 'certificates', label: 'Certificates', icon: <KeyRound />, count: (data) => data?.certificates?.length },
+      { view: 'logs', label: 'Access Logs', icon: <FileText /> }
+    ]
+  },
+  {
+    label: 'System',
+    items: [{ view: 'settings', label: 'Settings', icon: <Settings /> }]
+  }
+];
 
 const emptyStats = {
   total: 0,
@@ -403,6 +449,8 @@ export default function App() {
   const [systemUpdate, setSystemUpdate] = useState(null);
   const lastSystemUpdateStatusRef = useRef('');
   const [navOpen, setNavOpen] = useState(false);
+  const [theme, setTheme] = useState(readStoredTheme);
+  const [navRail, setNavRail] = useState(() => window.localStorage?.getItem('freewaf.nav') === 'rail');
   const [loadedViews, setLoadedViews] = useState({});
   const activeViewRef = useRef(activeView);
   const viewRequestRef = useRef(new Map());
@@ -425,6 +473,29 @@ export default function App() {
   useEffect(() => {
     loadAuth();
   }, []);
+
+  // Theme choice: 'system' leaves the OS preference in charge.
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === 'system') {
+      delete root.dataset.theme;
+    } else {
+      root.dataset.theme = theme;
+    }
+    try {
+      window.localStorage?.setItem('freewaf.theme', theme);
+    } catch (error) {
+      // Storage can be unavailable in private mode; the theme still applies.
+    }
+  }, [theme]);
+
+  useEffect(() => {
+    try {
+      window.localStorage?.setItem('freewaf.nav', navRail ? 'rail' : 'full');
+    } catch (error) {
+      // Ignore storage failures; collapse state stays in memory only.
+    }
+  }, [navRail]);
 
   // Apply admin panel branding (favicon + page title) when settings change.
   useEffect(() => {
@@ -1454,7 +1525,7 @@ export default function App() {
   }
 
   return (
-    <div className={`app-shell ${navOpen ? 'nav-open' : ''}`}>
+    <div className={`app-shell ${navOpen ? 'nav-open' : ''} ${navRail ? 'rail' : ''}`}>
       <button
         className="nav-scrim"
         type="button"
@@ -1467,12 +1538,21 @@ export default function App() {
           <span className="brand-mark">
             {data?.settings?.panel?.logoUrl
               ? <img src={data.settings.panel.logoUrl} alt="" className="brand-logo" />
-              : <Shield size={22} />}
+              : <Shield size={20} />}
           </span>
           <span>
             <strong>FreeWAF</strong>
             <small>Reverse proxy WAF</small>
           </span>
+          <button
+            type="button"
+            className="rail-toggle"
+            aria-label={navRail ? 'Expand navigation' : 'Collapse navigation'}
+            title={navRail ? 'Expand navigation' : 'Collapse navigation'}
+            onClick={() => setNavRail((current) => !current)}
+          >
+            {navRail ? <ChevronsRight size={16} /> : <ChevronsLeft size={16} />}
+          </button>
           <button
             type="button"
             className="nav-close"
@@ -1483,15 +1563,32 @@ export default function App() {
           </button>
         </div>
         <nav className="nav">
-          <NavButton active={activeView === 'dashboard'} icon={<Activity />} label="Dashboard" onClick={() => { setActiveView('dashboard'); setNavOpen(false); }} />
-          <NavButton active={activeView === 'sites'} icon={<Server />} label="Sites" onClick={() => { setActiveView('sites'); setNavOpen(false); }} />
-          <NavButton active={activeView === 'rules'} icon={<ShieldCheck />} label="Rules" onClick={() => { setActiveView('rules'); setNavOpen(false); }} />
-          <NavButton active={activeView === 'access'} icon={<ListFilter />} label="Access" onClick={() => { setActiveView('access'); setNavOpen(false); }} />
-          <NavButton active={activeView === 'ipGroups'} icon={<Network />} label="IP Groups" onClick={() => { setActiveView('ipGroups'); setNavOpen(false); }} />
-          <NavButton active={activeView === 'certificates'} icon={<KeyRound />} label="Certs" onClick={() => { setActiveView('certificates'); setNavOpen(false); }} />
-          <NavButton active={activeView === 'logs'} icon={<ListFilter />} label="Logs" onClick={() => { setActiveView('logs'); setNavOpen(false); }} />
-          <NavButton active={activeView === 'settings'} icon={<Settings />} label="Settings" onClick={() => { setActiveView('settings'); setNavOpen(false); }} />
+          {navGroups.map((group) => (
+            <Fragment key={group.label}>
+              <p className="nav-section">{group.label}</p>
+              {group.items.map((item) => (
+                <NavButton
+                  key={item.view}
+                  active={activeView === item.view}
+                  icon={item.icon}
+                  label={item.label}
+                  count={item.count ? item.count(data) : undefined}
+                  onClick={() => { setActiveView(item.view); setNavOpen(false); }}
+                />
+              ))}
+            </Fragment>
+          ))}
         </nav>
+        <div className="sidebar-foot">
+          <span className="user-chip">{initialsFor(auth.user)}</span>
+          <span className="user-meta">
+            <strong>{auth.user?.displayName || auth.user?.username || 'Administrator'}</strong>
+            <span>{auth.user?.role || 'admin'}</span>
+          </span>
+          <button className="icon-button" onClick={logout} title="Sign out" aria-label="Sign out">
+            <LogOut size={17} />
+          </button>
+        </div>
       </aside>
 
       <main className="main">
@@ -1507,22 +1604,27 @@ export default function App() {
               <Menu size={20} />
             </button>
             <div className="topbar-heading">
-              <p className="eyebrow">Protected traffic</p>
               <h1>{viewTitles[activeView]}</h1>
+              <p className="eyebrow">{viewSubtitles[activeView]}</p>
             </div>
           </div>
           <div className="toolbar">
             <button className="icon-button" onClick={refreshCurrentView} title="Refresh" disabled={loading || logsLoading}>
               <RefreshCw size={18} className={loading || logsLoading ? 'spin' : ''} />
             </button>
+            <button
+              className="icon-button"
+              onClick={() => setTheme(nextTheme(theme))}
+              title={`Theme: ${theme} (click to switch)`}
+              aria-label="Switch colour theme"
+            >
+              {theme === 'dark' ? <Moon size={18} /> : theme === 'light' ? <Sun size={18} /> : <Monitor size={18} />}
+            </button>
             {activeView === 'dashboard' && (
               <button className="icon-button danger" onClick={resetStatistics} title="Reset statistics" disabled={loading}>
                 <Trash2 size={18} />
               </button>
             )}
-            <button className="icon-button" onClick={logout} title="Sign out">
-              <LogOut size={18} />
-            </button>
           </div>
         </header>
         <section className="view">{content}</section>
@@ -1615,17 +1717,45 @@ export default function App() {
   );
 }
 
-function NavButton({ active, icon, label, onClick }) {
+function NavButton({ active, icon, label, count, onClick }) {
   return (
-    <button className={`nav-item ${active ? 'active' : ''}`} onClick={onClick}>
+    <button className={`nav-item ${active ? 'active' : ''}`} onClick={onClick} title={label}>
       {icon}
       <span>{label}</span>
+      {count > 0 && <span className="nav-badge">{count}</span>}
     </button>
   );
 }
 
+function readStoredTheme() {
+  try {
+    const stored = window.localStorage?.getItem('freewaf.theme');
+    return stored === 'light' || stored === 'dark' ? stored : 'system';
+  } catch (error) {
+    return 'system';
+  }
+}
+
+function nextTheme(current) {
+  if (current === 'system') return 'light';
+  if (current === 'light') return 'dark';
+  return 'system';
+}
+
+function initialsFor(user) {
+  const source = String(user?.displayName || user?.username || 'A').trim();
+  const parts = source.split(/\s+/).filter(Boolean);
+  if (parts.length > 1) return `${parts[0][0]}${parts[1][0]}`;
+  return source.slice(0, 2);
+}
+
 function LoadingPanel() {
-  return <section className="panel">Loading state...</section>;
+  return (
+    <div className="boot-screen">
+      <Loader2 size={22} className="spin" />
+      <span>Loading FreeWAF...</span>
+    </div>
+  );
 }
 
 function AuthScreen({ mode, loading, onSubmit }) {
@@ -2063,7 +2193,7 @@ function SitesView({ data, setModal, toggleSite, toggleUnderAttack, toggleAllUnd
   const underAttackPending = Object.keys(pendingActions).some((key) => key.endsWith(':underAttack'));
 
   return (
-    <section className="panel">
+    <section className="panel sites-panel">
       <div className="panel-heading">
         <h2>Applications</h2>
         <div className="site-heading-actions">
@@ -2085,6 +2215,18 @@ function SitesView({ data, setModal, toggleSite, toggleUnderAttack, toggleAllUnd
           </button>
         </div>
       </div>
+      {!sites.length && (
+        <EmptyState
+          icon={<Server size={26} />}
+          title="No applications yet"
+          hint="Add an application to put a domain behind the reverse proxy and start filtering traffic."
+          action={(
+            <button className="tool-button primary" onClick={() => setModal({ type: 'site', site: null })}>
+              <Plus size={18} /> Add Application
+            </button>
+          )}
+        />
+      )}
       <div className="application-grid">
         {sites.map((site) => {
           const certificate = data.certificates?.find((item) => item.id === site.tls?.certificateId);
@@ -2260,6 +2402,9 @@ function RulesView({ data, filter, setFilter, setModal, toggleRule, deleteRule, 
             </tr>
           </thead>
           <tbody>
+            {!rules.length && (
+              <tr><td colSpan="7" className="muted">{data.rules.length ? 'No rules match this filter.' : 'No detection rules yet.'}</td></tr>
+            )}
             {rules.map((rule) => (
               <tr key={rule.id}>
                 <td>
@@ -2322,8 +2467,8 @@ function AccessView({ data, setModal, toggleAccessRule, deleteAccessRule, pendin
     <section className="table-panel">
       <div className="panel-heading">
         <h2>Access Rules</h2>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button className="tool-button" onClick={() => setWlOpen(!wlOpen)} title="Quick-add URL whitelist">
+        <div className="row-actions">
+          <button className={`tool-button ${wlOpen ? 'active' : ''}`} onClick={() => setWlOpen(!wlOpen)} title="Quick-add URL whitelist">
             <ShieldCheck size={16} /> URL Whitelist
           </button>
           <button className="tool-button primary" onClick={() => setModal({ type: 'accessRule', rule: null })}>
@@ -2332,27 +2477,26 @@ function AccessView({ data, setModal, toggleAccessRule, deleteAccessRule, pendin
         </div>
       </div>
       {wlOpen && (
-        <div className="url-whitelist-panel" style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', background: 'var(--panel-bg, #fafbfc)' }}>
-          <div style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'end' }}>
-            <label className="field" style={{ flex: 1, margin: 0 }}>
+        <div className="url-whitelist-panel">
+          <div className="whitelist-grid">
+            <label className="field">
               <span>URL patterns (one per line)</span>
               <textarea
                 value={wlUrls}
                 onChange={(e) => setWlUrls(e.target.value)}
                 placeholder={'/api/health\n/webhook/stripe\n/wp-json/wp/v2/posts\n^/admin/public/.*'}
                 rows={4}
-                style={{ fontFamily: 'monospace', fontSize: 13 }}
               />
-              <small className="field-hint">Plain text = substring match. Use regex patterns (e.g. <code>^/api/v[12]/</code>) for advanced matching.</small>
+              <small className="field-hint">Plain text = substring match. Use regex patterns (e.g. <span className="code">^/api/v[12]/</span>) for advanced matching.</small>
             </label>
-            <label className="field" style={{ minWidth: 180, margin: 0 }}>
+            <label className="field">
               <span>Application</span>
               <select value={wlSiteId} onChange={(e) => setWlSiteId(e.target.value)}>
                 <option value="*">All applications</option>
                 {(data.sites || []).map((site) => <option key={site.id} value={site.id}>{site.name || site.id}</option>)}
               </select>
             </label>
-            <button className="tool-button primary" onClick={openUrlWhitelistModal} style={{ whiteSpace: 'nowrap' }}>
+            <button className="tool-button primary whitelist-submit" onClick={openUrlWhitelistModal}>
               <ShieldCheck size={16} /> Review &amp; Save
             </button>
           </div>
@@ -2417,6 +2561,9 @@ function IpGroupsView({ data, setModal, toggleIpGroup, deleteIpGroup, syncIpGrou
             </tr>
           </thead>
           <tbody>
+            {!data.ipGroups.length && (
+              <tr><td colSpan="6" className="muted">No IP groups yet.</td></tr>
+            )}
             {data.ipGroups.map((group) => (
               <tr key={group.id}>
                 <td>
@@ -3050,6 +3197,17 @@ function SettingsView({
   );
 }
 
+function EmptyState({ icon, title, hint, action }) {
+  return (
+    <div className="empty-state">
+      <span className="empty-state-icon">{icon}</span>
+      <strong>{title}</strong>
+      {hint && <p>{hint}</p>}
+      {action}
+    </div>
+  );
+}
+
 function Metric({ label, value, note }) {
   return (
     <article className="metric-card">
@@ -3150,63 +3308,94 @@ function QpsBars({ points = [] }) {
 function RequestsStatusChart({ points = [], valueKey = 'total', tone = 'requests' }) {
   const [hovered, setHovered] = useState(null);
   const displayPoints = padSeries(points, 24, { total: 0, blocked: 0, challenged: 0, protected: 0 });
-  const max = Math.max(1, ...displayPoints.map((point) => Number(point[valueKey] || 0)));
   const isBlocking = tone === 'blocking';
 
-  return (
-    <div className={`chart compact request-status-chart ${tone}`} aria-label="Traffic status chart" onMouseLeave={() => setHovered(null)}>
-      {displayPoints.map((point, index) => {
-        const total = Number(point.total || 0);
-        const blocked = Number(point.blocked || 0);
-        const challenged = Number(point.challenged || 0);
-        const protectedCount = Number(point.protected ?? (blocked + challenged));
-        const value = Number(point[valueKey] || 0);
-        const height = value ? Math.max(8, Math.round((value / max) * 100)) : 4;
-        const protectedHeight = !isBlocking && total ? Math.round((protectedCount / total) * 100) : 0;
-        const showTick = index % 4 === 0 || index === displayPoints.length - 1;
-        const tooltipSide = index > displayPoints.length - 6 ? 'left' : 'right';
-        const title = isBlocking
-          ? `${formatBucketRange(point)}: ${formatCompact(value)} blocked${challenged ? `, ${formatCompact(challenged)} challenged` : ''}`
-          : `${formatBucketRange(point)}: ${formatCompact(total)} requests${protectedCount ? `, ${formatCompact(protectedCount)} protected` : ''}${challenged ? `, ${formatCompact(challenged)} challenged` : ''}${blocked ? `, ${formatCompact(blocked)} blocked` : ''}`;
+  const values = displayPoints.map((point) => Number(point[valueKey] || 0));
+  const max = Math.max(1, ...values);
+  const protectedValues = displayPoints.map((point) => Number(point.protected ?? (Number(point.blocked || 0) + Number(point.challenged || 0))));
+  // Protected traffic is a subset of the total, so share one scale and the areas nest.
+  const protectedMax = max;
 
-        return (
-          <div className="bar-wrap" key={`${point.at || 'empty'}-${index}`} onMouseEnter={() => setHovered(index)} onFocus={() => setHovered(index)}>
-            <span className={`bar-value ${value ? '' : 'zero'}`}>{value ? formatCompact(value) : ''}</span>
-            {hovered === index && (
-              <div className={`chart-tooltip ${tooltipSide}`}>
-                <strong>{formatBucketRange(point)}</strong>
-                {isBlocking ? (
-                  <>
-                    <span>{formatCompact(value)} blocked</span>
-                    <span>{formatCompact(challenged)} challenged</span>
-                    <span>{formatCompact(total)} total</span>
-                    <span>{formatCompact(protectedCount)} protected</span>
-                  </>
-                ) : (
-                  <>
-                    <span>{formatCompact(total)} requests</span>
-                    <span>{formatCompact(protectedCount)} protected</span>
-                    <span>{formatCompact(challenged)} challenged</span>
-                    <span>{formatCompact(blocked)} blocked</span>
-                  </>
-                )}
-              </div>
-            )}
+  const W = 100;
+  const H = 100;
+  const padTop = 12;
+  const padBottom = 14;
+  const bottom = H - padBottom;
+  const range = Math.max(1, bottom - padTop);
+  const lastIndex = Math.max(1, displayPoints.length - 1);
+
+  const xAt = (index) => (index / lastIndex) * W;
+  const yAt = (value, peak) => bottom - (Number(value || 0) / peak) * range;
+  const buildPath = (series, peak) => series.map((value, index) => `${index === 0 ? 'M' : 'L'} ${xAt(index).toFixed(2)} ${yAt(value, peak).toFixed(2)}`).join(' ');
+
+  const mainPath = buildPath(values, max);
+  const mainArea = `${mainPath} L ${W.toFixed(2)} ${bottom.toFixed(2)} L 0 ${bottom.toFixed(2)} Z`;
+  const protectedPath = isBlocking ? '' : buildPath(protectedValues, protectedMax);
+  const protectedArea = isBlocking ? '' : `${protectedPath} L ${W.toFixed(2)} ${bottom.toFixed(2)} L 0 ${bottom.toFixed(2)} Z`;
+
+  return (
+    <div
+      className={`chart compact request-status-chart line ${tone}`}
+      aria-label="Traffic status chart"
+      onMouseLeave={() => setHovered(null)}
+    >
+      <svg className="rsc-line-svg" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-hidden="true">
+        {!isBlocking && protectedArea && <path className="rsc-area protected" d={protectedArea} />}
+        {mainArea && <path className="rsc-area main" d={mainArea} />}
+        {!isBlocking && protectedPath && <path className="rsc-line protected" d={protectedPath} />}
+        <path className="rsc-line main" d={mainPath} />
+      </svg>
+
+      <div className="rsc-hits">
+        {displayPoints.map((point, index) => {
+          const total = Number(point.total || 0);
+          const blocked = Number(point.blocked || 0);
+          const challenged = Number(point.challenged || 0);
+          const protectedCount = Number(point.protected ?? (blocked + challenged));
+          const value = Number(point[valueKey] || 0);
+          const y = yAt(value, max);
+          const showTick = index % 4 === 0 || index === displayPoints.length - 1;
+          const tooltipSide = index > displayPoints.length - 6 ? 'left' : 'right';
+          const isLatest = index === displayPoints.length - 1;
+          const title = isBlocking
+            ? `${formatBucketRange(point)}: ${formatCompact(value)} blocked${challenged ? `, ${formatCompact(challenged)} challenged` : ''}`
+            : `${formatBucketRange(point)}: ${formatCompact(total)} requests${protectedCount ? `, ${formatCompact(protectedCount)} protected` : ''}${challenged ? `, ${formatCompact(challenged)} challenged` : ''}${blocked ? `, ${formatCompact(blocked)} blocked` : ''}`;
+
+          return (
             <div
-              tabIndex={0}
-              className={`bar ${value ? 'has-data' : ''} ${index === displayPoints.length - 1 ? 'latest' : ''}`}
-              style={{ height: `${height}%` }}
+              className="rsc-hit"
+              key={`${point.at || 'empty'}-${index}`}
+              onMouseEnter={() => setHovered(index)}
+              onFocus={() => setHovered(index)}
               title={title}
             >
-              {!isBlocking && (
-                <span className="bar-protected" style={{ height: `${protectedHeight}%` }} />
+              <span className="rsc-dot" style={{ top: `${y}%` }} />
+              {isLatest && <span className="rsc-live" style={{ top: `${y}%` }} aria-hidden="true" />}
+              {hovered === index && (
+                <div className={`chart-tooltip ${tooltipSide}`} style={{ top: `${Math.max(y, 30)}%` }}>
+                  <strong>{formatBucketRange(point)}</strong>
+                  {isBlocking ? (
+                    <>
+                      <span>{formatCompact(value)} blocked</span>
+                      <span>{formatCompact(challenged)} challenged</span>
+                      <span>{formatCompact(total)} total</span>
+                      <span>{formatCompact(protectedCount)} protected</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>{formatCompact(total)} requests</span>
+                      <span>{formatCompact(protectedCount)} protected</span>
+                      <span>{formatCompact(challenged)} challenged</span>
+                      <span>{formatCompact(blocked)} blocked</span>
+                    </>
+                  )}
+                </div>
               )}
-              {index === displayPoints.length - 1 && <span className="request-status-live" aria-hidden="true" />}
+              <span className="bar-time">{showTick ? point.label : ''}</span>
             </div>
-            <span className="bar-time">{showTick ? point.label : ''}</span>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -5625,14 +5814,14 @@ function formatCompact(value) {
   return String(number);
 }
 
+// Chart colours come from CSS tokens so they follow the active light/dark theme.
 function chartColor(index) {
-  const colors = ['#18c2c2', '#7edadd', '#4d8df7', '#ff5570', '#f8c64f', '#69d38f', '#8a7cf6', '#ff9f68'];
-  return colors[index % colors.length];
+  return `var(--chart-${(index % 8) + 1})`;
 }
 
 function donutGradient(rows, value) {
   const total = rows.reduce((sum, item) => sum + Number(value(item) || 0), 0);
-  if (!total) return 'conic-gradient(#e7eef2 0 360deg)';
+  if (!total) return 'conic-gradient(var(--surface-3) 0 360deg)';
   let cursor = 0;
   const stops = rows.map((item, index) => {
     const amount = Number(value(item) || 0);
@@ -5647,8 +5836,9 @@ function donutGradient(rows, value) {
 function mapCountryFill(value, maxValue) {
   const max = Math.max(1, Number(maxValue || 1));
   const ratio = Math.log10(Number(value || 0) + 1) / Math.log10(max + 1);
-  const lightness = Math.round(88 - ratio * 36);
-  return `hsl(179 72% ${lightness}%)`;
+  // Blend the theme accent into the empty-country colour so the ramp reads in both themes.
+  const weight = Math.round(18 + ratio * 82);
+  return `color-mix(in srgb, var(--accent) ${weight}%, var(--map-empty))`;
 }
 
 function formatQps(value) {
