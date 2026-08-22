@@ -3361,7 +3361,13 @@ td .muted {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  gap: 8px;
   min-width: 92px;
+}
+
+.detail-rule-state .table-action {
+  width: 30px;
+  height: 30px;
 }
 
 /* Marks a rule whose state differs from the shared default. */

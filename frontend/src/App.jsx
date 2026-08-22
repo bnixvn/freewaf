@@ -1125,7 +1125,7 @@ export default function App() {
         body: payload
       });
       setModal(null);
-      await loadViewData('rules', { force: true });
+      await loadViewData(activeViewRef.current === 'siteDetail' ? 'siteDetail' : 'rules', { force: true });
       showToast('Rule saved');
     } catch (error) {
       showToast(error.message, true);
@@ -1242,7 +1242,7 @@ export default function App() {
   async function deleteRule(rule) {
     if (!window.confirm(`Delete ${rule.name}?`)) return;
     await api(`/api/rules/${rule.id}`, { method: 'DELETE' });
-    await loadViewData('rules', { force: true });
+    await loadViewData(activeViewRef.current === 'siteDetail' ? 'siteDetail' : 'rules', { force: true });
     showToast('Rule deleted');
   }
 
@@ -1702,6 +1702,7 @@ export default function App() {
       {modal?.type === 'rule' && (
         <RuleModal
           rule={modal.rule}
+          defaults={modal.defaults}
           sites={data?.sites || []}
           onClose={() => setModal(null)}
           onSave={saveRule}
@@ -2421,6 +2422,7 @@ function SiteDetailView({
   toggleUnderAttack,
   saveSiteRuleOverrides,
   downloadCertificate,
+  deleteRule,
   pendingActions = {}
 }) {
   const site = (data.sites || []).find((item) => item.id === detailSiteId);
@@ -2562,7 +2564,16 @@ function SiteDetailView({
       <section className="panel detail-rules">
         <div className="panel-heading">
           <h2>Detection Rules</h2>
-          <span className="pill">{activeCount} of {applicableRules.length} active</span>
+          <div className="row-actions">
+            <span className="pill">{activeCount} of {applicableRules.length} active</span>
+            <button
+              className="tool-button primary"
+              type="button"
+              onClick={() => setModal({ type: 'rule', rule: null, defaults: { siteId: site.id } })}
+            >
+              <Plus size={16} /> Add rule for this application
+            </button>
+          </div>
         </div>
 
         <div className="detail-rule-mode">
@@ -2588,6 +2599,7 @@ function SiteDetailView({
           {visibleRules.length ? visibleRules.map((rule) => {
             const on = ruleIsOn(rule);
             const overridden = isCustom && (enabledSet.has(rule.id) || disabledSet.has(rule.id));
+            const owned = rule.siteId === site.id && !rule.builtin;
             return (
               <div className={`detail-rule-row ${on ? '' : 'off'}`} key={rule.id}>
                 <div className="detail-rule-main">
@@ -2604,6 +2616,16 @@ function SiteDetailView({
                   <span className="code">{rule.pattern}</span>
                 </div>
                 <div className="detail-rule-state">
+                  {owned && (
+                    <>
+                      <button className="table-action" type="button" title="Edit rule" onClick={() => setModal({ type: 'rule', rule })}>
+                        <Edit3 size={16} />
+                      </button>
+                      <button className="table-action delete-action" type="button" title="Delete rule" onClick={() => deleteRule(rule)}>
+                        <Trash2 size={16} />
+                      </button>
+                    </>
+                  )}
                   <Switch
                     checked={on}
                     disabled={!isCustom}
@@ -5066,10 +5088,11 @@ function AccessRuleModal({ rule, sites, ipGroups, onClose, onSave }) {
   );
 }
 
-function RuleModal({ rule, sites, onClose, onSave }) {
+function RuleModal({ rule, defaults, sites, onClose, onSave }) {
   const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState(() => ({
     ...defaultRule,
+    ...(defaults || {}),
     ...(rule || {}),
     enabled: String(rule?.enabled ?? true)
   }));
