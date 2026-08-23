@@ -3671,7 +3671,9 @@ function RequestsStatusChart({ points = [], valueKey = 'total', tone = 'requests
           const protectedCount = Number(point.protected ?? (blocked + challenged));
           const value = Number(point[valueKey] || 0);
           const y = yAt(value, max);
-          const showTick = index % 4 === 0 || index === displayPoints.length - 1;
+          // Ticks are anchored to the newest slot and stepped backwards, so the
+          // right edge always reads "now" and no two labels end up adjacent.
+          const showTick = (displayPoints.length - 1 - index) % 4 === 0;
           const tooltipSide = index > displayPoints.length - 6 ? 'left' : 'right';
           const isLatest = index === displayPoints.length - 1;
           const title = isBlocking
@@ -3742,7 +3744,8 @@ function buildFallbackStatusTimeline(stats = {}) {
   return [{
     at,
     endAt: at + bucketMs,
-    label: new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    // Match the backend's %H:%M so both label sources render the same width.
+    label: new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
     total,
     blocked,
     challenged,
