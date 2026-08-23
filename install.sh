@@ -87,6 +87,8 @@ apt_install_base() {
     curl \
     git \
     gnupg \
+    ipset \
+    iptables \
     logrotate \
     nginx \
     openssl \

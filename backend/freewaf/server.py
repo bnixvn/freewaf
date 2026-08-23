@@ -104,6 +104,36 @@ UPDATE_REPO_URL = "https://github.com/bnixvn/freewaf.git"
 UPDATE_BRANCH = "main"
 
 
+class DualStackThreadingHTTPServer(ThreadingHTTPServer):
+    """HTTP server that accepts both IPv6 and IPv4 on a single socket."""
+
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        try:
+            # Off means the v6 socket also accepts v4 as ::ffff:a.b.c.d.
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        except (AttributeError, OSError) as error:
+            print(f"Panel dual-stack socket option failed: {error}")
+        super().server_bind()
+
+
+def make_admin_server(port: int, handler, ipv6: bool) -> ThreadingHTTPServer:
+    """Bind the panel, dual-stack when IPv6 is switched on.
+
+    Falls back to IPv4 when the host cannot provide an IPv6 socket, so a
+    kernel with IPv6 disabled still gets a working panel.
+    """
+    if ipv6:
+        try:
+            server = DualStackThreadingHTTPServer(("::", port), handler)
+            print(f"Admin panel listening on [::]:{port} (IPv4 and IPv6)")
+            return server
+        except OSError as error:
+            print(f"Panel IPv6 bind failed ({error}); falling back to IPv4 only.")
+    return ThreadingHTTPServer(("0.0.0.0", port), handler)
+
+
 def main() -> None:
     admin_port = int(os.environ.get("ADMIN_PORT", "7001"))
     demo_origin_port = int(os.environ.get("DEMO_ORIGIN_PORT", "9090"))
@@ -133,9 +163,11 @@ def main() -> None:
     except Exception as exc:
         print(f"blocked_traffic_logger start failed (non-fatal): {exc}")
 
-    admin_server = ThreadingHTTPServer(
-        ("0.0.0.0", admin_port),
+    network_settings = state.get("settings", {}).get("network", {})
+    admin_server = make_admin_server(
+        admin_port,
         make_admin_handler(store, admin_port, demo_origin_port, enable_demo_origin, admin_https),
+        ipv6=bool(network_settings.get("ipv6")),
     )
     if admin_https:
         certificate = next((item for item in state.get("certificates", []) if item["id"] == panel.get("certificateId")), None)
@@ -1201,7 +1233,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
             if real_ip:
                 return real_ip.strip()
             try:
-                return self.client_address[0]
+                return normalize_mapped_ipv4(self.client_address[0])
             except (IndexError, TypeError):
                 return ""
 
@@ -2455,6 +2487,19 @@ def prune_stats_aggregate(cache: dict, retention_start_ms: int) -> None:
     country_cache = cache.get("countryCache") or {}
     if len(country_cache) > 200000:
         country_cache.clear()
+
+
+def normalize_mapped_ipv4(address: str) -> str:
+    """Unwrap ::ffff:a.b.c.d, which is how a dual-stack socket reports IPv4."""
+    value = str(address or "").strip()
+    if not value:
+        return ""
+    try:
+        parsed = ipaddress.ip_address(value)
+    except ValueError:
+        return value
+    mapped = getattr(parsed, "ipv4_mapped", None)
+    return str(mapped) if mapped else value
 
 
 def host_ip_addresses() -> dict:

@@ -3615,6 +3615,10 @@ function NetworkPanel({ network, pending, onRefresh, onToggleIpv6 }) {
             ? 'Applications listen on [::] as well as 0.0.0.0. Point AAAA records at the addresses above.'
             : 'IPv6 is available but Nginx only listens on IPv4. Enable it to serve IPv6 visitors.'}
       </p>
+      <p className="form-note">
+        This switch also controls the admin panel itself. Nginx picks it up
+        immediately; the panel URL follows once the FreeWAF service restarts.
+      </p>
     </section>
   );
 }
