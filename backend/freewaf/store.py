@@ -2730,7 +2730,19 @@ def build_stats_from_summary(state: dict, summary: dict, recent_logs: list[dict]
     user_client_os = sorted(aggregate["userClientOs"].values(), key=lambda item: item["count"], reverse=True)
     user_client_browsers = sorted(aggregate["userClientBrowsers"].values(), key=lambda item: item["count"], reverse=True)
     timeline = build_timeline(recent)
-    status_timeline = build_status_timeline(recent)
+    # Prefer the aggregate: the recent log tail is capped and on a busy server
+    # every entry in it lands in the newest bucket, flattening the chart.
+    aggregate_buckets = summary.get("timeline") if isinstance(summary.get("timeline"), dict) else None
+    if aggregate_buckets:
+        status_timeline = build_status_timeline_from_buckets(
+            aggregate_buckets,
+            summary.get("timelineBucketMs") or 5 * 60 * 1000,
+            sites,
+            site_by_id,
+            selected_site_id,
+        )
+    else:
+        status_timeline = build_status_timeline(recent)
     qps_timeline = build_qps_timeline(recent)
     site_stats = []
     for item in site_totals.values():
@@ -3201,6 +3213,64 @@ def build_timeline(logs: list[dict]) -> list[dict]:
             buckets[index]["protected"] += 1
 
     return buckets
+
+
+def build_status_timeline_from_buckets(
+    buckets: dict,
+    bucket_ms: int,
+    sites: list[dict],
+    site_by_id: dict,
+    selected_site_id: str = "",
+) -> list[dict]:
+    """Status timeline read from the pre-bucketed stats aggregate.
+
+    The aggregate covers the whole retention window, so every slot carries its
+    real traffic instead of only what fits in the recent log tail.
+    """
+    bucket_ms = int(bucket_ms or 5 * 60 * 1000)
+    bucket_count = 24
+    now_ms = int(time.time() * 1000)
+    # Align to the same absolute boundaries the aggregate uses so slots match.
+    latest_at = now_ms - (now_ms % bucket_ms)
+    start_ms = latest_at - bucket_ms * (bucket_count - 1)
+
+    timeline = []
+    for index in range(bucket_count):
+        at = start_ms + bucket_ms * index
+        timeline.append({
+            "at": at,
+            "endAt": at + bucket_ms,
+            "label": datetime.fromtimestamp(at / 1000).strftime("%H:%M"),
+            "total": 0,
+            "blocked": 0,
+            "challenged": 0,
+            "protected": 0,
+        })
+
+    for raw_at, hosts in (buckets or {}).items():
+        try:
+            bucket_at = int(raw_at)
+        except (TypeError, ValueError):
+            continue
+        index = (bucket_at - start_ms) // bucket_ms
+        if index < 0 or index >= bucket_count:
+            continue
+        slot = timeline[index]
+        for host, counts in (hosts or {}).items():
+            if sites:
+                site = match_log_site({"host": host, "siteName": host}, sites, site_by_id)
+                if not site:
+                    continue
+                if selected_site_id and str(site.get("id") or "") != selected_site_id:
+                    continue
+            blocked = int(counts.get("blocked") or 0)
+            challenged = int(counts.get("challenged") or 0)
+            slot["total"] += int(counts.get("total") or 0)
+            slot["blocked"] += blocked
+            slot["challenged"] += challenged
+            slot["protected"] += blocked + challenged
+
+    return timeline
 
 
 def build_status_timeline(logs: list[dict]) -> list[dict]:

@@ -77,6 +77,8 @@ LOGIN_THROTTLE_WINDOW_SECONDS = 300
 LOGIN_THROTTLE_IP_LIMIT = 5
 LOGIN_THROTTLE_USER_LIMIT = 10
 STATS_AGGREGATE_BUCKET_MS = 5 * 60 * 1000
+# Buckets shown by the dashboard traffic charts (24 x 5 minutes = 2 hours).
+STATUS_TIMELINE_BUCKETS = 24
 STATS_AGGREGATE_LOCK = threading.RLock()
 STATS_AGGREGATE_CACHE_VERSION = 5
 STATS_AGGREGATE_CACHE = {"files": {}, "countryCache": {}, "loadedCacheName": ""}
@@ -2113,9 +2115,10 @@ def nginx_stats_summaries(retention_days_values) -> dict[int, dict]:
         prune_stats_aggregate(STATS_AGGREGATE_CACHE, aggregate_start_ms)
         save_stats_aggregate_cache(STATS_AGGREGATE_CACHE_NAME, aggregate_retention_days, scanner_state)
         summaries = {}
+        timeline_start_ms = now_ms - STATUS_TIMELINE_BUCKETS * STATS_AGGREGATE_BUCKET_MS
         for retention_days in retention_days_set:
             retention_start_ms = now_ms - retention_days * 24 * 60 * 60 * 1000
-            summary = collapse_stats_aggregate(STATS_AGGREGATE_CACHE, retention_start_ms)
+            summary = collapse_stats_aggregate(STATS_AGGREGATE_CACHE, retention_start_ms, timeline_start_ms)
             summary["retentionDays"] = retention_days
             summaries[retention_days] = summary
         return summaries
@@ -2438,20 +2441,32 @@ def prune_stats_aggregate(cache: dict, retention_start_ms: int) -> None:
         country_cache.clear()
 
 
-def collapse_stats_aggregate(cache: dict, retention_start_ms: int) -> dict:
+def collapse_stats_aggregate(cache: dict, retention_start_ms: int, timeline_start_ms: int | None = None) -> dict:
     hosts: dict[str, dict] = {}
     total = 0
+    # The aggregate already buckets by STATS_AGGREGATE_BUCKET_MS, so the traffic
+    # timeline can be read straight off it instead of from the recent log tail,
+    # which only covers the last few minutes on a busy server.
+    timeline: dict[int, dict[str, dict]] = {}
     for file_summary in cache.get("files", {}).values():
         for bucket_at, bucket in (file_summary.get("buckets") or {}).items():
             if bucket_at + STATS_AGGREGATE_BUCKET_MS <= retention_start_ms:
                 continue
+            in_timeline = timeline_start_ms is not None and bucket_at >= timeline_start_ms
             for host, counts in (bucket.get("hosts") or {}).items():
                 target = hosts.setdefault(host, new_stats_counts())
                 merge_aggregate_counts(target, counts)
                 total += int(counts.get("total") or 0)
+                if in_timeline:
+                    slot = timeline.setdefault(int(bucket_at), {})
+                    entry = slot.setdefault(host, {"total": 0, "blocked": 0, "challenged": 0, "monitored": 0})
+                    for key in entry:
+                        entry[key] += int(counts.get(key) or 0)
     return {
         "hosts": hosts,
         "total": total,
+        "timeline": timeline,
+        "timelineBucketMs": STATS_AGGREGATE_BUCKET_MS,
         "retentionDays": cache.get("retentionDays"),
     }
 

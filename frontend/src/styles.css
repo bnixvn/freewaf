@@ -2945,9 +2945,27 @@ td .muted {
   }
 }
 
+/* Each slot is only a few pixels wide, so let the tick label escape it and
+   centre on its own point instead of being clipped to "13:". */
 .request-status-chart.line .bar-time {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
   margin-top: 0;
   padding-bottom: 2px;
+  overflow: visible;
+  transform: translateX(-50%);
+}
+
+.request-status-chart.line .rsc-hit:first-child .bar-time {
+  left: 0;
+  transform: none;
+}
+
+.request-status-chart.line .rsc-hit:last-child .bar-time {
+  right: 0;
+  left: auto;
+  transform: none;
 }
 
 .request-status-chart.line .chart-tooltip {
