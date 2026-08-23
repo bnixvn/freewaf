@@ -3475,6 +3475,52 @@ td .muted {
   background: var(--surface-2);
 }
 
+/* Network / IPv6 status */
+.network-panel .panel-heading p {
+  margin: 2px 0 0;
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+
+.network-rows {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+
+.network-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.network-label {
+  min-width: 46px;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.network-values {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.network-row .tool-button {
+  margin-left: auto;
+}
+
 .settings-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));

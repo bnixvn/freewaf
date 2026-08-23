@@ -428,17 +428,47 @@ refresh_nginx_config() {
   . "$ENV_FILE"
   set +a
 
+  # Turn IPv6 listeners on by default when this machine already has a global
+  # IPv6 address, but only the first time: a later run must not undo a choice
+  # the operator made in the panel.
+  if ip -6 addr show scope global 2>/dev/null | grep -q "inet6"; then
+    FREEWAF_SEED_IPV6=1
+    log "Global IPv6 address detected"
+  else
+    FREEWAF_SEED_IPV6=0
+  fi
+  export FREEWAF_SEED_IPV6
+
   (
     cd "$APP_DIR"
     PYTHONPATH="${APP_DIR}/backend" /usr/bin/python3 - <<'PY'
+import json
+import os
 from pathlib import Path
 
 from freewaf.nginx import write_nginx_config
 from freewaf.store import Store, resolve_data_file
 
 root_dir = Path.cwd()
-store = Store(resolve_data_file(root_dir))
+data_file = Path(resolve_data_file(root_dir))
+
+# Absence of settings.network means this install has never seen the switch.
+first_run = True
+if data_file.exists():
+    try:
+        raw = json.loads(data_file.read_text(encoding="utf-8"))
+        settings = raw.get("settings")
+        first_run = not (isinstance(settings, dict) and isinstance(settings.get("network"), dict))
+    except (OSError, ValueError):
+        first_run = True
+
+store = Store(data_file)
 store.init()
+
+if first_run and os.environ.get("FREEWAF_SEED_IPV6") == "1":
+    store.update_settings({"network": {"ipv6": True}})
+    print("network.ipv6 enabled by default")
+
 output_file = write_nginx_config(root_dir, store.get_state())
 print(output_file)
 PY

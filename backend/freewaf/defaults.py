@@ -26,6 +26,11 @@ DEFAULT_SETTINGS = {
         "source": "socket",
         "headerName": "X-Forwarded-For",
     },
+    "network": {
+        # Whether generated server blocks also listen on [::]. Turned on at
+        # install time when the machine already has a global IPv6 address.
+        "ipv6": False,
+    },
     "applicationDefaults": {
         "proxy": {
             "forceHttps": False,

@@ -2435,8 +2435,16 @@ def modsecurity_rule_id_base(site: dict) -> int:
     return 8_600_000 + (digest * 1000)
 
 
+def ipv6_listen_enabled(state: dict | None) -> bool:
+    settings = (state or {}).get("settings") if isinstance(state, dict) else None
+    network = settings.get("network") if isinstance(settings, dict) and isinstance(settings.get("network"), dict) else {}
+    return bool(network.get("ipv6"))
+
+
 def render_ipv6_listen(port: int, is_ssl: bool, proxy: dict, state: dict | None = None) -> list[str]:
-    if not proxy.get("ipv6"):
+    # The global switch drives every application; the per-site flag stays as an
+    # opt-in for configs that set it before the switch existed.
+    if not proxy.get("ipv6") and not ipv6_listen_enabled(state):
         return []
     flags = ["ssl"] if is_ssl else []
     if is_ssl and proxy.get("http2"):

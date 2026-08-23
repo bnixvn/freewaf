@@ -451,6 +451,7 @@ export default function App() {
   const [dashboardSiteId, setDashboardSiteId] = useState('');
   const [dashboardPeriodDays, setDashboardPeriodDays] = useState('1');
   const [systemUpdate, setSystemUpdate] = useState(null);
+  const [network, setNetwork] = useState(null);
   const lastSystemUpdateStatusRef = useRef('');
   const [navOpen, setNavOpen] = useState(false);
   const [theme, setTheme] = useState(readStoredTheme);
@@ -578,6 +579,7 @@ export default function App() {
     if (!auth.authenticated || auth.loading || (activeView !== 'settings' && !systemUpdate?.running)) {
       return undefined;
     }
+    loadNetworkStatus();
     loadSystemUpdateStatus(false);
     const timer = window.setInterval(() => {
       if (document.hidden && !systemUpdate?.running) return;
@@ -1378,6 +1380,35 @@ export default function App() {
     }
   }
 
+  async function loadNetworkStatus(announce = false) {
+    try {
+      const status = await api('/api/system/network');
+      setNetwork(status);
+      if (announce) showToast('Network status refreshed');
+      return status;
+    } catch (error) {
+      if (announce) showToast(error.message, true);
+      return null;
+    }
+  }
+
+  async function saveNetworkIpv6(enabled) {
+    await withActionPending('settings:ipv6', async () => {
+      try {
+        const saved = await api('/api/settings', {
+          method: 'PATCH',
+          body: { network: { ipv6: enabled } }
+        });
+        updateSettingsLocal(saved);
+        await loadNetworkStatus();
+        showToast(enabled ? 'IPv6 listeners enabled' : 'IPv6 listeners disabled');
+      } catch (error) {
+        showToast(error.message, true);
+        throw error;
+      }
+    });
+  }
+
   async function savePanelSettings(panel) {
     try {
       const saved = await api('/api/settings', {
@@ -1504,6 +1535,9 @@ export default function App() {
       systemUpdate,
       loadSystemUpdateStatus,
       startSystemUpdate,
+      network,
+      loadNetworkStatus,
+      saveNetworkIpv6,
       savePanelSettings,
       saveApplicationDefaults,
       saveChallengePage,
@@ -1545,7 +1579,7 @@ export default function App() {
     if (activeView === 'logs') return <LogsView {...props} />;
     if (activeView === 'settings') return <SettingsView {...props} />;
     return <DashboardView {...props} />;
-  }, [activeView, data, loadedViews, filter, auth, pendingActions, logsLoading, logResult, logSiteId, logDomain, logVerdict, logPage, logPageSize, detailSiteId, dashboardSiteId, dashboardPeriodDays, systemUpdate]);
+  }, [activeView, data, loadedViews, filter, auth, pendingActions, logsLoading, logResult, logSiteId, logDomain, logVerdict, logPage, logPageSize, detailSiteId, dashboardSiteId, dashboardPeriodDays, systemUpdate, network]);
 
   if (auth.loading) {
     return <LoadingPanel />;
@@ -3152,6 +3186,10 @@ function LogsView({
 function SettingsView({
   data,
   setModal,
+  network,
+  loadNetworkStatus,
+  saveNetworkIpv6,
+  pendingActions = {},
   savePanelSettings,
   saveApplicationDefaults,
   saveChallengePage,
@@ -3249,6 +3287,13 @@ function SettingsView({
 
   return (
     <>
+      <NetworkPanel
+        network={network}
+        pending={Boolean(pendingActions['settings:ipv6'])}
+        onRefresh={() => loadNetworkStatus(true)}
+        onToggleIpv6={saveNetworkIpv6}
+      />
+
       <section className="panel">
         <div className="panel-heading">
           <h2>Panel SSL</h2>
@@ -3511,6 +3556,66 @@ function SettingsView({
         </div>
       </section>
     </>
+  );
+}
+
+function NetworkPanel({ network, pending, onRefresh, onToggleIpv6 }) {
+  const ipv4 = network?.ipv4 || [];
+  const ipv6 = network?.ipv6 || [];
+  const available = Boolean(network?.ipv6Available);
+  const enabled = Boolean(network?.ipv6Enabled);
+
+  return (
+    <section className="panel network-panel">
+      <div className="panel-heading">
+        <div>
+          <h2>Network</h2>
+          <p>Addresses this server answers on, and whether Nginx listens on IPv6.</p>
+        </div>
+        <button className="tool-button" type="button" onClick={onRefresh}>
+          <RefreshCw size={16} /> Refresh
+        </button>
+      </div>
+
+      <div className="network-rows">
+        <div className="network-row">
+          <span className="network-label">IPv4</span>
+          <div className="network-values">
+            {ipv4.length
+              ? ipv4.map((address) => <span className="code" key={address}>{address}</span>)
+              : <span className="status disabled">not detected</span>}
+          </div>
+        </div>
+
+        <div className="network-row">
+          <span className="network-label">IPv6</span>
+          <div className="network-values">
+            {available
+              ? ipv6.map((address) => <span className="code" key={address}>{address}</span>)
+              : <span className="status disabled">not available</span>}
+            <span className={`status ${enabled ? 'enabled' : 'disabled'}`}>{enabled ? 'listening' : 'off'}</span>
+          </div>
+          <LoadingButton
+            type="button"
+            pending={pending}
+            pendingText={enabled ? 'Disabling...' : 'Enabling...'}
+            className={`tool-button ${enabled ? '' : 'primary'}`}
+            disabled={!available}
+            onClick={() => onToggleIpv6(!enabled).catch(() => {})}
+          >
+            {enabled ? 'Disable IPv6' : 'Enable IPv6'}
+          </LoadingButton>
+        </div>
+      </div>
+
+      <p className="form-note">
+        {!available
+          ? 'This server has no global IPv6 address, so the option stays off. Ask your provider to assign one, then refresh and enable it here.'
+          : enabled
+            ? 'Applications listen on [::] as well as 0.0.0.0. Point AAAA records at the addresses above.'
+            : 'IPv6 is available but Nginx only listens on IPv4. Enable it to serve IPv6 visitors.'}
+      </p>
+    </section>
   );
 }
 

@@ -14,6 +14,7 @@ import re
 import secrets
 import shlex
 import shutil
+import socket
 import ssl
 import subprocess
 import sys
@@ -342,6 +343,10 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
 
             if parsed.path == "/api/rules":
                 self.send_json(200, state_slice_payload(store, "rules", query, account_id=self.actor_account_id()))
+                return
+
+            if parsed.path == "/api/system/network":
+                self.send_json(200, network_status_payload(store))
                 return
 
             if parsed.path == "/api/site-detail":
@@ -701,7 +706,16 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
             if self.path == "/api/settings":
                 try:
                     payload = self.read_payload()
+                    network_payload = payload.get("network") if isinstance(payload.get("network"), dict) else None
+                    if network_payload and network_payload.get("ipv6"):
+                        # Refuse rather than emit listen [::] the machine cannot serve.
+                        if not host_ip_addresses()["ipv6"]:
+                            raise StoreError(400, "This server has no global IPv6 address")
                     saved = store.update_settings(payload)
+                    # Listening on IPv6 is part of the generated config, so it has
+                    # to be written and reloaded for the switch to mean anything.
+                    if network_payload is not None:
+                        apply_nginx_or_raise(store)
                     self.record_audit(action="settings.update", target="settings", status=200, payload=payload)
                     self.send_json(200, saved)
                 except StoreError as error:
@@ -1763,6 +1777,8 @@ def state_slice_payload(
             "rules": state.get("rules", []),
             "sites": state.get("sites", []),
         }
+    if section == "network":
+        return network_status_payload(store)
     if section == "site-detail":
         # The per-application config page needs the rule catalogue alongside the
         # site itself; certificates back the TLS summary.
@@ -2439,6 +2455,66 @@ def prune_stats_aggregate(cache: dict, retention_start_ms: int) -> None:
     country_cache = cache.get("countryCache") or {}
     if len(country_cache) > 200000:
         country_cache.clear()
+
+
+def host_ip_addresses() -> dict:
+    """Global unicast addresses of this machine, split by family.
+
+    /proc/net/if_inet6 is read directly rather than shelling out to `ip`, and
+    the IPv4 side uses an unconnected UDP socket, which picks the address the
+    default route would use without sending a packet.
+    """
+    ipv4: list[str] = []
+    ipv6: list[str] = []
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("198.51.100.1", 53))
+            ipv4.append(probe.getsockname()[0])
+    except OSError:
+        pass
+
+    try:
+        with open("/proc/net/if_inet6", "r", encoding="utf-8") as source:
+            for line in source:
+                parts = line.split()
+                if len(parts) < 6:
+                    continue
+                raw, device = parts[0], parts[5]
+                if device == "lo":
+                    continue
+                try:
+                    address = ipaddress.IPv6Address(int(raw, 16))
+                except ValueError:
+                    continue
+                if address.is_global and not address.is_link_local:
+                    ipv6.append(str(address))
+    except OSError:
+        # Not Linux, or the interface table is unavailable.
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET6):
+                candidate = ipaddress.ip_address(info[4][0].split("%")[0])
+                if candidate.is_global:
+                    ipv6.append(str(candidate))
+        except (OSError, ValueError):
+            pass
+
+    return {
+        "ipv4": sorted(dict.fromkeys(ipv4)),
+        "ipv6": sorted(dict.fromkeys(ipv6)),
+    }
+
+
+def network_status_payload(store: Store) -> dict:
+    addresses = host_ip_addresses()
+    settings = store.get_state_fields("settings").get("settings", {})
+    network = settings.get("network") if isinstance(settings.get("network"), dict) else {}
+    return {
+        "ipv4": addresses["ipv4"],
+        "ipv6": addresses["ipv6"],
+        "ipv6Available": bool(addresses["ipv6"]),
+        "ipv6Enabled": bool(network.get("ipv6")),
+    }
 
 
 def collapse_stats_aggregate(cache: dict, retention_start_ms: int, timeline_start_ms: int | None = None) -> dict:

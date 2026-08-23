@@ -1117,6 +1117,15 @@ def normalize_settings(settings: dict) -> dict:
         "applicationDefaults": normalize_application_defaults(source.get("applicationDefaults") or source.get("application_defaults") or {}),
         "challengePage": normalize_challenge_page_settings(source.get("challengePage") or source.get("challenge_page") or {}),
         "clientIp": normalize_client_ip_settings(source.get("clientIp") or source.get("client_ip") or {}),
+        "network": normalize_network_settings(source.get("network") or {}),
+    }
+
+
+def normalize_network_settings(value) -> dict:
+    source = value if isinstance(value, dict) else {}
+    defaults = DEFAULT_SETTINGS["network"]
+    return {
+        "ipv6": normalize_bool(source.get("ipv6"), defaults["ipv6"]),
     }
 
 
