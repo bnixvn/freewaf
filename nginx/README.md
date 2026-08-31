@@ -17,6 +17,8 @@ Free certificates requested from the dashboard are issued by `certbot`; Nginx th
 
 Per-application logs go under `./logs/freewaf/` by default. The generated config uses one upstream block per application, per-site `access_log` and `error_log`, and SafeLine-like internal routes such as `/.safeline/forbidden_page`, `acl_page`, `offline_page`, `bad_gateway_page`, `gateway_timeout_page`, `challenge/v2/`, and `static`.
 
+For every listen port an application uses, the generator also emits a catch-all `default_server` block that drops requests whose `Host` header or TLS SNI matches no application (`return 444` for plain HTTP, `ssl_reject_handshake on` for HTTPS). This keeps a direct hit on the server's bare IP from landing on whichever site Nginx loaded first. Turn it off under **Settings → Network → Bare IP**, or let one application own the slot by giving it the hostname `*` or enabling its `proxy.defaultServer`. `ssl_reject_handshake` needs Nginx 1.19.4+.
+
 For a local standalone test, write the config from the dashboard, then run Nginx with the project root as prefix:
 
 ```bash

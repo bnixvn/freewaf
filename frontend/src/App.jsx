@@ -1409,6 +1409,23 @@ export default function App() {
     });
   }
 
+  async function saveNetworkRejectUnknownHosts(enabled) {
+    await withActionPending('settings:rejectUnknownHosts', async () => {
+      try {
+        const saved = await api('/api/settings', {
+          method: 'PATCH',
+          body: { network: { rejectUnknownHosts: enabled } }
+        });
+        updateSettingsLocal(saved);
+        await loadNetworkStatus();
+        showToast(enabled ? 'Bare-IP access blocked' : 'Bare-IP access allowed');
+      } catch (error) {
+        showToast(error.message, true);
+        throw error;
+      }
+    });
+  }
+
   async function savePanelSettings(panel) {
     try {
       const saved = await api('/api/settings', {
@@ -1538,6 +1555,7 @@ export default function App() {
       network,
       loadNetworkStatus,
       saveNetworkIpv6,
+      saveNetworkRejectUnknownHosts,
       savePanelSettings,
       saveApplicationDefaults,
       saveChallengePage,
@@ -3189,6 +3207,7 @@ function SettingsView({
   network,
   loadNetworkStatus,
   saveNetworkIpv6,
+  saveNetworkRejectUnknownHosts,
   pendingActions = {},
   savePanelSettings,
   saveApplicationDefaults,
@@ -3290,8 +3309,10 @@ function SettingsView({
       <NetworkPanel
         network={network}
         pending={Boolean(pendingActions['settings:ipv6'])}
+        rejectPending={Boolean(pendingActions['settings:rejectUnknownHosts'])}
         onRefresh={() => loadNetworkStatus(true)}
         onToggleIpv6={saveNetworkIpv6}
+        onToggleRejectUnknownHosts={saveNetworkRejectUnknownHosts}
       />
 
       <section className="panel">
@@ -3559,11 +3580,12 @@ function SettingsView({
   );
 }
 
-function NetworkPanel({ network, pending, onRefresh, onToggleIpv6 }) {
+function NetworkPanel({ network, pending, rejectPending, onRefresh, onToggleIpv6, onToggleRejectUnknownHosts }) {
   const ipv4 = network?.ipv4 || [];
   const ipv6 = network?.ipv6 || [];
   const available = Boolean(network?.ipv6Available);
   const enabled = Boolean(network?.ipv6Enabled);
+  const rejectUnknownHosts = network?.rejectUnknownHosts !== false;
 
   return (
     <section className="panel network-panel">
@@ -3606,6 +3628,24 @@ function NetworkPanel({ network, pending, onRefresh, onToggleIpv6 }) {
             {enabled ? 'Disable IPv6' : 'Enable IPv6'}
           </LoadingButton>
         </div>
+
+        <div className="network-row">
+          <span className="network-label">Bare IP</span>
+          <div className="network-values">
+            <span className={`status ${rejectUnknownHosts ? 'enabled' : 'disabled'}`}>
+              {rejectUnknownHosts ? 'blocked' : 'reaches first app'}
+            </span>
+          </div>
+          <LoadingButton
+            type="button"
+            pending={rejectPending}
+            pendingText={rejectUnknownHosts ? 'Allowing...' : 'Blocking...'}
+            className={`tool-button ${rejectUnknownHosts ? '' : 'primary'}`}
+            onClick={() => onToggleRejectUnknownHosts(!rejectUnknownHosts).catch(() => {})}
+          >
+            {rejectUnknownHosts ? 'Allow bare-IP access' : 'Block bare-IP access'}
+          </LoadingButton>
+        </div>
       </div>
 
       <p className="form-note">
@@ -3618,6 +3658,11 @@ function NetworkPanel({ network, pending, onRefresh, onToggleIpv6 }) {
       <p className="form-note">
         This switch also controls the admin panel itself. Nginx picks it up
         immediately; the panel URL follows once the FreeWAF service restarts.
+      </p>
+      <p className="form-note">
+        {rejectUnknownHosts
+          ? 'Bare IP: requests whose Host header or TLS SNI matches no application are dropped, so hitting the server IP directly never lands on a site.'
+          : 'Bare IP: requests that match no application fall through to whichever site Nginx loads first. Block bare-IP access to stop that.'}
       </p>
     </section>
   );

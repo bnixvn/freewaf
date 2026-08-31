@@ -769,6 +769,21 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(settings["source"], "socket")
             self.assertEqual(settings["headerName"], "X-Forwarded-For")
 
+    def test_network_reject_unknown_hosts_defaults_on_and_is_normalized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.json")
+            store.init()
+
+            self.assertTrue(store.get_state()["settings"]["network"]["rejectUnknownHosts"])
+
+            store.update_settings({"network": {"rejectUnknownHosts": "false"}})
+            self.assertFalse(store.get_state()["settings"]["network"]["rejectUnknownHosts"])
+            # Unrelated network writes leave the flag untouched.
+            self.assertFalse(store.get_state()["settings"]["network"]["rejectUnknownHosts"])
+
+            store.update_settings({"network": {"rejectUnknownHosts": True}})
+            self.assertTrue(store.get_state()["settings"]["network"]["rejectUnknownHosts"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -925,7 +925,7 @@ class Store:
                         else:
                             merged_defaults[group_key] = group_value
                     current[key] = merged_defaults
-                elif key in {"panel", "rateLimit", "challengePage", "clientIp"} and isinstance(value, dict):
+                elif key in {"panel", "rateLimit", "challengePage", "clientIp", "network"} and isinstance(value, dict):
                     current[key] = {**(current.get(key) or {}), **value}
                 else:
                     current[key] = value
@@ -1126,6 +1126,10 @@ def normalize_network_settings(value) -> dict:
     defaults = DEFAULT_SETTINGS["network"]
     return {
         "ipv6": normalize_bool(source.get("ipv6"), defaults["ipv6"]),
+        "rejectUnknownHosts": normalize_bool(
+            source.get("rejectUnknownHosts", source.get("reject_unknown_hosts")),
+            defaults["rejectUnknownHosts"],
+        ),
     }
 
 

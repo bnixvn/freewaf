@@ -1907,5 +1907,85 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertNotRegex(config, r"@ipMatch 198\.51\.100\.42\".*skipAfter:FREEWAF_BOT_RATE_DONE_SITE_DEMO")
 
 
+class UnmatchedHostServerTests(unittest.TestCase):
+    def _tls_site_state(self, **network):
+        settings = make_settings()
+        settings["network"] = {**settings.get("network", {}), **network}
+        return make_state(
+            settings=settings,
+            certificates=[
+                {
+                    "id": "cert-demo",
+                    "name": "Demo cert",
+                    "certFile": "nginx/certs/demo.crt",
+                    "keyFile": "nginx/certs/demo.key",
+                }
+            ],
+            sites=[
+                {
+                    "id": "site-demo",
+                    "name": "Demo",
+                    "hostnames": ["example.test"],
+                    "origin": "http://127.0.0.1:9090",
+                    "ports": ["80", "443_ssl"],
+                    "listen": 443,
+                    "tls": {"enabled": True, "certificateId": "cert-demo", "redirectHttp": True, "httpListen": 80},
+                    "proxy": {"forceHttps": True},
+                    "mode": "block",
+                    "enabled": True,
+                }
+            ],
+        )
+
+    def test_bare_ip_gets_reject_default_server_per_port(self):
+        config = generate_nginx_config(self._tls_site_state())
+
+        self.assertIn("listen 0.0.0.0:80 default_server;", config)
+        self.assertIn("listen 0.0.0.0:443 ssl default_server;", config)
+        self.assertIn("ssl_reject_handshake on;", config)
+        self.assertIn("return 444;", config)
+        # The real site keeps a plain, non-default listener.
+        self.assertIn("listen 0.0.0.0:443 ssl http2;", config)
+        self.assertEqual(config.count("listen 0.0.0.0:80 default_server;"), 1)
+
+    def test_toggle_off_restores_implicit_default(self):
+        config = generate_nginx_config(self._tls_site_state(rejectUnknownHosts=False))
+
+        self.assertNotIn("default_server", config)
+        self.assertNotIn("ssl_reject_handshake", config)
+        self.assertNotIn("return 444;", config)
+
+    def test_catch_all_hostname_site_owns_default_server(self):
+        state = make_state()
+        state["sites"][0]["hostnames"] = ["*"]
+        config = generate_nginx_config(state)
+
+        self.assertIn("listen 0.0.0.0:8080 default_server;", config)
+        # The site already owns the port, so no extra reject server is emitted.
+        self.assertNotIn("return 444;", config)
+
+    def test_no_sites_emits_no_reject_server(self):
+        config = generate_nginx_config(make_state(sites=[]))
+
+        self.assertNotIn("default_server", config)
+        self.assertNotIn("return 444;", config)
+
+    def test_reject_server_follows_ipv6_switch(self):
+        state = self._tls_site_state()
+        state["settings"]["network"]["ipv6"] = True
+        config = generate_nginx_config(state)
+
+        self.assertIn("listen [::]:80 default_server;", config)
+        self.assertIn("listen [::]:443 ssl default_server;", config)
+
+    def test_reject_server_carries_proxy_protocol_flag(self):
+        state = self._tls_site_state()
+        state["settings"]["clientIp"] = {"source": "proxy_protocol", "headerName": "X-Forwarded-For"}
+        config = generate_nginx_config(state)
+
+        self.assertIn("listen 0.0.0.0:80 default_server proxy_protocol;", config)
+        self.assertIn("listen 0.0.0.0:443 ssl default_server proxy_protocol;", config)
+
+
 if __name__ == "__main__":
     unittest.main()

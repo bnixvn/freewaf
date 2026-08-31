@@ -2559,6 +2559,7 @@ def network_status_payload(store: Store) -> dict:
         "ipv6": addresses["ipv6"],
         "ipv6Available": bool(addresses["ipv6"]),
         "ipv6Enabled": bool(network.get("ipv6")),
+        "rejectUnknownHosts": network.get("rejectUnknownHosts") is not False,
     }
 
 

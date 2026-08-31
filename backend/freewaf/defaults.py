@@ -30,6 +30,9 @@ DEFAULT_SETTINGS = {
         # Whether generated server blocks also listen on [::]. Turned on at
         # install time when the machine already has a global IPv6 address.
         "ipv6": False,
+        # Drop requests whose Host header (or TLS SNI) matches no application,
+        # so hitting the server's bare IP never lands on the first site.
+        "rejectUnknownHosts": True,
     },
     "applicationDefaults": {
         "proxy": {

@@ -186,6 +186,7 @@ def generate_nginx_config(state: dict) -> str:
         blocks.append("# No enabled sites.")
     else:
         blocks.extend(site_configs.values())
+    blocks.extend(render_unmatched_host_servers(state))
     return "\n\n".join(blocks) + "\n"
 
 
@@ -396,6 +397,7 @@ def write_nginx_config(root_dir: Path, state: dict) -> Path:
     if not site_configs:
         blocks.append("# No enabled sites.")
     blocks.append(f"include {nginx_path(str(site_config_dir / '*.conf'))};")
+    blocks.extend(render_unmatched_host_servers(state))
     output_payload = "\n\n".join(blocks) + "\n"
 
     lock_file = output_file.with_suffix(output_file.suffix + ".lock")
@@ -1361,6 +1363,140 @@ def site_config_filename(site: dict) -> str:
     return f"{site_id}.conf"
 
 
+def site_effective_listen_ports(
+    site: dict, state: dict, certificates: dict[str, dict] | None = None
+) -> set[tuple[int, bool]]:
+    """The ``(port, is_ssl)`` pairs this application actually emits a server for.
+
+    Mirrors the branching in :func:`render_site_server` so the catch-all reject
+    servers and the per-port ``default_server`` assignment stay in step with the
+    generated site files.
+    """
+    tls = site.get("tls") if isinstance(site.get("tls"), dict) else {}
+    if certificates is not None:
+        has_tls = bool(tls.get("enabled") and certificates.get(tls.get("certificateId")))
+    else:
+        has_tls = bool(tls.get("enabled"))
+    proxy = site_proxy(site, application_defaults(state).get("proxy"))
+    ports = site_ports(site)
+    http_ports = [port for port, is_ssl in ports if not is_ssl]
+    https_ports = [port for port, is_ssl in ports if is_ssl]
+    result: set[tuple[int, bool]] = set()
+    if has_tls and proxy.get("forceHttps") and int(proxy.get("redirectStatusCode") or 301):
+        for port in http_ports or [int(tls.get("httpListen") or 80)]:
+            result.add((port, False))
+    else:
+        for port in http_ports:
+            result.add((port, False))
+    if https_ports and has_tls:
+        for port in https_ports:
+            result.add((port, True))
+    if not result:
+        result.add((int(site.get("listen") or 8080), False))
+    return result
+
+
+def site_requests_default_server(site: dict, state: dict) -> bool:
+    """Whether an application should own the ``default_server`` slot on its ports.
+
+    Either it opted in through ``proxy.defaultServer`` or its hostname list is a
+    bare catch-all (``*`` / ``_`` / empty), which only ever received traffic by
+    being the default server in the first place.
+    """
+    proxy = site_proxy(site, application_defaults(state).get("proxy"))
+    if proxy.get("defaultServer"):
+        return True
+    raw = site.get("hostnames") if isinstance(site.get("hostnames"), list) else []
+    names = [str(name).strip().lower() for name in raw if str(name or "").strip()]
+    return not names or all(name in {"*", "_"} for name in names)
+
+
+def default_server_ports(
+    state: dict, certificates: dict[str, dict] | None = None
+) -> dict[tuple[int, bool], str]:
+    """Map each contested listen port to the application id that owns its
+    ``default_server`` flag. The first enabled requester wins a port; every
+    other in-use port is left for the FreeWAF reject server."""
+    owner: dict[tuple[int, bool], str] = {}
+    for site in state.get("sites", []):
+        if not site.get("enabled") or not site_requests_default_server(site, state):
+            continue
+        site_key = str(site.get("id") or site.get("name") or "")
+        for key in site_effective_listen_ports(site, state, certificates):
+            owner.setdefault(key, site_key)
+    return owner
+
+
+def site_owned_default_ports(
+    site: dict, state: dict, certificates: dict[str, dict] | None = None
+) -> set[tuple[int, bool]]:
+    site_key = str(site.get("id") or site.get("name") or "")
+    return {
+        key
+        for key, owner in default_server_ports(state, certificates).items()
+        if owner == site_key
+    }
+
+
+def render_unmatched_host_servers(state: dict, certificates: dict[str, dict] | None = None) -> list[str]:
+    """Catch-all ``default_server`` blocks that drop unknown Host/SNI requests.
+
+    Without them the alphabetically-first site file becomes Nginx's implicit
+    default, so hitting the server's bare IP serves that application. Each block
+    closes the connection (``444`` for plain HTTP, a rejected TLS handshake for
+    HTTPS). Skipped for ports an application already claims as its default.
+    """
+    settings = state.get("settings") if isinstance(state.get("settings"), dict) else {}
+    network = settings.get("network") if isinstance(settings.get("network"), dict) else {}
+    if network.get("rejectUnknownHosts") is False:
+        return []
+
+    enabled_sites = [site for site in state.get("sites", []) if site.get("enabled")]
+    if not enabled_sites:
+        return []
+
+    if certificates is None:
+        certificates = {
+            certificate["id"]: certificate
+            for certificate in state.get("certificates", [])
+            if isinstance(certificate, dict) and certificate.get("id")
+        }
+
+    owner = default_server_ports(state, certificates)
+    in_use: set[tuple[int, bool]] = set()
+    for site in enabled_sites:
+        in_use |= site_effective_listen_ports(site, state, certificates)
+    catch_all = sorted(key for key in in_use if key not in owner)
+    if not catch_all:
+        return []
+
+    ipv6 = ipv6_listen_enabled(state) or any(
+        (site.get("proxy") or {}).get("ipv6") for site in enabled_sites
+    )
+    proxy_protocol = client_ip_uses_proxy_protocol(state)
+
+    blocks = ["# Unknown Host / bare-IP requests never reach an application."]
+    for port, is_ssl in catch_all:
+        flags = ["ssl"] if is_ssl else []
+        flags.append("default_server")
+        if proxy_protocol:
+            flags.append("proxy_protocol")
+        suffix = " " + " ".join(flags)
+        lines = ["server {", f"    listen 0.0.0.0:{port}{suffix};"]
+        if ipv6:
+            lines.append(f"    listen [::]:{port}{suffix};")
+        lines.append("    server_name _;")
+        lines.append("    access_log off;")
+        if is_ssl:
+            # nginx >= 1.19.4: reject the TLS handshake with no certificate.
+            lines.append("    ssl_reject_handshake on;")
+        lines.append("    return 444;")
+        lines.append("}")
+        blocks.append("\n".join(lines))
+    blocks.append("")
+    return blocks
+
+
 def render_site_server(
     site: dict,
     state: dict,
@@ -1392,19 +1528,26 @@ def render_site_server(
     https_ports = [port for port, is_ssl in ports if is_ssl]
     blocks = [render_upstream(upstream_name, upstreams)] if app_type == "reverse_proxy" and upstreams else []
 
+    owned_default_ports = site_owned_default_ports(site, state, certificates)
+
+    def listen_proxy(port: int, is_ssl: bool) -> dict:
+        if (port, is_ssl) in owned_default_ports:
+            return {**proxy, "defaultServer": True}
+        return proxy
+
     redirect_code = int(proxy.get("redirectStatusCode") or site.get("redirectStatusCode") or 301)
     first_https_port = https_ports[0] if https_ports else int(site.get("listen") or 443)
     if has_tls and proxy.get("forceHttps") and redirect_code:
         for port in http_ports or [int(tls.get("httpListen") or 80)]:
-            blocks.append(render_redirect_server(render_site, state, server_name, port, first_https_port, proxy, redirect_code))
+            blocks.append(render_redirect_server(render_site, state, server_name, port, first_https_port, listen_proxy(port, False), redirect_code))
     else:
         for port in http_ports:
-            blocks.append(render_proxy_server(render_site, state, certificates, upstream_name, upstream_scheme, port, False, server_name, proxy))
+            blocks.append(render_proxy_server(render_site, state, certificates, upstream_name, upstream_scheme, port, False, server_name, listen_proxy(port, False)))
 
     if https_ports:
         if has_tls:
             for port in https_ports:
-                blocks.append(render_proxy_server(render_site, state, certificates, upstream_name, upstream_scheme, port, True, server_name, proxy))
+                blocks.append(render_proxy_server(render_site, state, certificates, upstream_name, upstream_scheme, port, True, server_name, listen_proxy(port, True)))
         else:
             blocks.append(
                 "\n".join(
@@ -1416,7 +1559,8 @@ def render_site_server(
             )
 
     if not blocks:
-        blocks.append(render_proxy_server(render_site, state, certificates, upstream_name, upstream_scheme, int(site.get("listen") or 8080), False, server_name, proxy))
+        fallback_port = int(site.get("listen") or 8080)
+        blocks.append(render_proxy_server(render_site, state, certificates, upstream_name, upstream_scheme, fallback_port, False, server_name, listen_proxy(fallback_port, False)))
 
     return "\n\n".join(blocks)
 
