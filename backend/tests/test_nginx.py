@@ -1941,12 +1941,24 @@ class UnmatchedHostServerTests(unittest.TestCase):
         config = generate_nginx_config(self._tls_site_state())
 
         self.assertIn("listen 0.0.0.0:80 default_server;", config)
-        self.assertIn("listen 0.0.0.0:443 ssl default_server;", config)
+        # The reject server mirrors the site's http2 flag so nginx does not warn
+        # about redefined protocol options on the shared 443 socket.
+        self.assertIn("listen 0.0.0.0:443 ssl http2 default_server;", config)
         self.assertIn("ssl_reject_handshake on;", config)
         self.assertIn("return 444;", config)
         # The real site keeps a plain, non-default listener.
         self.assertIn("listen 0.0.0.0:443 ssl http2;", config)
         self.assertEqual(config.count("listen 0.0.0.0:80 default_server;"), 1)
+
+    def test_reject_server_omits_http2_when_disabled(self):
+        state = self._tls_site_state()
+        state["settings"]["applicationDefaults"]["proxy"]["http2"] = False
+        config = generate_nginx_config(state)
+
+        self.assertIn("listen 0.0.0.0:443 ssl default_server;", config)
+        self.assertNotIn("ssl http2 default_server", config)
+        # The reject server still mirrors the site listen line exactly.
+        self.assertIn("listen 0.0.0.0:443 ssl;", config)
 
     def test_toggle_off_restores_implicit_default(self):
         config = generate_nginx_config(self._tls_site_state(rejectUnknownHosts=False))
@@ -1976,7 +1988,7 @@ class UnmatchedHostServerTests(unittest.TestCase):
         config = generate_nginx_config(state)
 
         self.assertIn("listen [::]:80 default_server;", config)
-        self.assertIn("listen [::]:443 ssl default_server;", config)
+        self.assertIn("listen [::]:443 ssl http2 default_server;", config)
 
     def test_reject_server_carries_proxy_protocol_flag(self):
         state = self._tls_site_state()
@@ -1984,7 +1996,7 @@ class UnmatchedHostServerTests(unittest.TestCase):
         config = generate_nginx_config(state)
 
         self.assertIn("listen 0.0.0.0:80 default_server proxy_protocol;", config)
-        self.assertIn("listen 0.0.0.0:443 ssl default_server proxy_protocol;", config)
+        self.assertIn("listen 0.0.0.0:443 ssl http2 default_server proxy_protocol;", config)
 
 
 if __name__ == "__main__":

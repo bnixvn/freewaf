@@ -1462,10 +1462,14 @@ def render_unmatched_host_servers(state: dict, certificates: dict[str, dict] | N
             if isinstance(certificate, dict) and certificate.get("id")
         }
 
+    defaults = application_defaults(state)
     owner = default_server_ports(state, certificates)
+    site_ports_by_site = {
+        id(site): site_effective_listen_ports(site, state, certificates) for site in enabled_sites
+    }
     in_use: set[tuple[int, bool]] = set()
-    for site in enabled_sites:
-        in_use |= site_effective_listen_ports(site, state, certificates)
+    for ports in site_ports_by_site.values():
+        in_use |= ports
     catch_all = sorted(key for key in in_use if key not in owner)
     if not catch_all:
         return []
@@ -1475,9 +1479,23 @@ def render_unmatched_host_servers(state: dict, certificates: dict[str, dict] | N
     )
     proxy_protocol = client_ip_uses_proxy_protocol(state)
 
+    def port_uses_http2(port: int) -> bool:
+        # Match the http2 flag nginx already latched onto the shared socket from
+        # the site listen lines, so `nginx -t` does not warn about redefined
+        # protocol options.
+        return any(
+            site_proxy(site, defaults.get("proxy")).get("http2")
+            for site in enabled_sites
+            if (port, True) in site_ports_by_site[id(site)]
+        )
+
     blocks = ["# Unknown Host / bare-IP requests never reach an application."]
     for port, is_ssl in catch_all:
-        flags = ["ssl"] if is_ssl else []
+        flags = []
+        if is_ssl:
+            flags.append("ssl")
+            if port_uses_http2(port):
+                flags.append("http2")
         flags.append("default_server")
         if proxy_protocol:
             flags.append("proxy_protocol")
