@@ -1567,6 +1567,13 @@ def build_system_update_plan(root_dir: Path) -> dict:
                 root_dir,
                 {"PYTHONPATH": str(root_dir / "backend")},
             ),
+            update_step(
+                "disable stock Nginx default site",
+                # Its `listen 80 default_server` collides with FreeWAF's own
+                # catch-all default server; `rm -f` is a no-op when absent.
+                ["sh", "-c", "rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/default-modsecurity.conf"],
+                root_dir,
+            ),
             nginx_command_step("test Nginx config", os.environ.get("NGINX_TEST_CMD", "nginx -t"), root_dir),
             nginx_command_step("reload Nginx", os.environ.get("NGINX_RELOAD_CMD", "nginx -s reload"), root_dir),
         ]

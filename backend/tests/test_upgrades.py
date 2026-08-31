@@ -224,10 +224,12 @@ class SystemUpdatePlanTests(unittest.TestCase):
         self.assertEqual(
             labels,
             [
-                "git pull --ff-only",
+                "git fetch",
+                "git reset --hard",
                 "npm ci",
                 "npm run build",
                 "refresh generated Nginx config",
+                "disable stock Nginx default site",
                 "test Nginx config",
                 "reload Nginx",
             ],
