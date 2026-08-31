@@ -125,21 +125,40 @@ main() {
 
   # 6. Regenerate nginx config + test + reload
   log "Regenerating nginx config..."
-  local apply_result
-  apply_result="$(curl -sf -X POST \
-    -H "Content-Type: application/json" \
-    -d '{"test":true,"reload":true}' \
-    "http://127.0.0.1:${admin_port}/api/nginx/apply" 2>&1)" || true
 
-  if echo "$apply_result" | grep -q '"ok":true'; then
-    log "Nginx config regenerated and reloaded successfully"
-  else
-    log "Nginx apply result: ${apply_result}"
-    if command -v nginx >/dev/null 2>&1; then
-      log "Running nginx -t as fallback..."
-      nginx -t 2>&1 && nginx -s reload 2>&1 && log "Nginx reloaded via fallback"
+  # Drop the stock Debian/Ubuntu site: its `listen 80 default_server` collides
+  # with FreeWAF's catch-all default server for unknown hosts.
+  for stale in /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/default-modsecurity.conf; do
+    if [ -e "$stale" ] || [ -L "$stale" ]; then
+      log "Disabling stock Nginx site ${stale}"
+      rm -f "$stale"
+    fi
+  done
+
+  # Regenerate directly from the stored state. The admin API needs auth, so a
+  # plain curl to /api/nginx/apply silently 401s and leaves a stale bundle.
+  local regen_ok=true
+  (
+    cd "$APP_DIR"
+    if [ -f "$ENV_FILE" ]; then set -a; . "$ENV_FILE"; set +a; fi
+    PYTHONPATH="${APP_DIR}/backend" python3 - <<'PY'
+from pathlib import Path
+from freewaf.nginx import write_nginx_config
+from freewaf.store import Store, resolve_data_file
+root = Path.cwd()
+store = Store(resolve_data_file(root)); store.init()
+write_nginx_config(root, store.get_state())
+PY
+  ) || regen_ok=false
+
+  if command -v nginx >/dev/null 2>&1; then
+    if nginx -t 2>&1; then
+      nginx -s reload 2>&1 && log "Nginx config regenerated and reloaded"
+    else
+      fail "nginx -t failed after regenerating config. Check: nginx -t"
     fi
   fi
+  [ "$regen_ok" = true ] || log "WARNING: config regeneration reported an error; nginx kept the previous bundle"
 
   log "=========================================="
   log "FreeWAF updated to ${revision}"

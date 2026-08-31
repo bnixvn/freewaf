@@ -556,6 +556,17 @@ EOF
 # FreeWAF generated configuration is included inside nginx http {}.
 include ${APP_DIR}/nginx/generated/freewaf.conf;
 EOF
+
+  # The stock Debian/Ubuntu site owns `listen 80 default_server`, which
+  # collides with FreeWAF's own catch-all default server (and otherwise
+  # swallows bare-IP hits itself). Disable it; FreeWAF handles unknown hosts.
+  for stale in /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/default-modsecurity.conf; do
+    if [ -e "$stale" ] || [ -L "$stale" ]; then
+      log "Disabling stock Nginx site ${stale}"
+      rm -f "$stale"
+    fi
+  done
+
   install -d -m 0755 /etc/systemd/system/nginx.service.d
   cat > /etc/systemd/system/nginx.service.d/freewaf-restart.conf <<'EOF'
 [Service]
