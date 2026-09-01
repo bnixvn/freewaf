@@ -393,11 +393,21 @@ def write_nginx_config(root_dir: Path, state: dict) -> Path:
     modsecurity_ip_list_dir.mkdir(parents=True, exist_ok=True)
     nginx_site_log_dir(root_dir).mkdir(parents=True, exist_ok=True)
 
+    default_tls = None
+    if unmatched_host_rejection_enabled(state) and any(
+        is_ssl
+        for site in state.get("sites", [])
+        if site.get("enabled")
+        for _, is_ssl in site_effective_listen_ports(site, state)
+    ):
+        # Only mint the throwaway cert when there is an HTTPS port to guard.
+        default_tls = ensure_default_tls_certificate(root_dir)
+
     blocks = generate_nginx_common_blocks(state)
     if not site_configs:
         blocks.append("# No enabled sites.")
     blocks.append(f"include {nginx_path(str(site_config_dir / '*.conf'))};")
-    blocks.extend(render_unmatched_host_servers(state))
+    blocks.extend(render_unmatched_host_servers(state, default_tls=default_tls))
     output_payload = "\n\n".join(blocks) + "\n"
 
     lock_file = output_file.with_suffix(output_file.suffix + ".lock")
@@ -1438,17 +1448,82 @@ def site_owned_default_ports(
     }
 
 
-def render_unmatched_host_servers(state: dict, certificates: dict[str, dict] | None = None) -> list[str]:
+DEFAULT_TLS_CERT_NAME = "freewaf-default.crt"
+DEFAULT_TLS_KEY_NAME = "freewaf-default.key"
+
+
+def unmatched_host_rejection_enabled(state: dict) -> bool:
+    settings = state.get("settings") if isinstance(state.get("settings"), dict) else {}
+    network = settings.get("network") if isinstance(settings.get("network"), dict) else {}
+    return network.get("rejectUnknownHosts") is not False
+
+
+def nginx_default_tls_paths(root_dir: Path | None = None) -> tuple[Path, Path]:
+    """Where the self-signed certificate for the catch-all HTTPS server lives."""
+    override_cert = os.environ.get("NGINX_DEFAULT_TLS_CERT", "").strip()
+    override_key = os.environ.get("NGINX_DEFAULT_TLS_KEY", "").strip()
+    cert_dir = nginx_cert_dir(root_dir or Path.cwd())
+    cert = Path(override_cert) if override_cert else cert_dir / DEFAULT_TLS_CERT_NAME
+    key = Path(override_key) if override_key else cert_dir / DEFAULT_TLS_KEY_NAME
+    return cert, key
+
+
+def default_tls_available(root_dir: Path | None = None) -> tuple[Path, Path] | None:
+    cert, key = nginx_default_tls_paths(root_dir)
+    return (cert, key) if cert.is_file() and key.is_file() else None
+
+
+def ensure_default_tls_certificate(root_dir: Path | None = None) -> tuple[Path, Path] | None:
+    """Return an existing self-signed default cert, or mint one with ``openssl``.
+
+    The catch-all HTTPS server needs *some* certificate to terminate TLS far
+    enough to log the request and close it. Without ``openssl`` (or if minting
+    fails) callers fall back to ``ssl_reject_handshake``, which blocks the same
+    requests but cannot log them.
+    """
+    existing = default_tls_available(root_dir)
+    if existing:
+        return existing
+
+    openssl = shutil.which("openssl")
+    if not openssl:
+        return None
+
+    cert, key = nginx_default_tls_paths(root_dir)
+    try:
+        cert.parent.mkdir(parents=True, exist_ok=True)
+        key.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [
+                openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                "-keyout", str(key), "-out", str(cert),
+                "-days", "3650", "-subj", "/CN=freewaf-default",
+            ],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        os.chmod(key, 0o600)
+    except (subprocess.SubprocessError, OSError):
+        return None
+    return default_tls_available(root_dir)
+
+
+def render_unmatched_host_servers(
+    state: dict,
+    certificates: dict[str, dict] | None = None,
+    default_tls: tuple[Path, Path] | None = None,
+) -> list[str]:
     """Catch-all ``default_server`` blocks that drop unknown Host/SNI requests.
 
     Without them the alphabetically-first site file becomes Nginx's implicit
     default, so hitting the server's bare IP serves that application. Each block
-    closes the connection (``444`` for plain HTTP, a rejected TLS handshake for
-    HTTPS). Skipped for ports an application already claims as its default.
+    logs the hit as a block and closes the connection with ``444``. The HTTPS
+    block terminates TLS with a throwaway self-signed cert so the attempt is
+    logged; with no such cert it falls back to ``ssl_reject_handshake`` (still
+    blocked, just not logged). Skipped for ports an application already claims.
     """
-    settings = state.get("settings") if isinstance(state.get("settings"), dict) else {}
-    network = settings.get("network") if isinstance(settings.get("network"), dict) else {}
-    if network.get("rejectUnknownHosts") is False:
+    if not unmatched_host_rejection_enabled(state):
         return []
 
     enabled_sites = [site for site in state.get("sites", []) if site.get("enabled")]
@@ -1489,6 +1564,9 @@ def render_unmatched_host_servers(state: dict, certificates: dict[str, dict] | N
             if (port, True) in site_ports_by_site[id(site)]
         )
 
+    if default_tls is None:
+        default_tls = default_tls_available()
+
     blocks = ["# Unknown Host / bare-IP requests never reach an application."]
     for port, is_ssl in catch_all:
         flags = []
@@ -1504,11 +1582,23 @@ def render_unmatched_host_servers(state: dict, certificates: dict[str, dict] | N
         if ipv6:
             lines.append(f"    listen [::]:{port}{suffix};")
         lines.append("    server_name _;")
-        lines.append("    access_log off;")
-        if is_ssl:
-            # nginx >= 1.19.4: reject the TLS handshake with no certificate.
+
+        reject_via_handshake = is_ssl and not default_tls
+        if reject_via_handshake:
+            # No throwaway cert available: reject the TLS handshake outright
+            # (nginx >= 1.19.4). Blocks the request but leaves nothing to log.
+            lines.append("    access_log off;")
             lines.append("    ssl_reject_handshake on;")
-        lines.append("    return 444;")
+        else:
+            if is_ssl:
+                cert, key = default_tls
+                lines.append(f"    ssl_certificate {nginx_path(str(cert))};")
+                lines.append(f"    ssl_certificate_key {nginx_path(str(key))};")
+                lines.append("    ssl_protocols TLSv1.2 TLSv1.3;")
+            lines.append(f"    access_log {nginx_access_log_directive()} freewaf;")
+            lines.append("    set $sfl_verdict block;")
+            lines.append('    set $sfl_reason "Direct IP address or unknown host";')
+            lines.append("    return 444;")
         lines.append("}")
         blocks.append("\n".join(lines))
     blocks.append("")

@@ -1908,6 +1908,30 @@ class NginxGeneratorTests(unittest.TestCase):
 
 
 class UnmatchedHostServerTests(unittest.TestCase):
+    def setUp(self):
+        # Force the "no throwaway cert" path unless a test opts in, so results
+        # do not depend on whether nginx/certs/freewaf-default.crt exists.
+        self._env = mock.patch.dict(
+            os.environ,
+            {
+                "NGINX_DEFAULT_TLS_CERT": "/nonexistent/freewaf-default.crt",
+                "NGINX_DEFAULT_TLS_KEY": "/nonexistent/freewaf-default.key",
+            },
+            clear=False,
+        )
+        self._env.start()
+        self.addCleanup(self._env.stop)
+
+    def _with_default_cert(self):
+        tmp = tempfile.mkdtemp()
+        cert = Path(tmp) / "freewaf-default.crt"
+        key = Path(tmp) / "freewaf-default.key"
+        cert.write_text("cert")
+        key.write_text("key")
+        os.environ["NGINX_DEFAULT_TLS_CERT"] = str(cert)
+        os.environ["NGINX_DEFAULT_TLS_KEY"] = str(key)
+        return cert, key
+
     def _tls_site_state(self, **network):
         settings = make_settings()
         settings["network"] = {**settings.get("network", {}), **network}
@@ -1944,11 +1968,38 @@ class UnmatchedHostServerTests(unittest.TestCase):
         # The reject server mirrors the site's http2 flag so nginx does not warn
         # about redefined protocol options on the shared 443 socket.
         self.assertIn("listen 0.0.0.0:443 ssl http2 default_server;", config)
-        self.assertIn("ssl_reject_handshake on;", config)
         self.assertIn("return 444;", config)
         # The real site keeps a plain, non-default listener.
         self.assertIn("listen 0.0.0.0:443 ssl http2;", config)
         self.assertEqual(config.count("listen 0.0.0.0:80 default_server;"), 1)
+
+    def test_http_reject_is_logged_as_a_block(self):
+        config = generate_nginx_config(self._tls_site_state())
+
+        # The plain-HTTP catch-all always logs, tagged as a block so it shows
+        # up in the dashboard's Blocked Requests.
+        server = config[config.rindex("listen 0.0.0.0:80 default_server;") :]
+        self.assertIn("access_log", server.split("}")[0])
+        self.assertIn("set $sfl_verdict block;", server.split("}")[0])
+        self.assertIn('set $sfl_reason "Direct IP address or unknown host";', server.split("}")[0])
+
+    def test_https_reject_falls_back_to_handshake_rejection_without_cert(self):
+        config = generate_nginx_config(self._tls_site_state())
+
+        self.assertIn("ssl_reject_handshake on;", config)
+        self.assertNotIn("ssl_certificate /nonexistent", config)
+
+    def test_https_reject_terminates_tls_and_logs_when_cert_available(self):
+        cert, key = self._with_default_cert()
+        config = generate_nginx_config(self._tls_site_state())
+
+        self.assertNotIn("ssl_reject_handshake", config)
+        https = config[config.rindex("listen 0.0.0.0:443 ssl http2 default_server;") :]
+        block = https.split("}")[0]
+        self.assertIn(f"ssl_certificate {cert.as_posix()};", block)
+        self.assertIn(f"ssl_certificate_key {key.as_posix()};", block)
+        self.assertIn("set $sfl_verdict block;", block)
+        self.assertIn("return 444;", block)
 
     def test_reject_server_omits_http2_when_disabled(self):
         state = self._tls_site_state()
