@@ -3,8 +3,9 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
-from datetime import date
+from datetime import datetime, date, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -12,7 +13,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from freewaf.defaults import BUILTIN_RULES, VERIFIED_AI_BOT_PROVIDERS, managed_verified_bot_providers
 from freewaf.geoip import candidate_months, install_dbip_country_lite, validate_dbip_country_csv
-from freewaf.store import Store, StoreError, build_stats, country_for_ip, geoip_attribution, normalize_state
+from freewaf.store import (
+    Store,
+    StoreError,
+    build_qps_timeline,
+    build_stats,
+    country_for_ip,
+    geoip_attribution,
+    normalize_state,
+)
 
 
 class StoreTests(unittest.TestCase):
@@ -768,6 +777,45 @@ class StoreTests(unittest.TestCase):
             settings = store.get_state()["settings"]["clientIp"]
             self.assertEqual(settings["source"], "socket")
             self.assertEqual(settings["headerName"], "X-Forwarded-For")
+
+    def test_qps_timeline_window_fits_a_short_busy_log_tail(self):
+        # A busy server's recent tail only reaches back ~90s; the chart must not
+        # leave the older two-thirds of its 30 buckets permanently empty.
+        now = time.time()
+        logs = [
+            {"at": datetime.fromtimestamp(now - offset, timezone.utc).isoformat()}
+            for offset in range(0, 90)
+            for _ in range(3)
+        ]
+
+        timeline = build_qps_timeline(logs)
+
+        self.assertEqual(len(timeline), 30)
+        filled = [bucket for bucket in timeline if bucket["count"] > 0]
+        # Nearly every bucket should carry traffic, not just the last handful.
+        self.assertGreaterEqual(len(filled), 27)
+        span_ms = timeline[-1]["endAt"] - timeline[0]["at"]
+        self.assertLess(span_ms, 5 * 60 * 1000)
+
+    def test_qps_timeline_caps_window_at_five_minutes(self):
+        now = time.time()
+        logs = [
+            {"at": datetime.fromtimestamp(now - offset, timezone.utc).isoformat()}
+            for offset in range(0, 3600, 5)
+        ]
+
+        timeline = build_qps_timeline(logs)
+
+        self.assertEqual(len(timeline), 30)
+        span_ms = timeline[-1]["endAt"] - timeline[0]["at"]
+        self.assertLessEqual(span_ms, 5 * 60 * 1000 + 1000)
+        self.assertGreaterEqual(span_ms, 4 * 60 * 1000)
+
+    def test_qps_timeline_handles_empty_logs(self):
+        timeline = build_qps_timeline([])
+
+        self.assertEqual(len(timeline), 30)
+        self.assertTrue(all(bucket["count"] == 0 and bucket["qps"] == 0 for bucket in timeline))
 
     def test_network_reject_unknown_hosts_defaults_on_and_is_normalized(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -3316,10 +3316,21 @@ def build_status_timeline(logs: list[dict]) -> list[dict]:
 
 
 def build_qps_timeline(logs: list[dict]) -> list[dict]:
-    bucket_ms = 10 * 1000
     bucket_count = 30
+    max_window_ms = 5 * 60 * 1000
     now_ms = int(time.time() * 1000)
+
+    # The recent-log tail this is fed from is capped, so on a busy server it may
+    # only reach back a minute or two. A fixed 5-minute window would then leave
+    # most of the chart permanently empty. Fit the window to the span the data
+    # actually covers (at least one second per bucket, at most five minutes) so
+    # every bucket carries real traffic.
+    timestamps = [ts for ts in (entry_timestamp_ms(entry) for entry in logs) if ts is not None]
+    span_ms = (now_ms - min(timestamps)) if timestamps else max_window_ms
+    window_ms = min(max_window_ms, max(bucket_count * 1000, span_ms))
+    bucket_ms = max(1000, window_ms // bucket_count)
     start_ms = now_ms - bucket_ms * bucket_count
+
     buckets = []
     for index in range(bucket_count):
         at = start_ms + bucket_ms * index
