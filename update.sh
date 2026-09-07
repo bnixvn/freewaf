@@ -107,6 +107,42 @@ main() {
     fi
   fi
 
+  # 3b. Guard against a flood filling the disk between nightly logrotate
+  # runs: a spam/attack burst can log gigabytes of *blocked* requests in
+  # minutes. Add a size cap to the existing logrotate rule and a timer that
+  # checks it every 15 minutes (logrotate itself is a no-op under the cap).
+  local logrotate_conf="/etc/logrotate.d/freewaf"
+  if [ -f "$logrotate_conf" ] && ! grep -q '^\s*maxsize' "$logrotate_conf"; then
+    log "Adding maxsize 500M to ${logrotate_conf}"
+    sed -i '/^\s*daily\s*$/a\    maxsize 500M' "$logrotate_conf"
+  fi
+  if [ -f "$logrotate_conf" ] && [ ! -f /etc/systemd/system/freewaf-logrotate-check.timer ]; then
+    log "Installing freewaf-logrotate-check timer (checks maxsize every 15min)"
+    cat > /etc/systemd/system/freewaf-logrotate-check.service <<EOF
+[Unit]
+Description=Check FreeWAF logs against logrotate maxsize between daily runs
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/logrotate ${logrotate_conf}
+EOF
+    cat > /etc/systemd/system/freewaf-logrotate-check.timer <<'EOF'
+[Unit]
+Description=Run the FreeWAF logrotate maxsize check every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Unit=freewaf-logrotate-check.service
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now freewaf-logrotate-check.timer
+  fi
+
   # 4. Restart freewaf service
   log "Restarting freewaf service..."
   systemctl restart freewaf

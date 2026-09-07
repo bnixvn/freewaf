@@ -25,6 +25,8 @@ SERVICE_FILE="/etc/systemd/system/freewaf.service"
 HEALTHCHECK_SCRIPT="/usr/local/sbin/freewaf-healthcheck"
 HEALTHCHECK_SERVICE="/etc/systemd/system/freewaf-healthcheck.service"
 HEALTHCHECK_TIMER="/etc/systemd/system/freewaf-healthcheck.timer"
+LOGROTATE_CHECK_SERVICE="/etc/systemd/system/freewaf-logrotate-check.service"
+LOGROTATE_CHECK_TIMER="/etc/systemd/system/freewaf-logrotate-check.timer"
 NGINX_INCLUDE="/etc/nginx/conf.d/freewaf.conf"
 NGINX_UPLOAD_LIMIT_INCLUDE="/etc/nginx/conf.d/00-upload-size.conf"
 NGINX_CLIENT_MAX_BODY_SIZE="${FREEWAF_NGINX_CLIENT_MAX_BODY_SIZE:-512M}"
@@ -392,6 +394,7 @@ write_logrotate() {
   cat > "$LOGROTATE_FILE" <<EOF
 ${APP_DIR}/logs/freewaf_access.log ${APP_DIR}/logs/freewaf/accesslog_* ${APP_DIR}/logs/freewaf/errorlog_* {
     daily
+    maxsize 500M
     rotate 7
     missingok
     notifempty
@@ -409,6 +412,37 @@ ${APP_DIR}/logs/freewaf_access.log ${APP_DIR}/logs/freewaf/accesslog_* ${APP_DIR
     endscript
 }
 EOF
+
+  # `maxsize` only helps if logrotate is actually invoked between the daily
+  # runs: a flood that dumps gigabytes of blocked-request log lines in
+  # minutes (one blocked WAF hit is still one log line) can otherwise fill
+  # the disk hours before the nightly cron gets to it. Check every 15
+  # minutes; logrotate itself is a no-op for files under the threshold.
+  log "Writing ${LOGROTATE_CHECK_SERVICE} / ${LOGROTATE_CHECK_TIMER}"
+  cat > "$LOGROTATE_CHECK_SERVICE" <<EOF
+[Unit]
+Description=Check FreeWAF logs against logrotate maxsize between daily runs
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/logrotate ${LOGROTATE_FILE}
+EOF
+
+  cat > "$LOGROTATE_CHECK_TIMER" <<EOF
+[Unit]
+Description=Run the FreeWAF logrotate maxsize check every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Unit=freewaf-logrotate-check.service
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now freewaf-logrotate-check.timer
 }
 
 write_certbot_deploy_hook() {
