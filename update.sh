@@ -121,6 +121,16 @@ main() {
     sed -i -e '/^\s*daily\s*$/d' -e '/^\s*maxsize/d' -e '/^\s*size 500M\s*$/d' "$logrotate_conf"
     sed -i '/{$/a\    size 500M' "$logrotate_conf"
   fi
+  # Plain `dateext` names every same-day rotation of a file identically, so
+  # only the first same-day `size` rotation actually succeeds - every one
+  # after it collides on that filename, logrotate skips the rename but still
+  # marks the file rotated, and it grows unbounded again right past the cap.
+  # Epoch-second names never collide no matter how many times a flood
+  # rotates a file in one day.
+  if [ -f "$logrotate_conf" ] && ! grep -q '^\s*dateformat' "$logrotate_conf"; then
+    log "Adding dateformat -%s to ${logrotate_conf} (unique names per rotation, not per day)"
+    sed -i '/^\s*dateext\s*$/a\    dateformat -%s' "$logrotate_conf"
+  fi
   if [ -f "$logrotate_conf" ] && [ ! -f /etc/systemd/system/freewaf-logrotate-check.timer ]; then
     log "Installing freewaf-logrotate-check timer (checks the size cap every 15min)"
     cat > /etc/systemd/system/freewaf-logrotate-check.service <<EOF

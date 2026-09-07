@@ -400,6 +400,7 @@ ${APP_DIR}/logs/freewaf_access.log ${APP_DIR}/logs/freewaf/accesslog_* ${APP_DIR
     compress
     delaycompress
     dateext
+    dateformat -%s
     olddir ${APP_DIR}/logs/freewaf/rotated
     createolddir 0750 www-data adm
     create 0640 www-data adm
@@ -419,7 +420,18 @@ EOF
   # top) only ever rotates once per calendar day - logrotate's own "already
   # rotated" bookkeeping refuses a second pass no matter how big the file
   # gets after the first one - so a multi-hour flood would still fill the
-  # disk before midnight. Pure `size` has no such per-day limit: every check
+  # disk before midnight.
+  #
+  # `dateformat -%s` (epoch seconds, replacing the default `-%Y%m%d`) is
+  # equally deliberate: plain `dateext` names every rotation of a given file
+  # for TODAY the same way. The first same-day rotation succeeds; every one
+  # after it tries to create that identical filename again, logrotate skips
+  # it as "destination already exists" - but still marks the file as rotated,
+  # so a sustained flood keeps growing completely unbounded right after its
+  # one same-day rotation. Epoch seconds gives every rotation a unique name
+  # no matter how many fire in a day.
+  #
+  # Pure `size` has no such per-day limit: every check
   # rotates it again if it is still over 500M. Checked every 15 minutes;
   # logrotate is a no-op for files under the threshold.
   log "Writing ${LOGROTATE_CHECK_SERVICE} / ${LOGROTATE_CHECK_TIMER}"
