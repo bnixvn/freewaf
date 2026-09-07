@@ -117,6 +117,7 @@ class CertificateServerTests(unittest.TestCase):
         store = mock.Mock()
         store.get_state.return_value = state
         store.get_state_fields.side_effect = lambda *fields: {field: state.get(field) for field in fields}
+        store.filter_state_by_account.side_effect = lambda *args, **kwargs: state
 
         with mock.patch("freewaf.server.dashboard_stats_snapshot", return_value={"total": 12, "siteStats": []}) as stats:
             dashboard = state_slice_payload(store, "dashboard", {"siteId": ["site-a"], "periodDays": ["1"]})
@@ -124,9 +125,12 @@ class CertificateServerTests(unittest.TestCase):
 
         self.assertEqual(set(dashboard), {"sites", "stats", "settings"})
         self.assertEqual(dashboard["settings"], {"panel": state["settings"]["panel"]})
+        # state_slice_payload hands dashboard_stats_snapshot the whole
+        # account-filtered state (filter_state_by_account("") returns it as-is);
+        # the stats builder itself picks out what it needs.
         stats.assert_any_call(
             store,
-            {"sites": state["sites"], "settings": state["settings"]},
+            state,
             site_id="site-a",
             retention_days=1,
         )
@@ -1171,8 +1175,8 @@ class LogPaginationTests(unittest.TestCase):
             "version": server_module.DASHBOARD_STATE_VERSION,
             "updatedAt": "",
             "stats": {
-                "site:*|days:1": {},
-                "site:site-a|days:7": {},
+                "site:*|days:1|acc:all": {},
+                "site:site-a|days:7|acc:all": {},
             },
         }
         summaries = {
@@ -1191,7 +1195,7 @@ class LogPaginationTests(unittest.TestCase):
         summary_batch.assert_called_once_with({1, 7})
         self.assertEqual(result["total"], 1)
         saved_stats = save_cache.call_args.args[0]["stats"]
-        self.assertEqual(saved_stats["site:site-a|days:7"]["data"], {"total": 7, "siteId": "site-a"})
+        self.assertEqual(saved_stats["site:site-a|days:7|acc:all"]["data"], {"total": 7, "siteId": "site-a"})
 
     def test_combined_logs_page_filters_domain_and_paginates(self):
         nginx_logs = [

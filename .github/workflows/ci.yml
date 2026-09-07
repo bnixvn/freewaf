@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  backend-tests:
+    name: Backend tests (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # backend/requirements.txt is intentionally empty (stdlib-only backend);
+      # this step is a no-op today and a guard if that ever changes.
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Run backend test suite
+        working-directory: backend
+        run: python -m unittest discover tests -v
+
+  frontend-build:
+    name: Frontend build & CVE audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+      # Fails the job on any HIGH/CRITICAL advisory. Run `npm audit fix` in
+      # frontend/ locally to clear most findings; anything left needs a
+      # manual look (see the job log for details).
+      - name: Audit dependencies for known vulnerabilities (CVE)
+        working-directory: frontend
+        run: npm audit --audit-level=high

@@ -442,6 +442,10 @@ _RANDOM_QUERY_PARAMETER_PATTERN = (
 _WOOCOMMERCE_CART_CONFLICT_PATTERN = (
     r"(?:[?&]remove_item=[0-9a-f]{32}(?:&[^#\s]*)?&add-to-cart=\d+(?:$|[&#])|[?&]add-to-cart=\d+(?:&[^#\s]*)?&remove_item=[0-9a-f]{32}(?:$|[&#]))"
 )
+_LCS_ORDER_GIFT_PROBING_PATTERN = (
+    r"/gio-hang/(?=[^#\s]*[?&]lcs_or_gift_choice=1(?:$|[&#]))(?=[^#\s]*[?&]lcs_or_milestone_amount=\d+(?:$|[&#]))"
+    r"(?=[^#\s]*[?&]lcs_or_selected_choice=single_\d+(?:$|[&#]))(?=[^#\s]*[?&]lcs_or_selected_product=\d+(?:$|[&#]))"
+)
 _GHOSTSCRIPT_PATTERN = r"(?:(?:\.ps|\.eps|\.pdf)(?:$|\?|/)|-dSAFER|\.forceput|%pipe%|\.setdevice|/invalidaccess)"
 
 # Only PHP / WordPress / Laravel / general-web SafeLine rules.
@@ -469,6 +473,7 @@ SAFELINE_COMPATIBILITY_RULES = [
     _safeline_rule(65628, "Nginx code parsing vulnerability", r"(?:/[^?]+\.(?:jpg|png|gif|txt|css|js)/[^?]+\.php|%00\.php|\.php/(?:\.\./|%2e%2e))", severity="critical"),
     # WordPress
     _safeline_rule(65885, "WooCommerce cart action conflict", _WOOCOMMERCE_CART_CONFLICT_PATTERN, severity="medium"),
+    _safeline_rule(65886, "LCS order gift probing", _LCS_ORDER_GIFT_PROBING_PATTERN, severity="medium"),
     # WordPress code injection rule (65720) removed - too aggressive for modern WP.
     # wp-json/ matches ALL REST API (Gutenberg, Customizer, plugin settings).
     # action= is ubiquitous in admin-ajax.php. WP core has nonce+capability checks.
@@ -527,6 +532,7 @@ _SAFELINE_KEEP_IDS: set[str] = {
     "builtin-safeline-65628",               # Nginx code parsing (PHP-FPM)
     # WordPress
     "builtin-safeline-65885",               # WooCommerce cart conflict
+    "builtin-safeline-65886",               # LCS order gift probing
     # WordPress code injection (65720) removed - too broad for modern WP
     # Laravel
     "builtin-safeline-65701",               # Laravel Debug Mode RCE

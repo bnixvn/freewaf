@@ -1,5 +1,7 @@
 # FreeWAF
 
+[![CI](https://github.com/bnixvn/freewaf/actions/workflows/ci.yml/badge.svg)](https://github.com/bnixvn/freewaf/actions/workflows/ci.yml)
+
 FreeWAF is a lightweight WAF/reverse-proxy management system built with a Python backend and a React admin panel. The dashboard manages applications, SSL certificates, IP groups, access rules, users, logs, and Nginx configuration. Actual traffic enforcement is handled by Nginx.
 
 FreeWAF does not copy SafeLine private binaries or modules. It mirrors the main SafeLine-style workflows using FreeWAF's own Python state, React UI, and native Nginx configuration.
