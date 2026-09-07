@@ -107,20 +107,25 @@ main() {
     fi
   fi
 
-  # 3b. Guard against a flood filling the disk between nightly logrotate
-  # runs: a spam/attack burst can log gigabytes of *blocked* requests in
-  # minutes. Add a size cap to the existing logrotate rule and a timer that
-  # checks it every 15 minutes (logrotate itself is a no-op under the cap).
+  # 3b. Guard against a flood filling the disk: a spam/attack burst can log
+  # gigabytes of *blocked* requests in minutes. `daily` (even with `maxsize`
+  # layered on) only ever rotates once per calendar day - logrotate's own
+  # "already rotated" bookkeeping refuses a second pass no matter how big the
+  # file gets afterward - so a multi-hour flood still fills the disk before
+  # midnight. Pure `size` has no such per-day limit: every check rotates the
+  # file again if it is still over the cap. Idempotent: also cleans up a
+  # `daily`+`maxsize` combo left by an older run of this same step.
   local logrotate_conf="/etc/logrotate.d/freewaf"
-  if [ -f "$logrotate_conf" ] && ! grep -q '^\s*maxsize' "$logrotate_conf"; then
-    log "Adding maxsize 500M to ${logrotate_conf}"
-    sed -i '/^\s*daily\s*$/a\    maxsize 500M' "$logrotate_conf"
+  if [ -f "$logrotate_conf" ] && ! grep -q "^\s*size 500M\s*\$" "$logrotate_conf"; then
+    log "Switching ${logrotate_conf} to size-based rotation (500M cap)"
+    sed -i -e '/^\s*daily\s*$/d' -e '/^\s*maxsize/d' -e '/^\s*size 500M\s*$/d' "$logrotate_conf"
+    sed -i '/{$/a\    size 500M' "$logrotate_conf"
   fi
   if [ -f "$logrotate_conf" ] && [ ! -f /etc/systemd/system/freewaf-logrotate-check.timer ]; then
-    log "Installing freewaf-logrotate-check timer (checks maxsize every 15min)"
+    log "Installing freewaf-logrotate-check timer (checks the size cap every 15min)"
     cat > /etc/systemd/system/freewaf-logrotate-check.service <<EOF
 [Unit]
-Description=Check FreeWAF logs against logrotate maxsize between daily runs
+Description=Check FreeWAF logs against the logrotate size cap between runs
 
 [Service]
 Type=oneshot
@@ -128,7 +133,7 @@ ExecStart=/usr/sbin/logrotate ${logrotate_conf}
 EOF
     cat > /etc/systemd/system/freewaf-logrotate-check.timer <<'EOF'
 [Unit]
-Description=Run the FreeWAF logrotate maxsize check every 15 minutes
+Description=Run the FreeWAF logrotate size-cap check every 15 minutes
 
 [Timer]
 OnBootSec=5min

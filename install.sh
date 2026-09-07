@@ -393,8 +393,7 @@ write_logrotate() {
   log "Writing ${LOGROTATE_FILE}"
   cat > "$LOGROTATE_FILE" <<EOF
 ${APP_DIR}/logs/freewaf_access.log ${APP_DIR}/logs/freewaf/accesslog_* ${APP_DIR}/logs/freewaf/errorlog_* {
-    daily
-    maxsize 500M
+    size 500M
     rotate 7
     missingok
     notifempty
@@ -413,15 +412,20 @@ ${APP_DIR}/logs/freewaf_access.log ${APP_DIR}/logs/freewaf/accesslog_* ${APP_DIR
 }
 EOF
 
-  # `maxsize` only helps if logrotate is actually invoked between the daily
-  # runs: a flood that dumps gigabytes of blocked-request log lines in
-  # minutes (one blocked WAF hit is still one log line) can otherwise fill
-  # the disk hours before the nightly cron gets to it. Check every 15
-  # minutes; logrotate itself is a no-op for files under the threshold.
+  # `size` (not `daily`/`maxsize`) is deliberate: a flood that dumps gigabytes
+  # of blocked-request log lines in minutes (one blocked WAF hit is still one
+  # log line) needs to rotate as many times as it takes to stay under the cap,
+  # for as long as it keeps going. `daily` (even with `maxsize` layered on
+  # top) only ever rotates once per calendar day - logrotate's own "already
+  # rotated" bookkeeping refuses a second pass no matter how big the file
+  # gets after the first one - so a multi-hour flood would still fill the
+  # disk before midnight. Pure `size` has no such per-day limit: every check
+  # rotates it again if it is still over 500M. Checked every 15 minutes;
+  # logrotate is a no-op for files under the threshold.
   log "Writing ${LOGROTATE_CHECK_SERVICE} / ${LOGROTATE_CHECK_TIMER}"
   cat > "$LOGROTATE_CHECK_SERVICE" <<EOF
 [Unit]
-Description=Check FreeWAF logs against logrotate maxsize between daily runs
+Description=Check FreeWAF logs against the logrotate size cap between runs
 
 [Service]
 Type=oneshot
@@ -430,7 +434,7 @@ EOF
 
   cat > "$LOGROTATE_CHECK_TIMER" <<EOF
 [Unit]
-Description=Run the FreeWAF logrotate maxsize check every 15 minutes
+Description=Run the FreeWAF logrotate size-cap check every 15 minutes
 
 [Timer]
 OnBootSec=5min
