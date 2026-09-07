@@ -1833,7 +1833,7 @@ def normalize_modsecurity_config(value, site_mode: str = "block") -> dict:
         "mode": mode if mode in MODSECURITY_MODES else "on",
         "ruleset": ruleset if ruleset in MODSECURITY_RULESETS else "cms",
         "requestBodyLimit": min(
-            max(normalize_positive_int(source.get("requestBodyLimit") or source.get("request_body_limit"), 13107200), 131072),
+            max(normalize_positive_int(source.get("requestBodyLimit") or source.get("request_body_limit"), 104857600), 131072),
             1073741824,
         ),
     }

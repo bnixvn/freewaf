@@ -205,7 +205,7 @@ const defaultSite = {
   modSecurityEnabled: 'false',
   modSecurityMode: 'on',
   modSecurityRuleset: 'comodo',
-  modSecurityRequestBodyLimit: '13107200',
+  modSecurityRequestBodyLimit: '104857600',
   aclEnabled: 'true',
   aclRateLimitMode: 'custom',
   aclWaitingRoom: 'false',
@@ -252,7 +252,7 @@ const defaultApplicationDefaults = {
   modSecurityEnabled: 'false',
   modSecurityMode: 'on',
   modSecurityRuleset: 'cms',
-  modSecurityRequestBodyLimit: '13107200'
+  modSecurityRequestBodyLimit: '104857600'
 };
 
 const defaultChallengePage = {
@@ -989,7 +989,7 @@ export default function App() {
           enabled: boolValue(site.modSecurityEnabled),
           mode: site.modSecurityMode === 'detection_only' ? 'detection_only' : 'on',
           ruleset: normalizeModSecurityRuleset(site.modSecurityRuleset),
-          requestBodyLimit: Number(site.modSecurityRequestBodyLimit || 13107200)
+          requestBodyLimit: Number(site.modSecurityRequestBodyLimit || 104857600)
         },
         acl: {
           enabled: boolValue(site.aclEnabled),
@@ -6029,7 +6029,7 @@ function applicationDefaultsFormFromSettings(applicationDefaults, clientIp = {})
     modSecurityEnabled: String(modSecurity.enabled ?? false),
     modSecurityMode: modSecurity.mode === 'detection_only' ? 'detection_only' : 'on',
     modSecurityRuleset: normalizeModSecurityRuleset(modSecurity.ruleset || defaultApplicationDefaults.modSecurityRuleset),
-    modSecurityRequestBodyLimit: String(modSecurity.requestBodyLimit ?? 13107200)
+    modSecurityRequestBodyLimit: String(modSecurity.requestBodyLimit ?? 104857600)
   };
 }
 
@@ -6054,7 +6054,7 @@ function applicationDefaultsPayload(form) {
       enabled: boolValue(form.modSecurityEnabled),
       mode: form.modSecurityMode === 'detection_only' ? 'detection_only' : 'on',
       ruleset: normalizeModSecurityRuleset(form.modSecurityRuleset),
-      requestBodyLimit: positiveInt(form.modSecurityRequestBodyLimit, 13107200)
+      requestBodyLimit: positiveInt(form.modSecurityRequestBodyLimit, 104857600)
     }
   };
 }

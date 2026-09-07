@@ -54,7 +54,7 @@ DEFAULT_SETTINGS = {
             "enabled": False,
             "mode": "on",
             "ruleset": "cms",
-            "requestBodyLimit": 13107200,
+            "requestBodyLimit": 104857600,
         },
     },
     "challengePage": {
@@ -679,7 +679,7 @@ def create_default_state(now: str | None = None) -> dict:
                     "enabled": False,
                     "mode": "on",
                     "ruleset": "cms",
-                    "requestBodyLimit": 13107200,
+                    "requestBodyLimit": 104857600,
                 },
                 "redirect": {
                     "statusCode": 301,

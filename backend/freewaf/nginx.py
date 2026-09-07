@@ -2319,7 +2319,7 @@ def site_modsecurity(site: dict, defaults: dict | None = None) -> dict:
         "enabled": bool(merged.get("enabled")),
         "mode": mode if mode in {"on", "detection_only"} else "on",
         "ruleset": ruleset if ruleset in {"cms", "comodo", "owasp"} else "cms",
-        "requestBodyLimit": min(max(int(merged.get("requestBodyLimit") or 13107200), 131072), 1073741824),
+        "requestBodyLimit": min(max(int(merged.get("requestBodyLimit") or 104857600), 131072), 1073741824),
     }
 
 
@@ -2351,7 +2351,7 @@ def render_modsecurity_directives(site: dict) -> list[str]:
         ]
 
     engine = "DetectionOnly" if config.get("mode") == "detection_only" or site.get("mode") == "monitor" else "On"
-    body_limit = min(max(int(config.get("requestBodyLimit") or 13107200), 131072), 1073741824)
+    body_limit = min(max(int(config.get("requestBodyLimit") or 104857600), 131072), 1073741824)
     lines = [
         "    modsecurity on;",
         f"    # FreeWAF ModSecurity ruleset: {nginx_comment(ruleset)}",
