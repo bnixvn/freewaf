@@ -25,16 +25,38 @@ finding nothing this cycle, not a safety problem.
 from __future__ import annotations
 
 import json
+import ssl
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlparse
 
 from . import mcp_tools
 from .store import Store
 
 MAX_AGENT_STEPS = 6
 _HTTP_TIMEOUT = 30
+
+# The default self-referential MCP URL (see start_ai_rule_worker() in
+# server.py) points at 127.0.0.1, but the admin panel's HTTPS certificate
+# - if one is configured - is issued for the panel's real hostname, not
+# the loopback IP, so standard hostname verification always fails here.
+# nginx has the exact same problem proxying to this same URL and solves it
+# the same way (proxy_ssl_verify off; - see challenge_backend_url() in
+# nginx.py); loopback traffic to our own process doesn't need it. A
+# non-loopback mcp_base_url (a future remote agent target) keeps full
+# verification.
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _ssl_context_for(url: str) -> ssl.SSLContext | None:
+    if urlparse(url).hostname not in _LOOPBACK_HOSTS:
+        return None
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return context
 
 _SYSTEM_PROMPT = (
     "You are the automated security analyst for a web application firewall (FreeWAF). "
@@ -78,7 +100,7 @@ def _call_mcp_tool(mcp_base_url: str, mcp_token: str, name: str, arguments: dict
         method="POST",
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {mcp_token}"},
     )
-    with urllib.request.urlopen(request, timeout=_HTTP_TIMEOUT) as response:
+    with urllib.request.urlopen(request, timeout=_HTTP_TIMEOUT, context=_ssl_context_for(url)) as response:
         parsed = json.loads(response.read().decode("utf-8"))
     if parsed.get("error"):
         return {"error": parsed["error"].get("message") or "tool call failed"}

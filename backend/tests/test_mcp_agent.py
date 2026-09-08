@@ -1,4 +1,5 @@
 import json
+import ssl
 import sys
 import unittest
 from pathlib import Path
@@ -164,12 +165,38 @@ class DispatchToolCallTests(unittest.TestCase):
         self.assertIn("error", result)
 
 
+class SslContextForTests(unittest.TestCase):
+    def test_loopback_hosts_get_a_verification_disabled_context(self):
+        for url in ("https://127.0.0.1:7001/mcp", "https://localhost:7001/mcp"):
+            context = mcp_agent._ssl_context_for(url)
+            self.assertIsNotNone(context)
+            self.assertFalse(context.check_hostname)
+            self.assertEqual(context.verify_mode, ssl.CERT_NONE)
+
+    def test_non_loopback_host_keeps_default_verification(self):
+        self.assertIsNone(mcp_agent._ssl_context_for("https://waf.example.test/mcp"))
+
+    def test_plain_http_loopback_still_gets_a_context_harmlessly(self):
+        # urlopen ignores `context` for plain http:// URLs, so it's fine
+        # (and simpler) to always compute one for a loopback host.
+        self.assertIsNotNone(mcp_agent._ssl_context_for("http://127.0.0.1:7001/mcp"))
+
+
 class CallMcpToolTests(unittest.TestCase):
     def _mock_response(self, body: dict):
         fake = mock.MagicMock()
         fake.read.return_value = json.dumps(body).encode("utf-8")
         fake.__enter__.return_value = fake
         return fake
+
+    def test_disables_certificate_verification_for_the_loopback_mcp_url(self):
+        fake_response = self._mock_response({"jsonrpc": "2.0", "id": 1, "result": {"structuredContent": {}}})
+        https_loopback_url = "https://127.0.0.1:7001/mcp"
+        with mock.patch("urllib.request.urlopen", return_value=fake_response) as urlopen:
+            mcp_agent._call_mcp_tool(https_loopback_url, "token", "list_sites", {})
+        context = urlopen.call_args.kwargs["context"]
+        self.assertIsNotNone(context)
+        self.assertEqual(context.verify_mode, ssl.CERT_NONE)
 
     def test_unwraps_structured_content(self):
         fake_response = self._mock_response({"jsonrpc": "2.0", "id": 1, "result": {"structuredContent": {"ok": True}}})
