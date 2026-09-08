@@ -33,6 +33,22 @@ with the AI_RULE_NAME_PREFIX so the panel/rule list can flag them, and so
 this module can find its own past output again for rate limiting and
 duplicate-pattern skipping.
 
+KNOWN LIMITATION, confirmed live against production traffic: the
+statistical stage cannot reliably tell "an externally injected spam
+keyword" apart from "the site's own busy dynamic feature" - both can
+produce many distinct IPs hitting many distinct URLs that share one
+stable path word. Observed case: clmensstore.com's own cart path
+("/gio-hang/...") scored 0.85 confidence, just from ordinary shoppers
+adding/removing items - higher than a genuine single-URL flood's own
+confidence ceiling of ~0.8 (see minDistinctUris's docstring above), so
+raising autoBlockConfidence to exclude one would also exclude the other.
+That distinction is semantic, not statistical - it needs the LLM
+refinement step (or agent mode) to actually be safe for auto-block on a
+dynamic/e-commerce site. Query-string parameter NAMES (e.g. WordPress's
+"_wpnonce", which repeats by design on every request) are excluded from
+tokenization entirely - see _tokenize_uri - since that part of the false
+positive at least has no legitimate-detection tradeoff either way.
+
 The actual worker loop (thread creation, calling maybe_auto_write() to
 apply the generated rule to nginx) lives in server.py alongside the other
 background workers, to avoid this module importing server.py.
@@ -72,14 +88,26 @@ _TOKEN_SPLIT_RE = re.compile(r"[^a-z]+")
 
 
 def _tokenize_uri(uri: str) -> set[str]:
-    """Break a URI into lowercase letter-only tokens (>=4 chars).
+    """Break a URI's PATH (not its query string) into lowercase letter-only
+    tokens (>=4 chars).
 
     Splitting on anything that isn't a-z drops digits and punctuation as
-    delimiters in one pass, so rotating numeric IDs or query separators
-    never become (or break up) a candidate marker - only path/query
-    segments that stay textually constant across the campaign matter here.
+    delimiters in one pass, so rotating numeric IDs never become (or break
+    up) a candidate marker - only path segments that stay textually
+    constant across the campaign matter here.
+
+    Query strings are deliberately excluded: a query parameter's NAME is
+    structurally repeated across huge numbers of entirely legitimate,
+    diverse requests by design (e.g. WordPress's own "_wpnonce" on every
+    WooCommerce cart action) - that repetition looks statistically
+    identical to a spam marker but means nothing. This was caught live
+    against 103.139.154.160's real traffic: "wpnonce" and "hang" (from
+    "/gio-hang/?_wpnonce=...") both cleared the confidence bar before this
+    fix. Every rotating-URL campaign investigated so far put its marker in
+    the path, not the query, so this costs nothing today.
     """
-    tokens = {tok for tok in _TOKEN_SPLIT_RE.split((uri or "").lower()) if len(tok) >= 4}
+    path_only = (uri or "").split("?", 1)[0]
+    tokens = {tok for tok in _TOKEN_SPLIT_RE.split(path_only.lower()) if len(tok) >= 4}
     return tokens - _STOPWORDS
 
 

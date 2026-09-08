@@ -90,6 +90,20 @@ class TokenizeTests(unittest.TestCase):
         for token in tokens:
             self.assertFalse(any(ch.isdigit() for ch in token))
 
+    def test_query_string_is_excluded_from_tokenization(self):
+        # Found live on production traffic: WordPress's own "_wpnonce" CSRF
+        # token repeats as a query key on every WooCommerce cart action -
+        # legitimate, high-volume, high-IP-diversity traffic that must
+        # never be treated as a candidate spam marker.
+        tokens = ai_rules._tokenize_uri(
+            "/gio-hang/?_wpnonce=30089707f7&remove_item=8b0a6e823972477463ff90b9e804a70c"
+        )
+        self.assertNotIn("wpnonce", tokens)
+        self.assertNotIn("remove", tokens)
+        self.assertNotIn("item", tokens)
+        # The path portion itself still tokenizes normally.
+        self.assertIn("hang", tokens)
+
 
 class FindMarkerCandidatesTests(unittest.TestCase):
     def test_finds_rotating_campaign_marker(self):
@@ -147,6 +161,37 @@ class FindMarkerCandidatesTests(unittest.TestCase):
         tokens = {c["token"] for c in candidates}
         self.assertNotIn("shopname", tokens)
 
+    def test_query_string_parameter_names_are_not_candidates(self):
+        # Reproduces a real false-positive candidate observed live on
+        # clmensstore.com: "_wpnonce" (WordPress's own CSRF token) and the
+        # add/remove-item parameter names repeat on every WooCommerce cart
+        # action by design - ordinary, high-volume, high-IP-diversity
+        # traffic, not a spam signature.
+        settings = make_settings()
+        entries = [
+            make_entry(f"/gio-hang/?_wpnonce={i:08x}&remove_item=item{i}", f"198.51.100.{i}", host="clmensstore.com")
+            for i in range(40)
+        ]
+        candidates = ai_rules.find_marker_candidates(entries, settings)
+        tokens = {c["token"] for c in candidates}
+        self.assertNotIn("wpnonce", tokens)
+        self.assertNotIn("remove", tokens)
+        self.assertNotIn("item", tokens)
+
+    def test_known_limitation_a_busy_legitimate_path_can_still_be_a_candidate(self):
+        # Documents a real, KNOWN, unresolved gap (see the module
+        # docstring): a path that is itself the site's own busy legitimate
+        # feature (not a query parameter - the query-string fix above does
+        # not apply here) can still statistically resemble a spam marker.
+        # This is why auto-block without LLM/agent confirmation is not
+        # safe on a dynamic/e-commerce site - this test exists so nobody
+        # mistakes the query-string fix for a complete fix.
+        settings = make_settings()
+        entries = [make_entry(f"/gio-hang/checkout-{i}/", f"198.51.100.{i}", host="clmensstore.com") for i in range(40)]
+        candidates = ai_rules.find_marker_candidates(entries, settings)
+        tokens = {c["token"] for c in candidates}
+        self.assertIn("hang", tokens)
+
 
 class ConfidenceTests(unittest.TestCase):
     def test_statistical_confidence_scales_with_thresholds(self):
@@ -158,6 +203,22 @@ class ConfidenceTests(unittest.TestCase):
         self.assertLess(weak_score, strong_score)
         self.assertLessEqual(strong_score, 1.0)
         self.assertGreaterEqual(weak_score, 0.0)
+
+    def test_a_true_single_url_flood_has_a_lower_confidence_ceiling_than_a_busy_legitimate_path(self):
+        # Documents why autoBlockConfidence can't just be raised to exclude
+        # the busy-legitimate-path false positive (see FindMarkerCandidatesTests
+        # .test_known_limitation_...): a single-URL flood's distinctUris is
+        # structurally stuck at minDistinctUris (1), permanently capping
+        # that dimension's contribution - so an extreme flood still scores
+        # LOWER than an everyday busy page with real URL diversity. The gap
+        # is semantic, not closeable by threshold tuning.
+        settings = make_settings(minDistinctIps=5, minDistinctUris=1, minRequests=30)
+        extreme_single_url_flood = {"distinctIps": 10_000, "distinctUris": 1, "requests": 10_000}
+        ordinary_busy_cart_page = {"distinctIps": 46, "distinctUris": 36, "requests": 46}
+        flood_score = ai_rules.statistical_confidence(extreme_single_url_flood, settings)
+        busy_page_score = ai_rules.statistical_confidence(ordinary_busy_cart_page, settings)
+        self.assertLess(flood_score, busy_page_score)
+        self.assertAlmostEqual(flood_score, 0.8, places=2)
 
     def test_combined_confidence_falls_back_to_statistical_without_llm(self):
         candidate = {"statisticalConfidence": 0.8}

@@ -3552,9 +3552,11 @@ function SettingsView({
           ) : (
             <>
               <div className="notice full">
-                <strong>LLM Refinement (optional)</strong> - sends each candidate to an LLM to confirm or veto it before a
-                rule is created. Never runs standalone - any failure (unreachable endpoint, bad response) falls back to the
-                statistical result untouched.
+                <strong>LLM Refinement (optional, but recommended)</strong> - sends each candidate to an LLM to confirm or
+                veto it before a rule is created. Never runs standalone - any failure (unreachable endpoint, bad response)
+                falls back to the statistical result untouched. Statistics alone cannot always tell an injected spam
+                keyword apart from the site's own busy dynamic feature (seen live: a WooCommerce cart path scored higher
+                than a genuine flood) - on a dynamic or e-commerce site, leaving this off risks a false-positive auto-block.
               </div>
               <CheckboxField label="Enable LLM refinement" checked={boolValue(aiRulesForm.llmEnabled)} onChange={(checked) => updateAiRules('llmEnabled', checked)} />
             </>
