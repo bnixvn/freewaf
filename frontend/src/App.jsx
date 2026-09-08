@@ -268,6 +268,23 @@ const defaultChallengePage = {
   waitSeconds: '5'
 };
 
+const defaultAiRules = {
+  enabled: false,
+  checkIntervalMinutes: '10',
+  lookbackMinutes: '15',
+  minDistinctIps: '5',
+  minDistinctUris: '1',
+  minRequests: '30',
+  autoBlockConfidence: '0.75',
+  maxRulesPerHour: '5',
+  llmEnabled: false,
+  llmProvider: 'openai_compatible',
+  llmBaseUrl: 'https://api.openai.com/v1',
+  llmApiKey: '',
+  llmApiKeyConfigured: false,
+  llmModel: 'gpt-4o-mini'
+};
+
 const defaultBotLoginPathPatterns = [
   '^/wp-login\\.php(?:\\?|$)',
   '^/wp-admin/?(?:\\?|$)',
@@ -1473,6 +1490,20 @@ export default function App() {
     }
   }
 
+  async function saveAiRulesSettings(aiRules) {
+    try {
+      const saved = await api('/api/settings', {
+        method: 'PATCH',
+        body: { aiRules }
+      });
+      updateSettingsLocal(saved);
+      showToast('AI rule detector settings saved');
+    } catch (error) {
+      showToast(error.message, true);
+      throw error;
+    }
+  }
+
   async function saveUser(user) {
     try {
       const payload = {
@@ -1559,6 +1590,7 @@ export default function App() {
       savePanelSettings,
       saveApplicationDefaults,
       saveChallengePage,
+      saveAiRulesSettings,
       saveUser,
       saveHttpFlood,
       saveBotProtection,
@@ -3212,6 +3244,7 @@ function SettingsView({
   savePanelSettings,
   saveApplicationDefaults,
   saveChallengePage,
+  saveAiRulesSettings,
   deleteUser,
   previewNginx,
   applyNginx,
@@ -3225,6 +3258,7 @@ function SettingsView({
   const applicationDefaults = data.settings?.applicationDefaults || {};
   const clientIp = data.settings?.clientIp || {};
   const challengePage = data.settings?.challengePage || {};
+  const aiRules = data.settings?.aiRules || {};
   const [pendingAction, setPendingAction] = useState('');
   const updateStatus = systemUpdate || { status: 'idle', running: false, commands: [], log: '', message: 'No update has run yet.' };
   const updateStatusClass = updateStatus.status === 'succeeded' ? 'allow' : updateStatus.status === 'failed' ? 'block' : 'low';
@@ -3238,6 +3272,7 @@ function SettingsView({
   }));
   const [applicationForm, setApplicationForm] = useState(() => applicationDefaultsFormFromSettings(applicationDefaults, clientIp));
   const [challengeForm, setChallengeForm] = useState(() => challengePageFormFromSettings(challengePage));
+  const [aiRulesForm, setAiRulesForm] = useState(() => aiRulesFormFromSettings(aiRules));
 
   useEffect(() => {
     setPanelForm({
@@ -3257,6 +3292,10 @@ function SettingsView({
   useEffect(() => {
     setChallengeForm(challengePageFormFromSettings(challengePage));
   }, [challengePage]);
+
+  useEffect(() => {
+    setAiRulesForm(aiRulesFormFromSettings(aiRules));
+  }, [aiRules]);
 
   function updatePanel(name, value) {
     setPanelForm((current) => ({ ...current, [name]: value }));
@@ -3302,6 +3341,15 @@ function SettingsView({
   function submitChallengePage(event) {
     event.preventDefault();
     runLocalAction('challengePage', () => saveChallengePage(challengePagePayload(challengeForm)));
+  }
+
+  function updateAiRules(name, value) {
+    setAiRulesForm((current) => ({ ...current, [name]: value }));
+  }
+
+  function submitAiRules(event) {
+    event.preventDefault();
+    runLocalAction('aiRules', () => saveAiRulesSettings(aiRulesPayload(aiRulesForm)));
   }
 
   return (
@@ -3454,6 +3502,59 @@ function SettingsView({
             </div>
           </div>
           <ChallengePagePreview form={challengeForm} />
+        </form>
+      </section>
+
+      <section className="panel">
+        <div className="panel-heading">
+          <h2>AI Rule Detector</h2>
+          <span className="pill">{boolValue(aiRulesForm.enabled) ? 'Enabled' : 'Disabled'}</span>
+        </div>
+        <form className="settings-form" onSubmit={submitAiRules}>
+          <p className="form-note full">
+            Watches recent traffic for the "same spam campaign" shape - many distinct IPs sharing one marker word, whether it's
+            one fixed URL taking a flood or a botnet rotating URLs around a constant word - and creates a blocking rule
+            automatically once confidence clears the threshold below. No approval step: a high-confidence match is blocked
+            immediately.
+          </p>
+          <CheckboxField label="Enable AI rule detector" checked={boolValue(aiRulesForm.enabled)} onChange={(checked) => updateAiRules('enabled', checked)} />
+          <TextField label="Check Interval (minutes)" type="number" value={aiRulesForm.checkIntervalMinutes} onChange={(value) => updateAiRules('checkIntervalMinutes', value)} />
+          <TextField label="Lookback Window (minutes)" type="number" value={aiRulesForm.lookbackMinutes} onChange={(value) => updateAiRules('lookbackMinutes', value)} />
+          <TextField label="Min Distinct IPs" type="number" value={aiRulesForm.minDistinctIps} onChange={(value) => updateAiRules('minDistinctIps', value)} />
+          <TextField label="Min Distinct URIs" type="number" value={aiRulesForm.minDistinctUris} onChange={(value) => updateAiRules('minDistinctUris', value)} />
+          <TextField label="Min Requests" type="number" value={aiRulesForm.minRequests} onChange={(value) => updateAiRules('minRequests', value)} />
+          <TextField label="Auto-block Confidence (0-1)" type="number" value={aiRulesForm.autoBlockConfidence} onChange={(value) => updateAiRules('autoBlockConfidence', value)} />
+          <TextField label="Max Rules Per Hour" type="number" value={aiRulesForm.maxRulesPerHour} onChange={(value) => updateAiRules('maxRulesPerHour', value)} />
+
+          <div className="notice full">
+            <strong>LLM Refinement (optional)</strong> - sends each candidate to an LLM to confirm or veto it before a rule
+            is created. Never runs standalone - any failure (unreachable endpoint, bad response) falls back to the
+            statistical result untouched.
+          </div>
+          <CheckboxField label="Enable LLM refinement" checked={boolValue(aiRulesForm.llmEnabled)} onChange={(checked) => updateAiRules('llmEnabled', checked)} />
+          <SelectField
+            label="LLM Provider"
+            value={aiRulesForm.llmProvider}
+            onChange={(value) => updateAiRules('llmProvider', value)}
+            options={[
+              { value: 'openai_compatible', label: 'OpenAI-compatible (chat completions)' },
+              { value: 'anthropic', label: 'Anthropic (Messages API)' }
+            ]}
+          />
+          <TextField label="LLM Endpoint (Base URL)" value={aiRulesForm.llmBaseUrl} onChange={(value) => updateAiRules('llmBaseUrl', value)} placeholder="https://api.openai.com/v1" full />
+          <TextField label="LLM Model" value={aiRulesForm.llmModel} onChange={(value) => updateAiRules('llmModel', value)} placeholder="gpt-4o-mini" />
+          <TextField
+            label="LLM API Key"
+            type="password"
+            value={aiRulesForm.llmApiKey}
+            onChange={(value) => updateAiRules('llmApiKey', value)}
+            placeholder={aiRulesForm.llmApiKeyConfigured ? 'Saved - leave empty to keep it' : 'Not set'}
+          />
+          <div className="settings-actions full">
+            <LoadingButton pending={pendingAction === 'aiRules'} pendingText="Saving..." className="tool-button primary">
+              <Save size={18} /> Save AI Rule Detector
+            </LoadingButton>
+          </div>
         </form>
       </section>
 
@@ -6093,6 +6194,50 @@ function challengePagePayload(form) {
 function challengeWaitSeconds(value) {
   const seconds = positiveInt(value, 5);
   return [3, 5, 10].includes(seconds) ? seconds : 5;
+}
+
+function aiRulesFormFromSettings(aiRules) {
+  return {
+    ...defaultAiRules,
+    ...(aiRules || {}),
+    enabled: String(aiRules?.enabled ?? defaultAiRules.enabled),
+    checkIntervalMinutes: String(aiRules?.checkIntervalMinutes ?? defaultAiRules.checkIntervalMinutes),
+    lookbackMinutes: String(aiRules?.lookbackMinutes ?? defaultAiRules.lookbackMinutes),
+    minDistinctIps: String(aiRules?.minDistinctIps ?? defaultAiRules.minDistinctIps),
+    minDistinctUris: String(aiRules?.minDistinctUris ?? defaultAiRules.minDistinctUris),
+    minRequests: String(aiRules?.minRequests ?? defaultAiRules.minRequests),
+    autoBlockConfidence: String(aiRules?.autoBlockConfidence ?? defaultAiRules.autoBlockConfidence),
+    maxRulesPerHour: String(aiRules?.maxRulesPerHour ?? defaultAiRules.maxRulesPerHour),
+    llmEnabled: String(aiRules?.llmEnabled ?? defaultAiRules.llmEnabled),
+    // The saved key never comes back from the API - only whether one is
+    // configured. Always start blank so a save can't accidentally submit a
+    // stale/placeholder value; leaving it blank preserves the saved key.
+    llmApiKey: ''
+  };
+}
+
+function aiRulesPayload(form) {
+  const payload = {
+    enabled: boolValue(form.enabled),
+    checkIntervalMinutes: positiveInt(form.checkIntervalMinutes, 10),
+    lookbackMinutes: positiveInt(form.lookbackMinutes, 15),
+    minDistinctIps: positiveInt(form.minDistinctIps, 5),
+    minDistinctUris: positiveInt(form.minDistinctUris, 1),
+    minRequests: positiveInt(form.minRequests, 30),
+    autoBlockConfidence: Math.min(1, Math.max(0, Number(form.autoBlockConfidence) || 0.75)),
+    maxRulesPerHour: positiveInt(form.maxRulesPerHour, 5),
+    llmEnabled: boolValue(form.llmEnabled),
+    llmProvider: form.llmProvider === 'anthropic' ? 'anthropic' : 'openai_compatible',
+    llmBaseUrl: form.llmBaseUrl || defaultAiRules.llmBaseUrl,
+    llmModel: form.llmModel || defaultAiRules.llmModel
+  };
+  // Only send llmApiKey when the operator actually typed a new one - the
+  // backend preserves the existing stored key as long as this field is
+  // absent from the payload entirely (a blank string would clear it).
+  if (String(form.llmApiKey || '').trim()) {
+    payload.llmApiKey = form.llmApiKey.trim();
+  }
+  return payload;
 }
 
 function temporaryBlockMinutes(value) {

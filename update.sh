@@ -90,7 +90,16 @@ main() {
 
   # 2. Rebuild frontend if needed
   if [ -f frontend/package.json ]; then
+    local rebuild_frontend=false
     if [ ! -d frontend/dist ] || [ frontend/package.json -nt frontend/dist/index.html ]; then
+      rebuild_frontend=true
+    # package.json rarely changes on a source-only edit (a new component, a
+    # tweaked form) - also rebuild whenever anything under src/ is newer
+    # than the last build output, or those edits would silently never ship.
+    elif [ -n "$(find frontend/src -newer frontend/dist/index.html -print -quit 2>/dev/null)" ]; then
+      rebuild_frontend=true
+    fi
+    if [ "$rebuild_frontend" = true ]; then
       log "Rebuilding frontend..."
       cd frontend
       npm ci --no-audit --no-fund 2>/dev/null || npm install --no-audit --no-fund
