@@ -32,6 +32,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
 from .nginx import (
+    challenge_backend_url,
     clear_nginx_logs,
     generate_nginx_config,
     nginx_modsecurity_ip_list_dir,
@@ -46,6 +47,8 @@ from .nginx import (
     write_nginx_config,
 )
 from . import ai_rules
+from . import mcp_agent
+from . import mcp_tools
 from . import ipset_manager
 from . import blocked_traffic_logger
 from .defaults import (
@@ -544,6 +547,10 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
             try:
                 if urlparse(self.path).path == "/.freewaf/challenge/verify":
                     self.verify_challenge()
+                    return
+
+                if self.path == "/mcp":
+                    self.handle_mcp_request()
                     return
 
                 if self.path == "/api/auth/setup":
@@ -1139,6 +1146,81 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     ("Cache-Control", "no-store"),
                 ],
             )
+
+        def handle_mcp_request(self) -> None:
+            """POST /mcp - JSON-RPC 2.0 endpoint for the tool surface in
+            mcp_tools.py. Authenticated by a bearer token (settings.aiRules.
+            mcpToken), not the admin session cookie: the caller is an agent
+            process, not a browser, and a header-carried bearer token is not
+            forgeable via CSRF the way cookie auth would be. Implements the
+            request/response subset of MCP needed for tool use (initialize,
+            tools/list, tools/call) - not the full spec (no SSE streaming,
+            no resources/prompts), which is what both mcp_agent.py and a
+            plain HTTP client need.
+            """
+            ai_settings = (store.get_state_fields("settings").get("settings") or {}).get("aiRules") or {}
+            configured_token = str(ai_settings.get("mcpToken") or "")
+            auth_header = self.headers.get("Authorization") or ""
+            supplied_token = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else ""
+            if not configured_token or not supplied_token or not hmac.compare_digest(supplied_token, configured_token):
+                self.send_json(401, {"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": "Unauthorized"}})
+                return
+
+            try:
+                payload = self.read_payload()
+            except ValueError as error:
+                self.send_json(400, {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": str(error)}})
+                return
+
+            request_id = payload.get("id")
+            method = str(payload.get("method") or "")
+            params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+
+            if method == "initialize":
+                result = {
+                    "protocolVersion": "2024-11-05",
+                    "serverInfo": {"name": "freewaf", "version": "1.0"},
+                    "capabilities": {"tools": {}},
+                }
+            elif method in ("tools/list", "notifications/initialized"):
+                result = {
+                    "tools": [
+                        {"name": name, "description": spec["description"], "inputSchema": spec["inputSchema"]}
+                        for name, spec in mcp_tools.TOOLS.items()
+                    ]
+                }
+            elif method == "tools/call":
+                tool_name = str(params.get("name") or "")
+                if tool_name not in mcp_tools.TOOLS:
+                    self.send_json(
+                        200,
+                        {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": f"Unknown tool {tool_name!r}"}},
+                    )
+                    return
+                arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+                try:
+                    tool_result = mcp_tools.call_tool(store, ROOT_DIR, tool_name, arguments)
+                except Exception as error:
+                    self.send_json(
+                        200,
+                        {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32000, "message": str(error)[:300]}},
+                    )
+                    return
+                if tool_name in mcp_tools.WRITE_TOOLS:
+                    maybe_auto_write(store)
+                result = {
+                    "content": [{"type": "text", "text": json.dumps(tool_result)}],
+                    "structuredContent": tool_result,
+                    "isError": False,
+                }
+            else:
+                self.send_json(
+                    200,
+                    {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": f"Unknown method {method!r}"}},
+                )
+                return
+
+            self.send_json(200, {"jsonrpc": "2.0", "id": request_id, "result": result})
 
         def serve_static(self, request_path: str):
             if not FRONTEND_DIST.exists():
@@ -2888,13 +2970,15 @@ def start_stats_warmup_worker(store: Store) -> None:
 
 
 def start_ai_rule_worker(store: Store) -> None:
-    """Background loop for the proactive AI rule detector (ai_rules.py).
+    """Background loop for the proactive AI rule detector.
 
     Off by default at the settings level (aiRules.enabled=false), so this
     thread runs but is a no-op until an operator opts in. The check
-    interval itself is also settings-driven (aiRules.checkIntervalMinutes),
-    re-read every iteration so a settings change takes effect on the next
-    tick without a restart.
+    interval and which engine runs (aiRules.detectionMode: "statistical"
+    - ai_rules.py's fixed score-then-threshold pipeline, or "agent" -
+    mcp_agent.py's tool-using loop against the /mcp endpoint below) are
+    both settings-driven, re-read every iteration so a settings change
+    takes effect on the next tick without a restart.
     """
     if os.environ.get("FREEWAF_AI_RULES", "true").lower() == "false":
         return
@@ -2904,10 +2988,27 @@ def start_ai_rule_worker(store: Store) -> None:
         while True:
             interval_minutes = 10
             try:
-                settings = store.get_state_fields("settings")["settings"] or {}
-                ai_settings = settings.get("aiRules") or {}
+                state = store.get_state_fields("settings")["settings"] or {}
+                ai_settings = state.get("aiRules") or {}
                 interval_minutes = int(ai_settings.get("checkIntervalMinutes") or 10)
-                if ai_settings.get("enabled"):
+                if not ai_settings.get("enabled"):
+                    pass
+                elif ai_settings.get("detectionMode") == "agent":
+                    mcp_base_url = challenge_backend_url({"settings": state}) + "/mcp"
+                    outcome = mcp_agent.run_agent_pass(store, ROOT_DIR, mcp_base_url)
+                    if outcome.get("skipped"):
+                        print(f"ai-rules(agent): {outcome['skipped']}", flush=True)
+                    else:
+                        actions = outcome.get("actions") or []
+                        if actions:
+                            maybe_auto_write(store)
+                        print(
+                            f"ai-rules(agent): {outcome.get('steps', 0)} step(s), "
+                            f"{len(actions)} action(s), {outcome.get('elapsedSeconds', 0)}s - "
+                            f"{outcome.get('finalMessage', '')[:200]}",
+                            flush=True,
+                        )
+                else:
                     created = ai_rules.run_pass(store, ROOT_DIR)
                     if created:
                         maybe_auto_write(store)
@@ -3800,6 +3901,7 @@ _AUDIT_REDACT_KEYS = {
     "apikey",
     "api_key",
     "llmapikey",
+    "mcptoken",
     "cloudflareapitoken",
     "key",
     "privatekey",

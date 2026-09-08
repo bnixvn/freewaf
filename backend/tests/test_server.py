@@ -16,6 +16,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from freewaf import nginx as nginx_module
+from freewaf import mcp_tools as mcp_tools_module
 import freewaf.server as server_module
 from freewaf.server import (
     challenge_nonce,
@@ -1132,6 +1133,109 @@ class CertificateServerTests(unittest.TestCase):
                 "157.55.39.0/24",
             ],
         )
+
+    def mcp_request(self, server, body, token=None):
+        headers = {"content-type": "application/json"}
+        if token is not None:
+            headers["Authorization"] = f"Bearer {token}"
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/mcp",
+            data=json.dumps(body).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read().decode("utf-8"))
+
+    def test_mcp_endpoint_rejects_missing_or_wrong_token(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = Store(Path(temp_dir) / "state.json")
+            store.init()
+            server = self.start_admin_server(store)
+
+            status, payload = self.mcp_request(server, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+            self.assertEqual(status, 401)
+            self.assertEqual(payload["error"]["code"], -32001)
+
+            status, payload = self.mcp_request(server, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, token="wrong-token")
+            self.assertEqual(status, 401)
+
+    def test_mcp_tools_list_and_call(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = Store(Path(temp_dir) / "state.json")
+            store.init()
+            store.upsert_site({"name": "Zamora", "hostnames": ["zamora.vn"], "origin": "http://127.0.0.1:9001"})
+            token = store.get_state()["settings"]["aiRules"]["mcpToken"]
+            self.assertTrue(token)
+            server = self.start_admin_server(store)
+
+            status, payload = self.mcp_request(server, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, token=token)
+            self.assertEqual(status, 200)
+            tool_names = {tool["name"] for tool in payload["result"]["tools"]}
+            self.assertEqual(tool_names, set(mcp_tools_module.TOOLS))
+
+            status, payload = self.mcp_request(
+                server,
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "list_sites", "arguments": {}}},
+                token=token,
+            )
+            self.assertEqual(status, 200)
+            site_names = {s["name"] for s in payload["result"]["structuredContent"]["sites"]}
+            self.assertIn("Zamora", site_names)
+
+    def test_mcp_tools_call_unknown_tool_is_a_jsonrpc_error_not_http_error(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = Store(Path(temp_dir) / "state.json")
+            store.init()
+            token = store.get_state()["settings"]["aiRules"]["mcpToken"]
+            server = self.start_admin_server(store)
+
+            status, payload = self.mcp_request(
+                server,
+                {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "not_a_real_tool", "arguments": {}}},
+                token=token,
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["error"]["code"], -32602)
+
+    def test_mcp_unknown_method_is_a_jsonrpc_error(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = Store(Path(temp_dir) / "state.json")
+            store.init()
+            token = store.get_state()["settings"]["aiRules"]["mcpToken"]
+            server = self.start_admin_server(store)
+
+            status, payload = self.mcp_request(server, {"jsonrpc": "2.0", "id": 4, "method": "not/a/method"}, token=token)
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["error"]["code"], -32601)
+
+    def test_mcp_write_tool_applies_nginx_and_creates_rule(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = Store(Path(temp_dir) / "state.json")
+            store.init()
+            token = store.get_state()["settings"]["aiRules"]["mcpToken"]
+            server = self.start_admin_server(store)
+
+            with mock.patch("freewaf.server.maybe_auto_write") as auto_write:
+                status, payload = self.mcp_request(
+                    server,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 5,
+                        "method": "tools/call",
+                        "params": {"name": "create_block_rule", "arguments": {"siteId": "*", "pattern": "xoilac"}},
+                    },
+                    token=token,
+                )
+
+            self.assertEqual(status, 200)
+            self.assertTrue(payload["result"]["structuredContent"]["created"])
+            auto_write.assert_called_once_with(store)
+            rule_names = {r["name"] for r in store.get_state()["rules"]}
+            self.assertTrue(any("xoilac" in name for name in rule_names))
 
 
 class LogPaginationTests(unittest.TestCase):

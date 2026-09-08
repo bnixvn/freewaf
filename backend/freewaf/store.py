@@ -331,7 +331,14 @@ class Store:
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
 
         if not self.file_path.exists():
-            self.state = create_default_state()
+            # Route through normalize_state() even for a brand-new install,
+            # not just create_default_state() as-is: some settings (e.g.
+            # aiRules.mcpToken) are generated at normalize time rather than
+            # being static defaults, and a fresh install deserves the same
+            # normalized shape a reloaded one gets - otherwise a field like
+            # that stays blank for this process's entire lifetime, since
+            # self.state is only set once here.
+            self.state = normalize_state(create_default_state())
             self.persist()
             return
 
@@ -1139,6 +1146,17 @@ def normalize_ai_rules_settings(value) -> dict:
     if provider not in {"openai_compatible", "anthropic"}:
         provider = defaults["llmProvider"]
 
+    detection_mode = str(source.get("detectionMode") or defaults["detectionMode"]).strip().lower()
+    if detection_mode not in {"statistical", "agent"}:
+        detection_mode = defaults["detectionMode"]
+
+    # Server-generated, not operator-typed (see field comment in
+    # defaults.py). Stable across saves/restarts once generated: reused as
+    # long as it's present and a rotation wasn't explicitly requested.
+    mcp_token = str(source.get("mcpToken") or "").strip()
+    if not mcp_token or source.get("regenerateMcpToken"):
+        mcp_token = secrets.token_urlsafe(32)
+
     return {
         "enabled": normalize_bool(source.get("enabled"), defaults["enabled"]),
         "checkIntervalMinutes": normalize_positive_int(source.get("checkIntervalMinutes"), defaults["checkIntervalMinutes"]),
@@ -1153,6 +1171,8 @@ def normalize_ai_rules_settings(value) -> dict:
         "llmBaseUrl": str(source.get("llmBaseUrl") or defaults["llmBaseUrl"]).strip() or defaults["llmBaseUrl"],
         "llmApiKey": str(source.get("llmApiKey") or "").strip(),
         "llmModel": str(source.get("llmModel") or defaults["llmModel"]).strip() or defaults["llmModel"],
+        "detectionMode": detection_mode,
+        "mcpToken": mcp_token,
     }
 
 

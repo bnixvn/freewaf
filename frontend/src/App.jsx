@@ -282,7 +282,9 @@ const defaultAiRules = {
   llmBaseUrl: 'https://api.openai.com/v1',
   llmApiKey: '',
   llmApiKeyConfigured: false,
-  llmModel: 'gpt-4o-mini'
+  llmModel: 'gpt-4o-mini',
+  detectionMode: 'statistical',
+  mcpToken: ''
 };
 
 const defaultBotLoginPathPatterns = [
@@ -3352,6 +3354,11 @@ function SettingsView({
     runLocalAction('aiRules', () => saveAiRulesSettings(aiRulesPayload(aiRulesForm)));
   }
 
+  function regenerateMcpToken() {
+    if (!window.confirm('Regenerate the MCP token? Anything using the current token will stop working.')) return;
+    runLocalAction('aiRules', () => saveAiRulesSettings(aiRulesRegenerateMcpTokenPayload(aiRulesForm)));
+  }
+
   return (
     <>
       <NetworkPanel
@@ -3513,11 +3520,21 @@ function SettingsView({
         <form className="settings-form" onSubmit={submitAiRules}>
           <p className="form-note full">
             Watches recent traffic for the "same spam campaign" shape - many distinct IPs sharing one marker word, whether it's
-            one fixed URL taking a flood or a botnet rotating URLs around a constant word - and creates a blocking rule
-            automatically once confidence clears the threshold below. No approval step: a high-confidence match is blocked
-            immediately.
+            one fixed URL taking a flood or a botnet rotating URLs around a constant word. The Statistical engine scores this
+            against the thresholds below; the Agent engine instead lets an LLM investigate via MCP tools and decide for
+            itself. Either way: no approval step - a confident match is blocked immediately.
           </p>
           <CheckboxField label="Enable AI rule detector" checked={boolValue(aiRulesForm.enabled)} onChange={(checked) => updateAiRules('enabled', checked)} />
+          <SelectField
+            label="Detection Engine"
+            value={aiRulesForm.detectionMode}
+            onChange={(value) => updateAiRules('detectionMode', value)}
+            options={[
+              { value: 'statistical', label: 'Statistical - token clustering, thresholds below decide' },
+              { value: 'agent', label: 'Agent - LLM investigates via MCP tools and decides itself' }
+            ]}
+            full
+          />
           <TextField label="Check Interval (minutes)" type="number" value={aiRulesForm.checkIntervalMinutes} onChange={(value) => updateAiRules('checkIntervalMinutes', value)} />
           <TextField label="Lookback Window (minutes)" type="number" value={aiRulesForm.lookbackMinutes} onChange={(value) => updateAiRules('lookbackMinutes', value)} />
           <TextField label="Min Distinct IPs" type="number" value={aiRulesForm.minDistinctIps} onChange={(value) => updateAiRules('minDistinctIps', value)} />
@@ -3526,12 +3543,22 @@ function SettingsView({
           <TextField label="Auto-block Confidence (0-1)" type="number" value={aiRulesForm.autoBlockConfidence} onChange={(value) => updateAiRules('autoBlockConfidence', value)} />
           <TextField label="Max Rules Per Hour" type="number" value={aiRulesForm.maxRulesPerHour} onChange={(value) => updateAiRules('maxRulesPerHour', value)} />
 
-          <div className="notice full">
-            <strong>LLM Refinement (optional)</strong> - sends each candidate to an LLM to confirm or veto it before a rule
-            is created. Never runs standalone - any failure (unreachable endpoint, bad response) falls back to the
-            statistical result untouched.
-          </div>
-          <CheckboxField label="Enable LLM refinement" checked={boolValue(aiRulesForm.llmEnabled)} onChange={(checked) => updateAiRules('llmEnabled', checked)} />
+          {aiRulesForm.detectionMode === 'agent' ? (
+            <div className="notice full">
+              <strong>Agent mode</strong> - the LLM below always runs (no separate enable toggle): each cycle it calls the
+              MCP tools to inspect traffic, rules and sites, and decides for itself whether to create or disable rules. It
+              still respects Max Rules Per Hour and won't duplicate an existing rule's pattern.
+            </div>
+          ) : (
+            <>
+              <div className="notice full">
+                <strong>LLM Refinement (optional)</strong> - sends each candidate to an LLM to confirm or veto it before a
+                rule is created. Never runs standalone - any failure (unreachable endpoint, bad response) falls back to the
+                statistical result untouched.
+              </div>
+              <CheckboxField label="Enable LLM refinement" checked={boolValue(aiRulesForm.llmEnabled)} onChange={(checked) => updateAiRules('llmEnabled', checked)} />
+            </>
+          )}
           <SelectField
             label="LLM Provider"
             value={aiRulesForm.llmProvider}
@@ -3550,6 +3577,25 @@ function SettingsView({
             onChange={(value) => updateAiRules('llmApiKey', value)}
             placeholder={aiRulesForm.llmApiKeyConfigured ? 'Saved - leave empty to keep it' : 'Not set'}
           />
+
+          <div className="notice full">
+            <strong>MCP Endpoint</strong> - the tool surface Agent mode calls, and what any other MCP-compatible client
+            (pointed at this URL with this token) can use too.
+          </div>
+          <label className="field full">
+            <span>MCP URL</span>
+            <input readOnly value={typeof window !== 'undefined' ? `${window.location.origin}/mcp` : '/mcp'} onFocus={(event) => event.target.select()} />
+          </label>
+          <label className="field full">
+            <span>MCP Bearer Token</span>
+            <input readOnly type="text" value={aiRulesForm.mcpToken || '(save once to generate)'} onFocus={(event) => event.target.select()} />
+          </label>
+          <div className="settings-actions full">
+            <button type="button" className="tool-button" onClick={regenerateMcpToken} disabled={!aiRulesForm.mcpToken || Boolean(pendingAction)}>
+              Regenerate MCP Token
+            </button>
+          </div>
+
           <div className="settings-actions full">
             <LoadingButton pending={pendingAction === 'aiRules'} pendingText="Saving..." className="tool-button primary">
               <Save size={18} /> Save AI Rule Detector
@@ -6212,7 +6258,9 @@ function aiRulesFormFromSettings(aiRules) {
     // The saved key never comes back from the API - only whether one is
     // configured. Always start blank so a save can't accidentally submit a
     // stale/placeholder value; leaving it blank preserves the saved key.
-    llmApiKey: ''
+    llmApiKey: '',
+    detectionMode: aiRules?.detectionMode === 'agent' ? 'agent' : 'statistical',
+    mcpToken: aiRules?.mcpToken || ''
   };
 }
 
@@ -6229,7 +6277,8 @@ function aiRulesPayload(form) {
     llmEnabled: boolValue(form.llmEnabled),
     llmProvider: form.llmProvider === 'anthropic' ? 'anthropic' : 'openai_compatible',
     llmBaseUrl: form.llmBaseUrl || defaultAiRules.llmBaseUrl,
-    llmModel: form.llmModel || defaultAiRules.llmModel
+    llmModel: form.llmModel || defaultAiRules.llmModel,
+    detectionMode: form.detectionMode === 'agent' ? 'agent' : 'statistical'
   };
   // Only send llmApiKey when the operator actually typed a new one - the
   // backend preserves the existing stored key as long as this field is
@@ -6238,6 +6287,14 @@ function aiRulesPayload(form) {
     payload.llmApiKey = form.llmApiKey.trim();
   }
   return payload;
+}
+
+function aiRulesRegenerateMcpTokenPayload(form) {
+  // regenerateMcpToken is a one-shot control flag the backend consumes,
+  // not a stored field - send the rest of the current form alongside it so
+  // an unrelated setting can't be reset back to a stale value in the same
+  // request.
+  return { ...aiRulesPayload(form), regenerateMcpToken: true };
 }
 
 function temporaryBlockMinutes(value) {

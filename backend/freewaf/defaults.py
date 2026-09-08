@@ -105,6 +105,22 @@ DEFAULT_SETTINGS = {
         "llmBaseUrl": "https://api.openai.com/v1",
         "llmApiKey": "",
         "llmModel": "gpt-4o-mini",
+        # "statistical" (default): the token-clustering detector above,
+        # with the llmEnabled step above as an optional single-shot
+        # confirm/veto of each candidate.
+        # "agent": replaces the statistical pipeline's decision-making with
+        # a real tool-using agent loop (mcp_agent.py) that calls the MCP
+        # tool surface (mcp_tools.py, served over HTTP at /mcp) to read
+        # traffic/rules/sites and create/disable rules itself, using the
+        # same llmProvider/llmBaseUrl/llmApiKey/llmModel above. Still
+        # subject to the same maxRulesPerHour cap and duplicate-pattern
+        # skip as the statistical path, enforced inside the tool handlers
+        # rather than by the caller.
+        "detectionMode": "statistical",
+        # Bearer credential for the /mcp endpoint. Server-generated (see
+        # normalize_ai_rules_settings) - operators copy it out to configure
+        # a client, never type their own, so it can't end up weak/guessable.
+        "mcpToken": "",
     },
 }
 
