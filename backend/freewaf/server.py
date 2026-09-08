@@ -104,7 +104,22 @@ UPDATE_REPO_URL = "https://github.com/bnixvn/freewaf.git"
 UPDATE_BRANCH = "main"
 
 
-class DualStackThreadingHTTPServer(ThreadingHTTPServer):
+class FreeWafThreadingHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with a much larger accept() backlog.
+
+    The stdlib default (``request_queue_size = 5``) is nowhere near enough
+    for this server: Under Attack mode proxies *every* visitor's browser
+    challenge through it (see ``challenge_backend_url()`` in nginx.py), so a
+    flooded site can push hundreds of requests/second at this exact socket.
+    With the default backlog, connections queue past 5 and the kernel starts
+    refusing new ones - the panel (which shares this same socket) can go
+    unreachable right when Under Attack mode is turned on to fight a flood.
+    """
+
+    request_queue_size = 128
+
+
+class DualStackThreadingHTTPServer(FreeWafThreadingHTTPServer):
     """HTTP server that accepts both IPv6 and IPv4 on a single socket."""
 
     address_family = socket.AF_INET6
@@ -131,7 +146,7 @@ def make_admin_server(port: int, handler, ipv6: bool) -> ThreadingHTTPServer:
             return server
         except OSError as error:
             print(f"Panel IPv6 bind failed ({error}); falling back to IPv4 only.")
-    return ThreadingHTTPServer(("0.0.0.0", port), handler)
+    return FreeWafThreadingHTTPServer(("0.0.0.0", port), handler)
 
 
 def main() -> None:
@@ -186,7 +201,7 @@ def main() -> None:
     servers = [("Admin dashboard", admin_server)]
 
     if enable_demo_origin:
-        servers.append(("Demo origin", ThreadingHTTPServer(("127.0.0.1", demo_origin_port), make_demo_handler())))
+        servers.append(("Demo origin", FreeWafThreadingHTTPServer(("127.0.0.1", demo_origin_port), make_demo_handler())))
 
     threads = []
     for label, server in servers:
