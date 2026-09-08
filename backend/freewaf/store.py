@@ -925,7 +925,7 @@ class Store:
                         else:
                             merged_defaults[group_key] = group_value
                     current[key] = merged_defaults
-                elif key in {"panel", "rateLimit", "challengePage", "clientIp", "network"} and isinstance(value, dict):
+                elif key in {"panel", "rateLimit", "challengePage", "clientIp", "network", "aiRules"} and isinstance(value, dict):
                     current[key] = {**(current.get(key) or {}), **value}
                 else:
                     current[key] = value
@@ -1118,6 +1118,41 @@ def normalize_settings(settings: dict) -> dict:
         "challengePage": normalize_challenge_page_settings(source.get("challengePage") or source.get("challenge_page") or {}),
         "clientIp": normalize_client_ip_settings(source.get("clientIp") or source.get("client_ip") or {}),
         "network": normalize_network_settings(source.get("network") or {}),
+        "aiRules": normalize_ai_rules_settings(source.get("aiRules") or {}),
+    }
+
+
+def normalize_ai_rules_settings(value) -> dict:
+    source = value if isinstance(value, dict) else {}
+    defaults = DEFAULT_SETTINGS["aiRules"]
+
+    def clamp_float(raw, fallback: float, low: float = 0.0, high: float = 1.0) -> float:
+        try:
+            number = float(raw)
+        except (TypeError, ValueError):
+            return fallback
+        if number != number:  # NaN
+            return fallback
+        return max(low, min(high, number))
+
+    provider = str(source.get("llmProvider") or defaults["llmProvider"]).strip().lower()
+    if provider not in {"openai_compatible", "anthropic"}:
+        provider = defaults["llmProvider"]
+
+    return {
+        "enabled": normalize_bool(source.get("enabled"), defaults["enabled"]),
+        "checkIntervalMinutes": normalize_positive_int(source.get("checkIntervalMinutes"), defaults["checkIntervalMinutes"]),
+        "lookbackMinutes": normalize_positive_int(source.get("lookbackMinutes"), defaults["lookbackMinutes"]),
+        "minDistinctIps": normalize_positive_int(source.get("minDistinctIps"), defaults["minDistinctIps"]),
+        "minDistinctUris": normalize_positive_int(source.get("minDistinctUris"), defaults["minDistinctUris"]),
+        "minRequests": normalize_positive_int(source.get("minRequests"), defaults["minRequests"]),
+        "autoBlockConfidence": clamp_float(source.get("autoBlockConfidence"), defaults["autoBlockConfidence"]),
+        "maxRulesPerHour": normalize_positive_int(source.get("maxRulesPerHour"), defaults["maxRulesPerHour"]),
+        "llmEnabled": normalize_bool(source.get("llmEnabled"), defaults["llmEnabled"]),
+        "llmProvider": provider,
+        "llmBaseUrl": str(source.get("llmBaseUrl") or defaults["llmBaseUrl"]).strip() or defaults["llmBaseUrl"],
+        "llmApiKey": str(source.get("llmApiKey") or "").strip(),
+        "llmModel": str(source.get("llmModel") or defaults["llmModel"]).strip() or defaults["llmModel"],
     }
 
 

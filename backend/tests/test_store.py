@@ -832,6 +832,40 @@ class StoreTests(unittest.TestCase):
             store.update_settings({"network": {"rejectUnknownHosts": True}})
             self.assertTrue(store.get_state()["settings"]["network"]["rejectUnknownHosts"])
 
+    def test_ai_rules_settings_are_normalized_and_shallow_merged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.json")
+            store.init()
+
+            store.update_settings(
+                {
+                    "aiRules": {
+                        "enabled": True,
+                        "autoBlockConfidence": "1.5",  # clamped to 1.0
+                        "llmProvider": "not-a-real-provider",  # falls back to default
+                        "llmApiKey": "sk-real-key",
+                    }
+                }
+            )
+            ai_rules_settings = store.get_state()["settings"]["aiRules"]
+            self.assertTrue(ai_rules_settings["enabled"])
+            self.assertEqual(ai_rules_settings["autoBlockConfidence"], 1.0)
+            self.assertEqual(ai_rules_settings["llmProvider"], "openai_compatible")
+            self.assertEqual(ai_rules_settings["llmApiKey"], "sk-real-key")
+
+            # A later save that only touches an unrelated aiRules field (as
+            # the frontend does, since public_settings() never returns the
+            # raw key) must not wipe the previously stored llmApiKey.
+            store.update_settings({"aiRules": {"checkIntervalMinutes": 5}})
+            ai_rules_settings = store.get_state()["settings"]["aiRules"]
+            self.assertEqual(ai_rules_settings["checkIntervalMinutes"], 5)
+            self.assertEqual(ai_rules_settings["llmApiKey"], "sk-real-key")
+
+            # An explicit empty string does clear it - that's how an operator
+            # actually revokes a stored key from the UI.
+            store.update_settings({"aiRules": {"llmApiKey": ""}})
+            self.assertEqual(store.get_state()["settings"]["aiRules"]["llmApiKey"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -45,6 +45,7 @@ from .nginx import (
     site_ports,
     write_nginx_config,
 )
+from . import ai_rules
 from . import ipset_manager
 from . import blocked_traffic_logger
 from .defaults import (
@@ -158,6 +159,7 @@ def main() -> None:
     store.init()
     start_ip_group_sync_worker(store)
     start_stats_warmup_worker(store)
+    start_ai_rule_worker(store)
     state = store.get_state()
     panel = state.get("settings", {}).get("panel", {})
     admin_https = bool(panel.get("httpsEnabled"))
@@ -764,7 +766,7 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     if network_payload is not None:
                         apply_nginx_or_raise(store)
                     self.record_audit(action="settings.update", target="settings", status=200, payload=payload)
-                    self.send_json(200, saved)
+                    self.send_json(200, public_settings(saved))
                 except StoreError as error:
                     self.send_json(error.status, error_payload(error))
                 except ValueError as error:
@@ -1803,6 +1805,28 @@ def public_certificate(certificate: dict) -> dict:
     return payload
 
 
+def public_settings(settings: dict) -> dict:
+    """Strip secrets before settings go out over the API.
+
+    Mirrors public_certificate()'s cloudflareApiToken handling: the raw
+    aiRules.llmApiKey never leaves the server once saved. The frontend only
+    ever sees whether a key is configured (llmApiKeyConfigured), and must
+    omit llmApiKey entirely from its save payload to keep the stored key -
+    update_settings()'s shallow merge preserves it as long as the key is
+    absent from the incoming dict, not merely blank.
+    """
+    # Local name deliberately avoids shadowing the `ai_rules` module import
+    # used elsewhere in this file (e.g. start_ai_rule_worker).
+    payload = dict(settings)
+    ai_rules_settings = payload.get("aiRules")
+    if isinstance(ai_rules_settings, dict):
+        ai_rules_settings = dict(ai_rules_settings)
+        ai_rules_settings["llmApiKeyConfigured"] = bool(ai_rules_settings.get("llmApiKey"))
+        ai_rules_settings.pop("llmApiKey", None)
+        payload["aiRules"] = ai_rules_settings
+    return payload
+
+
 def state_slice_payload(
     store: Store,
     section: str,
@@ -1824,7 +1848,7 @@ def state_slice_payload(
         return {
             "sites": state.get("sites", []),
             "certificates": [public_certificate(item) for item in state.get("certificates", [])],
-            "settings": state.get("settings", {}),
+            "settings": public_settings(state.get("settings", {})),
         }
     if section == "rules":
         return {
@@ -1853,7 +1877,7 @@ def state_slice_payload(
         return {"certificates": [public_certificate(item) for item in state.get("certificates", [])]}
     if section == "settings":
         return {
-            "settings": state.get("settings", {}),
+            "settings": public_settings(state.get("settings", {})),
             "users": [public_user(user) for user in state.get("users", [])],
             "certificates": [public_certificate(item) for item in state.get("certificates", [])],
         }
@@ -2863,6 +2887,44 @@ def start_stats_warmup_worker(store: Store) -> None:
     thread.start()
 
 
+def start_ai_rule_worker(store: Store) -> None:
+    """Background loop for the proactive AI rule detector (ai_rules.py).
+
+    Off by default at the settings level (aiRules.enabled=false), so this
+    thread runs but is a no-op until an operator opts in. The check
+    interval itself is also settings-driven (aiRules.checkIntervalMinutes),
+    re-read every iteration so a settings change takes effect on the next
+    tick without a restart.
+    """
+    if os.environ.get("FREEWAF_AI_RULES", "true").lower() == "false":
+        return
+
+    def worker() -> None:
+        time.sleep(5)
+        while True:
+            interval_minutes = 10
+            try:
+                settings = store.get_state_fields("settings")["settings"] or {}
+                ai_settings = settings.get("aiRules") or {}
+                interval_minutes = int(ai_settings.get("checkIntervalMinutes") or 10)
+                if ai_settings.get("enabled"):
+                    created = ai_rules.run_pass(store, ROOT_DIR)
+                    if created:
+                        maybe_auto_write(store)
+                        for item in created:
+                            print(
+                                f"ai-rules: created block rule for {item['token']!r} on {item['host']} "
+                                f"(confidence={item['confidence']:.2f}, rule={item['ruleId']})",
+                                flush=True,
+                            )
+            except Exception as error:
+                print(f"ai-rules worker failed: {error}", flush=True)
+            time.sleep(max(60, interval_minutes * 60))
+
+    thread = threading.Thread(target=worker, daemon=True, name="ai-rules")
+    thread.start()
+
+
 def sync_due_ip_groups(store: Store) -> int:
     state = store.get_state()
     synced = 0
@@ -3737,6 +3799,7 @@ _AUDIT_REDACT_KEYS = {
     "apitoken",
     "apikey",
     "api_key",
+    "llmapikey",
     "cloudflareapitoken",
     "key",
     "privatekey",

@@ -112,6 +112,7 @@ class CertificateServerTests(unittest.TestCase):
             "settings": {
                 "panel": {"logoUrl": "https://example.test/logo.svg"},
                 "applicationDefaults": {"proxy": {"gzip": True}},
+                "aiRules": {"enabled": True, "llmApiKey": "sk-secret-llm-key"},
             },
         }
         store = mock.Mock()
@@ -137,6 +138,8 @@ class CertificateServerTests(unittest.TestCase):
         self.assertEqual(set(sites), {"sites", "certificates", "settings"})
         self.assertNotIn("cloudflareApiToken", sites["certificates"][0])
         self.assertNotIn("cloudflareCredentialsFile", sites["certificates"][0])
+        self.assertNotIn("llmApiKey", sites["settings"]["aiRules"])
+        self.assertTrue(sites["settings"]["aiRules"]["llmApiKeyConfigured"])
 
         self.assertEqual(set(state_slice_payload(store, "rules")), {"rules", "sites"})
         self.assertEqual(set(state_slice_payload(store, "access")), {"accessRules", "sites", "ipGroups"})
@@ -147,6 +150,10 @@ class CertificateServerTests(unittest.TestCase):
         self.assertEqual(set(settings), {"settings", "users", "certificates"})
         self.assertNotIn("passwordHash", settings["users"][0])
         self.assertNotIn("cloudflareApiToken", settings["certificates"][0])
+        self.assertNotIn("llmApiKey", settings["settings"]["aiRules"])
+        self.assertTrue(settings["settings"]["aiRules"]["llmApiKeyConfigured"])
+        # public_settings() must not mutate the store's own state dict.
+        self.assertEqual(state["settings"]["aiRules"]["llmApiKey"], "sk-secret-llm-key")
 
     def test_dashboard_period_defaults_to_one_day(self):
         self.assertEqual(dashboard_period_days(""), 1)

@@ -72,6 +72,35 @@ DEFAULT_SETTINGS = {
     },
     "blockPageTitle": "Request blocked",
     "blockSupportIdPrefix": "SFL",
+    "aiRules": {
+        # Background detector that watches recent traffic for the "same spam
+        # campaign, rotating URLs" pattern (e.g. a botnet varying path
+        # segments while a marker word stays constant) and proposes/creates
+        # a blocking rule for the shared marker automatically. Off by
+        # default: it changes site behavior on its own, an operator should
+        # opt in deliberately.
+        "enabled": False,
+        "checkIntervalMinutes": 10,
+        "lookbackMinutes": 15,
+        "minDistinctIps": 5,
+        "minDistinctUris": 3,
+        "minRequests": 30,
+        # A rule is only created once combined confidence reaches this bar;
+        # below it, the candidate is dropped rather than left half-applied.
+        "autoBlockConfidence": 0.75,
+        # Caps how many rules the detector can create per site per hour, so
+        # a noisy detector run can't spiral into dozens of rules.
+        "maxRulesPerHour": 5,
+        # The LLM step is optional and only refines/vetoes the statistical
+        # candidate - it never runs standalone. Provider-agnostic: anything
+        # that speaks the OpenAI chat-completions shape works via baseUrl,
+        # so it is not tied to one vendor.
+        "llmEnabled": False,
+        "llmProvider": "openai_compatible",
+        "llmBaseUrl": "https://api.openai.com/v1",
+        "llmApiKey": "",
+        "llmModel": "gpt-4o-mini",
+    },
 }
 
 DEFAULT_BOT_LOGIN_PATH_PATTERNS = [
