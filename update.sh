@@ -140,6 +140,53 @@ main() {
     log "Adding maxage 7 to ${logrotate_conf}"
     sed -i '/^\s*rotate 7\s*$/a\    maxage 7' "$logrotate_conf"
   fi
+  # 3c. Same story for nginx's own connection ceiling. The distro default
+  # (`worker_connections 768;`, no `worker_rlimit_nofile` at all) caps out at
+  # 768 concurrent connections per worker with no headroom to raise it - seen
+  # live under a traffic flood: nginx logged "768 worker_connections are not
+  # enough", and after only raising the connection count (without also
+  # raising the file descriptor limit) "accept4() failed (24: Too many open
+  # files)" instead. Every site on the box went down, flood target or not.
+  # A full restart (not reload) is required for the raised systemd
+  # LimitNOFILE to actually reach nginx's master process.
+  local nginx_restart_needed=false
+  if [ -f /etc/nginx/nginx.conf ]; then
+    local nginx_conf_backup
+    nginx_conf_backup="$(mktemp)"
+    cp -a /etc/nginx/nginx.conf "$nginx_conf_backup"
+    if ! grep -q "worker_rlimit_nofile" /etc/nginx/nginx.conf; then
+      log "Adding worker_rlimit_nofile to /etc/nginx/nginx.conf"
+      sed -i '/^worker_processes/a worker_rlimit_nofile 65536;' /etc/nginx/nginx.conf
+      nginx_restart_needed=true
+    fi
+    if grep -qE 'worker_connections\s+[0-9]+;' /etc/nginx/nginx.conf && ! grep -q 'worker_connections 4096;' /etc/nginx/nginx.conf; then
+      log "Raising worker_connections in /etc/nginx/nginx.conf to 4096"
+      sed -i 's/worker_connections\s*[0-9]\+;/worker_connections 4096;/' /etc/nginx/nginx.conf
+      nginx_restart_needed=true
+    fi
+    if [ "$nginx_restart_needed" = true ] && command -v nginx >/dev/null 2>&1 && ! nginx -t >/dev/null 2>&1; then
+      log "WARNING: nginx -t failed after raising connection limits; reverting nginx.conf"
+      cp -a "$nginx_conf_backup" /etc/nginx/nginx.conf
+      nginx_restart_needed=false
+    fi
+    rm -f "$nginx_conf_backup"
+  fi
+  local nginx_service_override=/etc/systemd/system/nginx.service.d/freewaf-restart.conf
+  if [ -f "$nginx_service_override" ] && ! grep -q '^LimitNOFILE=' "$nginx_service_override"; then
+    log "Adding LimitNOFILE=65536 to ${nginx_service_override}"
+    sed -i '/^\[Service\]/a LimitNOFILE=65536' "$nginx_service_override"
+    systemctl daemon-reload
+    nginx_restart_needed=true
+  fi
+  if [ "$nginx_restart_needed" = true ] && command -v nginx >/dev/null 2>&1; then
+    if nginx -t 2>&1; then
+      log "Restarting Nginx to apply the raised connection/file-descriptor limits"
+      systemctl restart nginx
+    else
+      log "WARNING: nginx -t failed after raising connection limits; left the running config untouched"
+    fi
+  fi
+
   if [ -f "$logrotate_conf" ] && [ ! -f /etc/systemd/system/freewaf-logrotate-check.timer ]; then
     log "Installing freewaf-logrotate-check timer (checks the size cap every 15min)"
     cat > /etc/systemd/system/freewaf-logrotate-check.service <<EOF

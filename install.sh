@@ -625,11 +625,27 @@ EOF
     fi
   done
 
+  # The distro default (`worker_connections 768;`, no `worker_rlimit_nofile`
+  # at all) is far too low for a WAF proxy fronting several sites: it caps
+  # out at 768 concurrent connections *per worker*, and without a raised file
+  # descriptor limit nginx can't open more sockets even if it tried. Found
+  # live under a traffic flood: nginx logged "768 worker_connections are not
+  # enough" and, after raising just the connection count, "accept4() failed
+  # (24: Too many open files)" - every site on the box went down, flood
+  # target or not. Give it real headroom up front.
+  if ! grep -q "worker_rlimit_nofile" /etc/nginx/nginx.conf; then
+    log "Adding worker_rlimit_nofile to /etc/nginx/nginx.conf"
+    sed -i '/^worker_processes/a worker_rlimit_nofile 65536;' /etc/nginx/nginx.conf
+  fi
+  sed -i 's/worker_connections\s*[0-9]\+;/worker_connections 4096;/' /etc/nginx/nginx.conf
+  grep -n "worker_rlimit_nofile\|worker_connections" /etc/nginx/nginx.conf
+
   install -d -m 0755 /etc/systemd/system/nginx.service.d
   cat > /etc/systemd/system/nginx.service.d/freewaf-restart.conf <<'EOF'
 [Service]
 Restart=on-failure
 RestartSec=5s
+LimitNOFILE=65536
 EOF
   systemctl daemon-reload
   nginx -t
