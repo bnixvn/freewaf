@@ -3275,6 +3275,11 @@ function SettingsView({
   const [applicationForm, setApplicationForm] = useState(() => applicationDefaultsFormFromSettings(applicationDefaults, clientIp));
   const [challengeForm, setChallengeForm] = useState(() => challengePageFormFromSettings(challengePage));
   const [aiRulesForm, setAiRulesForm] = useState(() => aiRulesFormFromSettings(aiRules));
+  // LLM connection fields (provider/endpoint/model/key) start collapsed
+  // into a summary once already configured, so re-opening this panel
+  // doesn't look like it's asking the same question twice - "Change" opens
+  // it back up to edit.
+  const [llmConfigExpanded, setLlmConfigExpanded] = useState(!aiRules?.llmApiKeyConfigured);
 
   useEffect(() => {
     setPanelForm({
@@ -3297,6 +3302,7 @@ function SettingsView({
 
   useEffect(() => {
     setAiRulesForm(aiRulesFormFromSettings(aiRules));
+    setLlmConfigExpanded(!aiRules?.llmApiKeyConfigured);
   }, [aiRules]);
 
   function updatePanel(name, value) {
@@ -3545,24 +3551,7 @@ function SettingsView({
                 it calls the MCP tools to inspect traffic, rules and sites, and decides for itself whether to create or
                 disable rules. It still respects Max Rules Per Hour above and won't duplicate an existing rule's pattern.
               </div>
-              <SelectField
-                label="LLM Provider"
-                value={aiRulesForm.llmProvider}
-                onChange={(value) => updateAiRules('llmProvider', value)}
-                options={[
-                  { value: 'openai_compatible', label: 'OpenAI-compatible (chat completions)' },
-                  { value: 'anthropic', label: 'Anthropic (Messages API)' }
-                ]}
-              />
-              <TextField label="LLM Endpoint (Base URL)" value={aiRulesForm.llmBaseUrl} onChange={(value) => updateAiRules('llmBaseUrl', value)} placeholder="https://api.openai.com/v1" full />
-              <TextField label="LLM Model" value={aiRulesForm.llmModel} onChange={(value) => updateAiRules('llmModel', value)} placeholder="gpt-4o-mini" />
-              <TextField
-                label="LLM API Key"
-                type="password"
-                value={aiRulesForm.llmApiKey}
-                onChange={(value) => updateAiRules('llmApiKey', value)}
-                placeholder={aiRulesForm.llmApiKeyConfigured ? 'Saved - leave empty to keep it' : 'Not set'}
-              />
+              <LlmConnectionFields form={aiRulesForm} onChange={updateAiRules} expanded={llmConfigExpanded} onExpand={() => setLlmConfigExpanded(true)} />
 
               <div className="notice full">
                 <strong>MCP Endpoint</strong> - the tool surface Agent mode calls, and what any other MCP-compatible
@@ -3599,26 +3588,7 @@ function SettingsView({
               </div>
               <CheckboxField label="Enable LLM refinement" checked={boolValue(aiRulesForm.llmEnabled)} onChange={(checked) => updateAiRules('llmEnabled', checked)} />
               {boolValue(aiRulesForm.llmEnabled) && (
-                <>
-                  <SelectField
-                    label="LLM Provider"
-                    value={aiRulesForm.llmProvider}
-                    onChange={(value) => updateAiRules('llmProvider', value)}
-                    options={[
-                      { value: 'openai_compatible', label: 'OpenAI-compatible (chat completions)' },
-                      { value: 'anthropic', label: 'Anthropic (Messages API)' }
-                    ]}
-                  />
-                  <TextField label="LLM Endpoint (Base URL)" value={aiRulesForm.llmBaseUrl} onChange={(value) => updateAiRules('llmBaseUrl', value)} placeholder="https://api.openai.com/v1" full />
-                  <TextField label="LLM Model" value={aiRulesForm.llmModel} onChange={(value) => updateAiRules('llmModel', value)} placeholder="gpt-4o-mini" />
-                  <TextField
-                    label="LLM API Key"
-                    type="password"
-                    value={aiRulesForm.llmApiKey}
-                    onChange={(value) => updateAiRules('llmApiKey', value)}
-                    placeholder={aiRulesForm.llmApiKeyConfigured ? 'Saved - leave empty to keep it' : 'Not set'}
-                  />
-                </>
+                <LlmConnectionFields form={aiRulesForm} onChange={updateAiRules} expanded={llmConfigExpanded} onExpand={() => setLlmConfigExpanded(true)} />
               )}
             </>
           )}
@@ -4990,6 +4960,43 @@ function ModeChoice({ active, label, onClick }) {
       <span />
       {label}
     </button>
+  );
+}
+
+function LlmConnectionFields({ form, onChange, expanded, onExpand }) {
+  if (!expanded) {
+    const providerLabel = form.llmProvider === 'anthropic' ? 'Anthropic' : 'OpenAI-compatible';
+    return (
+      <div className="notice full">
+        <strong>AI connection:</strong> {providerLabel} &middot; {form.llmModel || '(no model set)'} &middot; {form.llmBaseUrl}
+        {' '}&middot; Key {form.llmApiKeyConfigured ? 'saved' : 'not set'}
+        <div className="settings-actions">
+          <button type="button" className="tool-button" onClick={onExpand}>Change</button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <>
+      <SelectField
+        label="LLM Provider"
+        value={form.llmProvider}
+        onChange={(value) => onChange('llmProvider', value)}
+        options={[
+          { value: 'openai_compatible', label: 'OpenAI-compatible (chat completions)' },
+          { value: 'anthropic', label: 'Anthropic (Messages API)' }
+        ]}
+      />
+      <TextField label="LLM Endpoint (Base URL)" value={form.llmBaseUrl} onChange={(value) => onChange('llmBaseUrl', value)} placeholder="https://api.openai.com/v1" full />
+      <TextField label="LLM Model" value={form.llmModel} onChange={(value) => onChange('llmModel', value)} placeholder="gpt-4o-mini" />
+      <TextField
+        label="LLM API Key"
+        type="password"
+        value={form.llmApiKey}
+        onChange={(value) => onChange('llmApiKey', value)}
+        placeholder={form.llmApiKeyConfigured ? 'Saved - leave empty to keep it' : 'Not set'}
+      />
+    </>
   );
 }
 
