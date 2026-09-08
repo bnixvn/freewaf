@@ -3,14 +3,18 @@
 Two stages, both governed by settings.aiRules (see defaults.py):
 
 1. Statistical detector (runs whenever aiRules.enabled). Scans recent
-   traffic per-host for the "rotating URL, same spam campaign" shape: many
-   distinct source IPs and many distinct URIs that all share one stable
-   token (a marker word in the path, e.g. a botnet varying the rest of the
-   URL while a brand/keyword stays constant), while that token is not just
-   ordinary site vocabulary. This automates the manual triage that was
-   previously done by hand for the zamora.vn "xoilac" botnet - see the
-   "Spam xoilac" rule broadened from an anchored path prefix to the bare
-   marker after the bot started rotating URL prefixes.
+   traffic per-host for the "same spam campaign" shape: many distinct
+   source IPs and requests sharing one stable token (a marker word in the
+   path), while that token is not just ordinary site vocabulary. URI
+   rotation is NOT required - a single fixed URL taking a flood from many
+   distinct IPs (the classic HTTP-flood shape) is detected exactly the same
+   way a botnet that varies the rest of the URL around a constant marker
+   is, since both look identical from the marker token's point of view.
+   This automates the manual triage that was previously done by hand for
+   the zamora.vn "xoilac" botnet - see the "Spam xoilac" rule broadened
+   from an anchored path prefix to the bare marker after the bot started
+   rotating URL prefixes, and later observed flooding a single fixed URL
+   instead - the reason minDistinctUris defaults to 1, not higher.
 2. Optional LLM refinement (aiRules.llmEnabled). Sends the statistical
    candidate to a pluggable LLM - OpenAI-compatible chat-completions or
    Anthropic's native Messages API, selected by aiRules.llmProvider, both
@@ -138,6 +142,11 @@ def find_marker_candidates(entries: list[dict], settings: dict) -> list[dict]:
     distinct IPs/URIs/requests clears the configured thresholds, and which
     are not just ordinary site vocabulary (present on most of the host's
     own URI diversity, e.g. the site's own name showing up in every path).
+
+    minDistinctUris defaults to 1, so this catches a single fixed URL
+    flooded by many distinct IPs just as readily as a botnet rotating URLs
+    around a constant marker - distinctUris/uriCoverage are still computed
+    and carried on the candidate as informational signals either way.
     """
     token_ips: dict[str, set[str]] = defaultdict(set)
     token_uris: dict[str, set[str]] = defaultdict(set)
@@ -198,7 +207,15 @@ def find_marker_candidates(entries: list[dict], settings: dict) -> list[dict]:
             }
         )
 
-    candidates.sort(key=lambda item: (item["distinctIps"], item["requests"]), reverse=True)
+    # Ties (e.g. several words from the same fixed phrase, all with
+    # identical stats on a single-URL flood) prefer the longer, more
+    # specific token - less likely to collide with unrelated legitimate
+    # content elsewhere on the site than a short generic word - then break
+    # alphabetically. Without an explicit tiebreak, which one wins (and
+    # therefore which rule ends up created) would depend on dict/set
+    # iteration order, which varies with Python's per-process hash
+    # randomization.
+    candidates.sort(key=lambda item: (-item["distinctIps"], -item["requests"], -len(item["token"]), item["token"]))
     return candidates
 
 

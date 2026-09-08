@@ -19,7 +19,7 @@ def make_settings(**overrides) -> dict:
         "checkIntervalMinutes": 10,
         "lookbackMinutes": 15,
         "minDistinctIps": 5,
-        "minDistinctUris": 3,
+        "minDistinctUris": 1,
         "minRequests": 10,
         "autoBlockConfidence": 0.75,
         "maxRulesPerHour": 5,
@@ -60,6 +60,21 @@ def spam_entries(count_ips: int = 12, host: str = "zamora.vn") -> list[dict]:
     return entries
 
 
+def fixed_url_flood_entries(count_ips: int = 60, host: str = "zamora.vn") -> list[dict]:
+    """Reproduces a shape observed live in production: hundreds of distinct
+    IPs repeatedly hitting one single, never-rotating URL - a classic HTTP
+    flood, distinct from spam_entries()'s rotating-URL campaign shape.
+    Default count_ips gives the ip/volume confidence dimensions the same
+    kind of comfortable margin over threshold the real incident had (the
+    live flood was ~117x minDistinctIps); distinctUris is structurally
+    stuck at exactly minDistinctUris(=1) for this shape, capping its own
+    contribution to confidence, so ip/volume need real headroom to clear
+    autoBlockConfidence on their own.
+    """
+    uri = "/net649/Xoilac-tv-truc-tiep-bong-da-xoilactv-tieng-viet-90phut/"
+    return [make_entry(uri, f"198.51.100.{i + 1}", host) for i in range(count_ips)]
+
+
 class TokenizeTests(unittest.TestCase):
     def test_drops_short_and_stopword_tokens(self):
         tokens = ai_rules._tokenize_uri("/wp-content/uploads/2024/xoilac-tv/index.php")
@@ -90,6 +105,24 @@ class FindMarkerCandidatesTests(unittest.TestCase):
     def test_below_threshold_is_not_a_candidate(self):
         settings = make_settings(minDistinctIps=50)
         entries = spam_entries(count_ips=12)
+        candidates = ai_rules.find_marker_candidates(entries, settings)
+        self.assertEqual(candidates, [])
+
+    def test_single_fixed_url_flood_is_detected_without_uri_rotation(self):
+        # minDistinctUris defaults to 1 - a flood that never varies its URL
+        # at all must still qualify, not just a rotating-URL campaign.
+        settings = make_settings()
+        entries = fixed_url_flood_entries(count_ips=20)
+        candidates = ai_rules.find_marker_candidates(entries, settings)
+        tokens = {c["token"] for c in candidates}
+        self.assertIn("xoilac", tokens)
+        marker = next(c for c in candidates if c["token"] == "xoilac")
+        self.assertEqual(marker["distinctUris"], 1)
+        self.assertEqual(marker["distinctIps"], 20)
+
+    def test_single_fixed_url_flood_is_rejected_when_uri_rotation_required(self):
+        settings = make_settings(minDistinctUris=3)
+        entries = fixed_url_flood_entries(count_ips=20)
         candidates = ai_rules.find_marker_candidates(entries, settings)
         self.assertEqual(candidates, [])
 
@@ -289,6 +322,25 @@ class RunPassEndToEndTests(unittest.TestCase):
             ai_created = [r for r in rules if r["name"].startswith("AI: ")]
             self.assertEqual(len(ai_created), 1)
             self.assertEqual(ai_created[0]["pattern"], "xoilac")
+            self.assertEqual(ai_created[0]["action"], "block")
+
+    def test_single_fixed_url_flood_creates_block_rule_automatically(self):
+        # End-to-end version of the production incident that motivated
+        # minDistinctUris defaulting to 1: a flood on one never-rotating
+        # URL must still result in an auto-created block rule.
+        with tempfile.TemporaryDirectory() as directory:
+            store = self._make_store(directory)
+            store.update_settings({"aiRules": make_settings(enabled=True, llmEnabled=False)})
+            for entry in fixed_url_flood_entries():
+                store.add_log(entry)
+
+            created = ai_rules.run_pass(store, Path(directory))
+
+            self.assertEqual(len(created), 1)
+            # Several tied candidate tokens ("xoilac", "xoilactv", "tiep", ...)
+            # all describe the same flood - the longest wins the tiebreak.
+            self.assertEqual(created[0]["token"], "xoilactv")
+            ai_created = [r for r in store.get_state()["rules"] if r["name"].startswith("AI: ")]
             self.assertEqual(ai_created[0]["action"], "block")
 
     def test_second_pass_does_not_duplicate_the_rule(self):

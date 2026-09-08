@@ -74,16 +74,21 @@ DEFAULT_SETTINGS = {
     "blockSupportIdPrefix": "SFL",
     "aiRules": {
         # Background detector that watches recent traffic for the "same spam
-        # campaign, rotating URLs" pattern (e.g. a botnet varying path
-        # segments while a marker word stays constant) and proposes/creates
-        # a blocking rule for the shared marker automatically. Off by
-        # default: it changes site behavior on its own, an operator should
-        # opt in deliberately.
+        # campaign" shape (many distinct IPs hitting the same marker word,
+        # whether it's one fixed URL being flooded or a botnet rotating path
+        # segments around a constant word) and proposes/creates a blocking
+        # rule for the shared marker automatically. Off by default: it
+        # changes site behavior on its own, an operator should opt in
+        # deliberately.
         "enabled": False,
         "checkIntervalMinutes": 10,
         "lookbackMinutes": 15,
         "minDistinctIps": 5,
-        "minDistinctUris": 3,
+        # 1, not higher: URI rotation is a nice-to-have confirming signal
+        # (tracked via uriCoverage), not a requirement - a single fixed URL
+        # taking a flood from many distinct IPs is just as real a spam/DDoS
+        # signature and must not be exempted from detection.
+        "minDistinctUris": 1,
         "minRequests": 30,
         # A rule is only created once combined confidence reaches this bar;
         # below it, the candidate is dropped rather than left half-applied.
