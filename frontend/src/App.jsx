@@ -3536,21 +3536,60 @@ function SettingsView({
             full
           />
           <TextField label="Check Interval (minutes)" type="number" value={aiRulesForm.checkIntervalMinutes} onChange={(value) => updateAiRules('checkIntervalMinutes', value)} />
-          <TextField label="Lookback Window (minutes)" type="number" value={aiRulesForm.lookbackMinutes} onChange={(value) => updateAiRules('lookbackMinutes', value)} />
-          <TextField label="Min Distinct IPs" type="number" value={aiRulesForm.minDistinctIps} onChange={(value) => updateAiRules('minDistinctIps', value)} />
-          <TextField label="Min Distinct URIs" type="number" value={aiRulesForm.minDistinctUris} onChange={(value) => updateAiRules('minDistinctUris', value)} />
-          <TextField label="Min Requests" type="number" value={aiRulesForm.minRequests} onChange={(value) => updateAiRules('minRequests', value)} />
-          <TextField label="Auto-block Confidence (0-1)" type="number" value={aiRulesForm.autoBlockConfidence} onChange={(value) => updateAiRules('autoBlockConfidence', value)} />
           <TextField label="Max Rules Per Hour" type="number" value={aiRulesForm.maxRulesPerHour} onChange={(value) => updateAiRules('maxRulesPerHour', value)} />
 
           {aiRulesForm.detectionMode === 'agent' ? (
-            <div className="notice full">
-              <strong>Agent mode</strong> - the LLM below always runs (no separate enable toggle): each cycle it calls the
-              MCP tools to inspect traffic, rules and sites, and decides for itself whether to create or disable rules. It
-              still respects Max Rules Per Hour and won't duplicate an existing rule's pattern.
-            </div>
+            <>
+              <div className="notice full">
+                <strong>Agent mode</strong> - the LLM configured below always runs (no separate enable toggle): each cycle
+                it calls the MCP tools to inspect traffic, rules and sites, and decides for itself whether to create or
+                disable rules. It still respects Max Rules Per Hour above and won't duplicate an existing rule's pattern.
+              </div>
+              <SelectField
+                label="LLM Provider"
+                value={aiRulesForm.llmProvider}
+                onChange={(value) => updateAiRules('llmProvider', value)}
+                options={[
+                  { value: 'openai_compatible', label: 'OpenAI-compatible (chat completions)' },
+                  { value: 'anthropic', label: 'Anthropic (Messages API)' }
+                ]}
+              />
+              <TextField label="LLM Endpoint (Base URL)" value={aiRulesForm.llmBaseUrl} onChange={(value) => updateAiRules('llmBaseUrl', value)} placeholder="https://api.openai.com/v1" full />
+              <TextField label="LLM Model" value={aiRulesForm.llmModel} onChange={(value) => updateAiRules('llmModel', value)} placeholder="gpt-4o-mini" />
+              <TextField
+                label="LLM API Key"
+                type="password"
+                value={aiRulesForm.llmApiKey}
+                onChange={(value) => updateAiRules('llmApiKey', value)}
+                placeholder={aiRulesForm.llmApiKeyConfigured ? 'Saved - leave empty to keep it' : 'Not set'}
+              />
+
+              <div className="notice full">
+                <strong>MCP Endpoint</strong> - the tool surface Agent mode calls, and what any other MCP-compatible
+                client (pointed at this URL with this token) can use too.
+              </div>
+              <label className="field full">
+                <span>MCP URL</span>
+                <input readOnly value={typeof window !== 'undefined' ? `${window.location.origin}/mcp` : '/mcp'} onFocus={(event) => event.target.select()} />
+              </label>
+              <label className="field full">
+                <span>MCP Bearer Token</span>
+                <input readOnly type="text" value={aiRulesForm.mcpToken || '(save once to generate)'} onFocus={(event) => event.target.select()} />
+              </label>
+              <div className="settings-actions full">
+                <button type="button" className="tool-button" onClick={regenerateMcpToken} disabled={!aiRulesForm.mcpToken || Boolean(pendingAction)}>
+                  Regenerate MCP Token
+                </button>
+              </div>
+            </>
           ) : (
             <>
+              <TextField label="Lookback Window (minutes)" type="number" value={aiRulesForm.lookbackMinutes} onChange={(value) => updateAiRules('lookbackMinutes', value)} />
+              <TextField label="Min Distinct IPs" type="number" value={aiRulesForm.minDistinctIps} onChange={(value) => updateAiRules('minDistinctIps', value)} />
+              <TextField label="Min Distinct URIs" type="number" value={aiRulesForm.minDistinctUris} onChange={(value) => updateAiRules('minDistinctUris', value)} />
+              <TextField label="Min Requests" type="number" value={aiRulesForm.minRequests} onChange={(value) => updateAiRules('minRequests', value)} />
+              <TextField label="Auto-block Confidence (0-1)" type="number" value={aiRulesForm.autoBlockConfidence} onChange={(value) => updateAiRules('autoBlockConfidence', value)} />
+
               <div className="notice full">
                 <strong>LLM Refinement (optional, but recommended)</strong> - sends each candidate to an LLM to confirm or
                 veto it before a rule is created. Never runs standalone - any failure (unreachable endpoint, bad response)
@@ -3559,44 +3598,30 @@ function SettingsView({
                 than a genuine flood) - on a dynamic or e-commerce site, leaving this off risks a false-positive auto-block.
               </div>
               <CheckboxField label="Enable LLM refinement" checked={boolValue(aiRulesForm.llmEnabled)} onChange={(checked) => updateAiRules('llmEnabled', checked)} />
+              {boolValue(aiRulesForm.llmEnabled) && (
+                <>
+                  <SelectField
+                    label="LLM Provider"
+                    value={aiRulesForm.llmProvider}
+                    onChange={(value) => updateAiRules('llmProvider', value)}
+                    options={[
+                      { value: 'openai_compatible', label: 'OpenAI-compatible (chat completions)' },
+                      { value: 'anthropic', label: 'Anthropic (Messages API)' }
+                    ]}
+                  />
+                  <TextField label="LLM Endpoint (Base URL)" value={aiRulesForm.llmBaseUrl} onChange={(value) => updateAiRules('llmBaseUrl', value)} placeholder="https://api.openai.com/v1" full />
+                  <TextField label="LLM Model" value={aiRulesForm.llmModel} onChange={(value) => updateAiRules('llmModel', value)} placeholder="gpt-4o-mini" />
+                  <TextField
+                    label="LLM API Key"
+                    type="password"
+                    value={aiRulesForm.llmApiKey}
+                    onChange={(value) => updateAiRules('llmApiKey', value)}
+                    placeholder={aiRulesForm.llmApiKeyConfigured ? 'Saved - leave empty to keep it' : 'Not set'}
+                  />
+                </>
+              )}
             </>
           )}
-          <SelectField
-            label="LLM Provider"
-            value={aiRulesForm.llmProvider}
-            onChange={(value) => updateAiRules('llmProvider', value)}
-            options={[
-              { value: 'openai_compatible', label: 'OpenAI-compatible (chat completions)' },
-              { value: 'anthropic', label: 'Anthropic (Messages API)' }
-            ]}
-          />
-          <TextField label="LLM Endpoint (Base URL)" value={aiRulesForm.llmBaseUrl} onChange={(value) => updateAiRules('llmBaseUrl', value)} placeholder="https://api.openai.com/v1" full />
-          <TextField label="LLM Model" value={aiRulesForm.llmModel} onChange={(value) => updateAiRules('llmModel', value)} placeholder="gpt-4o-mini" />
-          <TextField
-            label="LLM API Key"
-            type="password"
-            value={aiRulesForm.llmApiKey}
-            onChange={(value) => updateAiRules('llmApiKey', value)}
-            placeholder={aiRulesForm.llmApiKeyConfigured ? 'Saved - leave empty to keep it' : 'Not set'}
-          />
-
-          <div className="notice full">
-            <strong>MCP Endpoint</strong> - the tool surface Agent mode calls, and what any other MCP-compatible client
-            (pointed at this URL with this token) can use too.
-          </div>
-          <label className="field full">
-            <span>MCP URL</span>
-            <input readOnly value={typeof window !== 'undefined' ? `${window.location.origin}/mcp` : '/mcp'} onFocus={(event) => event.target.select()} />
-          </label>
-          <label className="field full">
-            <span>MCP Bearer Token</span>
-            <input readOnly type="text" value={aiRulesForm.mcpToken || '(save once to generate)'} onFocus={(event) => event.target.select()} />
-          </label>
-          <div className="settings-actions full">
-            <button type="button" className="tool-button" onClick={regenerateMcpToken} disabled={!aiRulesForm.mcpToken || Boolean(pendingAction)}>
-              Regenerate MCP Token
-            </button>
-          </div>
 
           <div className="settings-actions full">
             <LoadingButton pending={pendingAction === 'aiRules'} pendingText="Saving..." className="tool-button primary">
