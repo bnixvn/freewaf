@@ -131,6 +131,15 @@ main() {
     log "Adding dateformat -%s to ${logrotate_conf} (unique names per rotation, not per day)"
     sed -i '/^\s*dateext\s*$/a\    dateformat -%s' "$logrotate_conf"
   fi
+  # `rotate 7` used to reliably mean "~7 days of history" back when rotation
+  # only happened once a day; size-triggered rotation can now fire many times
+  # in one busy day, so `rotate 7` alone could mean anywhere from a few hours
+  # to several weeks depending on traffic. `maxage` bounds it by calendar time
+  # instead, restoring the original retention intent.
+  if [ -f "$logrotate_conf" ] && ! grep -q '^\s*maxage' "$logrotate_conf"; then
+    log "Adding maxage 7 to ${logrotate_conf}"
+    sed -i '/^\s*rotate 7\s*$/a\    maxage 7' "$logrotate_conf"
+  fi
   if [ -f "$logrotate_conf" ] && [ ! -f /etc/systemd/system/freewaf-logrotate-check.timer ]; then
     log "Installing freewaf-logrotate-check timer (checks the size cap every 15min)"
     cat > /etc/systemd/system/freewaf-logrotate-check.service <<EOF

@@ -395,6 +395,7 @@ write_logrotate() {
 ${APP_DIR}/logs/freewaf_access.log ${APP_DIR}/logs/freewaf/accesslog_* ${APP_DIR}/logs/freewaf/errorlog_* {
     size 500M
     rotate 7
+    maxage 7
     missingok
     notifempty
     compress
@@ -430,6 +431,13 @@ EOF
   # so a sustained flood keeps growing completely unbounded right after its
   # one same-day rotation. Epoch seconds gives every rotation a unique name
   # no matter how many fire in a day.
+  #
+  # `maxage 7` restores the "~7 days of history" that `rotate 7` used to mean
+  # back when rotation only ever happened once a day. Size-triggered rotation
+  # can now fire many times in one busy day, so `rotate 7` alone could mean
+  # anywhere from a few hours (a sustained flood) to several weeks (a quiet
+  # site) of retained log data. `maxage` bounds it by calendar time instead,
+  # deleting rotated files past that age regardless of how many are on disk.
   #
   # Pure `size` has no such per-day limit: every check
   # rotates it again if it is still over 500M. Checked every 15 minutes;
