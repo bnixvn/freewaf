@@ -5489,9 +5489,12 @@ function UserModal({ user, onClose, onSave }) {
   async function submit(event) {
     event.preventDefault();
     if (submitting) return;
-    if (!user && form.password.length < 10) {
-      window.alert('Password must be at least 10 characters.');
-      return;
+    if (form.password) {
+      const passwordError = passwordValidationError(form.password);
+      if (passwordError) {
+        window.alert(passwordError);
+        return;
+      }
     }
     setSubmitting(true);
     try {
@@ -5799,6 +5802,19 @@ function formatPreciseBucketRange(point) {
 function listFromText(value, splitter) {
   if (Array.isArray(value)) return value.filter(Boolean);
   return String(value || '').split(splitter).map((item) => item.trim()).filter(Boolean);
+}
+
+function passwordValidationError(password) {
+  // Mirrors the backend's validate_password() exactly (store.py) so a new
+  // user isn't told "OK" client-side only to have the save rejected with a
+  // different rule - was previously just "at least 10 characters", which
+  // didn't check for 12, or for the uppercase/lowercase/digit backend
+  // requires either.
+  if (password.length < 12) return 'Password must be at least 12 characters.';
+  if (!/[a-z]/.test(password)) return 'Password must contain a lowercase letter.';
+  if (!/[A-Z]/.test(password)) return 'Password must contain an uppercase letter.';
+  if (!/[0-9]/.test(password)) return 'Password must contain a digit.';
+  return '';
 }
 
 function boolValue(value) {

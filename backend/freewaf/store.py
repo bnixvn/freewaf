@@ -307,7 +307,18 @@ GEOIP_READER = None
 GEOIP_READER_PATH = None
 GEOIP_READER_MTIME = None
 ACCESS_INSERT_POSITIONS = {"first", "last"}
-USER_ROLES = {"platform_admin", "account_admin", "account_editor", "account_viewer", "admin", "viewer"}
+USER_ROLES = {"platform_admin", "account_admin", "account_editor", "account_viewer"}
+# Legacy role names accepted as input (e.g. the "Add User" form's Role select
+# still offers these two) and translated below - never returned as-is, or
+# nothing downstream that checks for "account_viewer"/"platform_admin"
+# specifically would recognize a user stored with the old name.
+LEGACY_USER_ROLES = {"admin": "platform_admin", "viewer": "account_viewer"}
+# Roles that count as "admin" for the last-enabled-admin-user invariant
+# below (ensure_admin_user, delete_user) - mirrors server.py's
+# require_admin() check. Includes the legacy "admin" string defensively,
+# though no role normalized after the LEGACY_USER_ROLES fix above should
+# ever actually be stored as that literal value again.
+ADMIN_ROLES = {"platform_admin", "account_admin", "admin"}
 PASSWORD_ITERATIONS = 200_000
 BOT_RATE_WINDOW_SECONDS = {5, 10, 15, 20, 30, 60}
 BOT_RATE_BLOCK_MINUTES = {10, 30, 60}
@@ -981,7 +992,7 @@ class Store:
             if not user:
                 raise StoreError(404, "User not found")
             remaining = [item for item in self._state()["users"] if item["id"] != user_id]
-            if not any(item.get("enabled") and item.get("role") == "admin" for item in remaining):
+            if not any(item.get("enabled") and item.get("role") in ADMIN_ROLES for item in remaining):
                 raise StoreError(400, "Cannot delete the last enabled admin user")
             self._state()["users"] = remaining
             self.persist()
@@ -1013,7 +1024,7 @@ class Store:
 
     def ensure_admin_user(self, users: list[dict] | None = None) -> None:
         source = users if users is not None else self._state().get("users", [])
-        if not any(user.get("enabled") and user.get("role") == "admin" for user in source):
+        if not any(user.get("enabled") and user.get("role") in ADMIN_ROLES for user in source):
             raise StoreError(400, "At least one enabled admin user is required")
 
     def add_log(self, entry: dict) -> None:
@@ -2396,11 +2407,8 @@ def normalize_user_role(value) -> str:
     role = str(value or "admin").strip().lower()
     if role in USER_ROLES:
         return role
-    # Legacy role mapping
-    if role == "admin":
-        return "platform_admin"
-    if role == "viewer":
-        return "account_viewer"
+    if role in LEGACY_USER_ROLES:
+        return LEGACY_USER_ROLES[role]
     return "platform_admin"
 
 

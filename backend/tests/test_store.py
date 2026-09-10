@@ -21,6 +21,7 @@ from freewaf.store import (
     country_for_ip,
     geoip_attribution,
     normalize_state,
+    normalize_user_role,
 )
 
 
@@ -865,6 +866,83 @@ class StoreTests(unittest.TestCase):
             # actually revokes a stored key from the UI.
             store.update_settings({"aiRules": {"llmApiKey": ""}})
             self.assertEqual(store.get_state()["settings"]["aiRules"]["llmApiKey"], "")
+
+    def test_legacy_role_names_are_translated_not_passed_through(self):
+        # Regression test: USER_ROLES (the "already canonical, pass through"
+        # set) used to also contain the legacy names "admin"/"viewer"
+        # themselves, so `"viewer" in USER_ROLES` was true and the function
+        # returned "viewer" unchanged - the "legacy role mapping" branch
+        # right below it that would have translated it to "account_viewer"
+        # was dead code, unreachable for the exact input it existed to
+        # handle. The Add User form's Role select still only offers the
+        # literal strings "admin"/"viewer" (see UserModal in App.jsx), so
+        # every user created through the panel hit this.
+        self.assertEqual(normalize_user_role("admin"), "platform_admin")
+        self.assertEqual(normalize_user_role("viewer"), "account_viewer")
+        self.assertEqual(normalize_user_role("ADMIN"), "platform_admin")
+        self.assertEqual(normalize_user_role("Viewer"), "account_viewer")
+        # Already-canonical names still pass through unchanged.
+        self.assertEqual(normalize_user_role("platform_admin"), "platform_admin")
+        self.assertEqual(normalize_user_role("account_viewer"), "account_viewer")
+        self.assertEqual(normalize_user_role("account_admin"), "account_admin")
+        self.assertEqual(normalize_user_role("account_editor"), "account_editor")
+        # Unrecognized input falls back to the safe default.
+        self.assertEqual(normalize_user_role("not-a-role"), "platform_admin")
+        self.assertEqual(normalize_user_role(""), "platform_admin")
+        self.assertEqual(normalize_user_role(None), "platform_admin")
+
+    def test_creating_a_viewer_user_stores_the_canonical_role(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.json")
+            store.init()
+            # An enabled admin must exist before a viewer-only account can
+            # be added (Store.ensure_admin_user's own, unrelated rule).
+            store.upsert_user({"username": "admin", "password": "GoodPassw0rd123", "role": "admin", "enabled": True})
+            saved = store.upsert_user(
+                {"username": "readonly.viewer", "password": "GoodPassw0rd123", "role": "viewer", "enabled": True}
+            )
+            self.assertEqual(saved["role"], "account_viewer")
+
+            reloaded = Store(Path(directory) / "state.json")
+            reloaded.init()
+            stored = next(u for u in reloaded.get_state()["users"] if u["username"] == "readonly.viewer")
+            self.assertEqual(stored["role"], "account_viewer")
+
+    def test_admin_invariant_recognizes_the_canonical_role_not_just_legacy_admin(self):
+        # Regression test: ensure_admin_user() and delete_user() both
+        # checked role == "admin" literally. Once the LEGACY_USER_ROLES fix
+        # above makes normalize_user_role() actually translate "admin" to
+        # "platform_admin" before storage (as it always should have), no
+        # stored user's role is ever literally "admin" again - so that
+        # exact-match check would never find an admin, making it impossible
+        # to add a second user (ensure_admin_user always raises) or delete
+        # any user at all (delete_user always raises), on every install
+        # created after that fix. Both must recognize "platform_admin" (and
+        # "account_admin") as satisfying the invariant.
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.json")
+            store.init()
+            admin = store.upsert_user({"username": "admin", "password": "GoodPassw0rd123", "role": "admin", "enabled": True})
+            self.assertEqual(admin["role"], "platform_admin")
+
+            # Adding a second (non-admin) user must not be blocked by a
+            # stale "no admin exists" check.
+            store.upsert_user(
+                {"username": "readonly.viewer", "password": "GoodPassw0rd123", "role": "viewer", "enabled": True}
+            )
+
+            # The sole admin still can't be deleted...
+            with self.assertRaises(StoreError):
+                store.delete_user(admin["id"])
+
+            # ...but once a second admin exists, the first can be.
+            second_admin = store.upsert_user(
+                {"username": "second.admin", "password": "GoodPassw0rd123", "role": "admin", "enabled": True}
+            )
+            store.delete_user(admin["id"])
+            remaining_usernames = {u["username"] for u in store.get_state()["users"]}
+            self.assertNotIn("admin", remaining_usernames)
+            self.assertIn(second_admin["username"], remaining_usernames)
 
 
 if __name__ == "__main__":
