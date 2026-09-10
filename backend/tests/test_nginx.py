@@ -201,6 +201,50 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertEqual(entries[0]["host"], "valid.example")
         self.assertEqual(entries[0]["path"], "/valid")
 
+    def test_ordinary_rotation_does_not_fire_on_reset(self):
+        # Regression test: on_reset used to fire on every rotation, and its
+        # only caller (nginx_stats_summaries) used it to wipe that path's
+        # entire long-retention bucket history - meaning a site whose log
+        # rotates many times a day (logrotate's size-triggered rotation
+        # during a sustained flood can rotate every ~15 minutes) would have
+        # its retained stats wiped on every single rotation, defeating
+        # "long retention" for exactly the traffic it exists to show.
+        with tempfile.TemporaryDirectory() as directory:
+            root_dir = Path(directory)
+            log_file = root_dir / "freewaf_access.log"
+            log_file.write_text('{"host":"before.example","uri":"/before"}\n', encoding="utf-8")
+            reset_calls = []
+            entries = []
+            cache_name = f"test-rotation-{id(self)}"
+
+            with mock.patch.dict(
+                os.environ,
+                {"NGINX_ACCESS_LOG": str(log_file), "NGINX_SITE_LOG_DIR": str(root_dir / "sites")},
+                clear=False,
+            ):
+                nginx_module.scan_nginx_log_entries(
+                    root_dir, cache_name, lambda _key, entry: entries.append(entry), lambda key: reset_calls.append(key)
+                )
+
+                # Simulate logrotate: the old content is gone, a smaller
+                # fresh file appears at the same path (rotated=True via the
+                # size-shrank check, portable across platforms that don't
+                # surface a changed inode the same way).
+                log_file.write_text('{"host":"after.example","uri":"/after"}\n', encoding="utf-8")
+                nginx_module.scan_nginx_log_entries(
+                    root_dir, cache_name, lambda _key, entry: entries.append(entry), lambda key: reset_calls.append(key)
+                )
+
+                # The log source is now genuinely gone (e.g. its site was
+                # deleted) - this is the one case on_reset should still fire.
+                log_file.unlink()
+                nginx_module.scan_nginx_log_entries(
+                    root_dir, cache_name, lambda _key, entry: entries.append(entry), lambda key: reset_calls.append(key)
+                )
+
+        self.assertEqual([e["host"] for e in entries], ["before.example", "after.example"])
+        self.assertEqual(reset_calls, [str(log_file)])
+
     def test_writes_one_nginx_file_per_site(self):
         state = make_state(
             sites=[

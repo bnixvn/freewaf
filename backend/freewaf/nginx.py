@@ -810,6 +810,22 @@ def scan_nginx_log_entries(root_dir: Path, cache_name: str, on_entry, on_reset=N
 
     This is separate from the UI tail cache: dashboard counters need a
     long-retention accumulator, while log tables only need recent rows.
+
+    ``on_reset(path)`` fires only when a path drops out of the active set
+    entirely (the log source is genuinely gone, e.g. its site was deleted)
+    - never on an ordinary rotation. A rotation just means the file at
+    ``path`` got a new inode; the read position for it resets to 0 so the
+    new file's content is picked up from the start (below), but callers
+    that key a long-retention accumulator by ``path`` (aggregate_stats_
+    entry does, keyed on this same string) must keep accumulating into
+    that same key across rotations, or a site whose log rotates many
+    times a day - anything under sustained flood, with logrotate's
+    ``size``-triggered rotation - would have its retained history wiped
+    on every single rotation, defeating "long retention" entirely for
+    exactly the traffic the aggregate exists to show. An explicit "clear
+    logs" action clears the aggregate on its own (clear_stats_aggregate_
+    cache()) rather than relying on this callback, so removing the
+    rotation case here doesn't skip clearing on that path either.
     """
     chunk_size = 8 * 1024 * 1024
     log_files = [path for path in nginx_log_files(root_dir) if path.exists() and path.is_file()]
@@ -838,8 +854,6 @@ def scan_nginx_log_entries(root_dir: Path, cache_name: str, on_entry, on_reset=N
             if rotated:
                 sequence = 0
                 partial = b""
-                if on_reset:
-                    on_reset(key)
             if size <= start_offset:
                 cache[key] = {"inode": inode, "size": size, "seq": sequence, "partial": partial}
                 continue
