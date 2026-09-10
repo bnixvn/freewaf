@@ -162,7 +162,6 @@ def main() -> None:
     store.init()
     start_ip_group_sync_worker(store)
     start_stats_warmup_worker(store)
-    start_stats_aggregate_worker(store)
     start_ai_rule_worker(store)
     state = store.get_state()
     panel = state.get("settings", {}).get("panel", {})
@@ -2967,42 +2966,6 @@ def start_stats_warmup_worker(store: Store) -> None:
             time.sleep(dashboard_state_refresh_seconds())
 
     thread = threading.Thread(target=worker, daemon=True, name="stats-warmup")
-    thread.start()
-
-
-def start_stats_aggregate_worker(store: Store) -> None:
-    """Keep the long-retention stats aggregate (nginx_stats_summaries, the
-    5-minute-bucketed accumulator behind dashboard history) current on a
-    fixed cadence, independent of anyone actually viewing the dashboard
-    and independent of aiRules.enabled - "how much traffic did we see"
-    is a different concern from AI-driven rule detection and shouldn't
-    silently stop just because that feature is off.
-
-    Runs every 5 minutes: comfortably tighter than logrotate's size-
-    triggered rotation can get during a sustained flood (as fast as
-    every ~15 minutes observed live), since even after fixing
-    scan_nginx_log_entries's rotation-wipe bug, this scan still only
-    picks up what actually grew in a live file before it rotates away -
-    a scan interval slower than the rotation interval would still miss
-    that gap's data every single cycle. Deliberately calls the lean
-    nginx_stats_summaries() here, not the heavier refresh_dashboard_
-    state_cache() the (separately disabled) stats-warmup worker above
-    uses, which also rebuilds a full dashboard payload per tracked
-    site/retention combination on every tick.
-    """
-    if os.environ.get("FREEWAF_STATS_AGGREGATE_REFRESH", "true").lower() == "false":
-        return
-
-    def worker() -> None:
-        time.sleep(15)
-        while True:
-            try:
-                nginx_stats_summaries({stats_retention_days()})
-            except Exception as error:
-                print(f"stats-aggregate-refresh failed: {error}", flush=True)
-            time.sleep(300)
-
-    thread = threading.Thread(target=worker, daemon=True, name="stats-aggregate-refresh")
     thread.start()
 
 
