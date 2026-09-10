@@ -453,6 +453,15 @@ const accessOperatorOptions = {
 export default function App() {
   const [activeView, setActiveView] = useState('dashboard');
   const [auth, setAuth] = useState({ loading: true, authenticated: false, setupRequired: false, user: null });
+  // Mirrors the backend's require_admin() exactly (server.py): only these
+  // roles can write; account_viewer (and account_editor, which despite its
+  // name isn't actually granted write access server-side either) are
+  // read-only. The backend already rejects a write from a viewer with 403
+  // either way - this just keeps the UI from offering actions that can
+  // only fail, which is what "the viewer role can still add a site" meant
+  // in practice: the button was never hidden, not that the request itself
+  // succeeded.
+  const canWrite = ['platform_admin', 'account_admin', 'admin'].includes(auth.user?.role);
   const [data, setData] = useState(null);
   const [filter, setFilter] = useState('');
   const [modal, setModal] = useState(null);
@@ -1561,6 +1570,7 @@ export default function App() {
     if (activeView !== 'dashboard' && !loadedViews[activeView]) return <LoadingPanel />;
     const props = {
       data,
+      canWrite,
       filter,
       setFilter,
       setModal,
@@ -1745,7 +1755,7 @@ export default function App() {
             >
               {theme === 'dark' ? <Moon size={18} /> : theme === 'light' ? <Sun size={18} /> : <Monitor size={18} />}
             </button>
-            {activeView === 'dashboard' && (
+            {activeView === 'dashboard' && canWrite && (
               <button className="icon-button danger" onClick={resetStatistics} title="Reset statistics" disabled={loading}>
                 <Trash2 size={18} />
               </button>
@@ -2312,7 +2322,7 @@ function CompactInsightColumn({ title, pill, rows, empty, maxValue, label, barVa
   );
 }
 
-function SitesView({ data, setModal, toggleSite, toggleUnderAttack, toggleAllUnderAttack, deleteSite, downloadCertificate, openSiteDetail, pendingActions = {} }) {
+function SitesView({ data, canWrite, setModal, toggleSite, toggleUnderAttack, toggleAllUnderAttack, deleteSite, downloadCertificate, openSiteDetail, pendingActions = {} }) {
   const sites = data.sites || [];
   const underAttackCount = sites.filter((site) => site.underAttack?.enabled).length;
   const allUnderAttack = sites.length > 0 && underAttackCount === sites.length;
@@ -2326,31 +2336,35 @@ function SitesView({ data, setModal, toggleSite, toggleUnderAttack, toggleAllUnd
           <span className={`under-attack-summary ${underAttackCount ? 'active' : ''}`}>
             {underAttackCount}/{sites.length} under attack
           </span>
-          <button
-            className={`tool-button under-attack-all-button ${allUnderAttack ? 'active' : ''}`}
-            type="button"
-            onClick={() => toggleAllUnderAttack(!allUnderAttack)}
-            disabled={!sites.length || underAttackPending}
-            title={allUnderAttack ? 'Disable Under Attack Mode for every application' : 'Enable Under Attack Mode for every application'}
-          >
-            {underAttackPending ? <Loader2 size={16} className="spin" /> : <ShieldAlert size={16} />}
-            {underAttackPending ? 'Updating all' : allUnderAttack ? 'Disable for all' : 'Enable for all'}
-          </button>
-          <button className="tool-button primary" onClick={() => setModal({ type: 'site', site: null })}>
-            <Plus size={18} /> Add Application
-          </button>
+          {canWrite && (
+            <button
+              className={`tool-button under-attack-all-button ${allUnderAttack ? 'active' : ''}`}
+              type="button"
+              onClick={() => toggleAllUnderAttack(!allUnderAttack)}
+              disabled={!sites.length || underAttackPending}
+              title={allUnderAttack ? 'Disable Under Attack Mode for every application' : 'Enable Under Attack Mode for every application'}
+            >
+              {underAttackPending ? <Loader2 size={16} className="spin" /> : <ShieldAlert size={16} />}
+              {underAttackPending ? 'Updating all' : allUnderAttack ? 'Disable for all' : 'Enable for all'}
+            </button>
+          )}
+          {canWrite && (
+            <button className="tool-button primary" onClick={() => setModal({ type: 'site', site: null })}>
+              <Plus size={18} /> Add Application
+            </button>
+          )}
         </div>
       </div>
       {!sites.length && (
         <EmptyState
           icon={<Server size={26} />}
           title="No applications yet"
-          hint="Add an application to put a domain behind the reverse proxy and start filtering traffic."
-          action={(
+          hint={canWrite ? 'Add an application to put a domain behind the reverse proxy and start filtering traffic.' : 'No applications have been added yet.'}
+          action={canWrite ? (
             <button className="tool-button primary" onClick={() => setModal({ type: 'site', site: null })}>
               <Plus size={18} /> Add Application
             </button>
-          )}
+          ) : null}
         />
       )}
       <div className="application-grid">
@@ -2360,6 +2374,7 @@ function SitesView({ data, setModal, toggleSite, toggleUnderAttack, toggleAllUnd
             <ApplicationCard
               key={site.id}
               site={site}
+              canWrite={canWrite}
               certificate={certificate}
               stats={data.stats?.siteStats?.find((item) => item.siteId === site.id)}
               onEdit={() => setModal({ type: 'site', site })}
@@ -2383,6 +2398,7 @@ function SitesView({ data, setModal, toggleSite, toggleUnderAttack, toggleAllUnd
 
 function ApplicationCard({
   site,
+  canWrite,
   certificate,
   stats,
   onEdit,
@@ -2410,7 +2426,7 @@ function ApplicationCard({
     <article className="application-card">
       <div className="application-status">
         <span className="app-globe"><Globe2 size={22} /></span>
-        <button className={`defense-button ${site.enabled ? 'active' : ''}`} type="button" onClick={() => onToggle(!site.enabled)} disabled={defensePending}>
+        <button className={`defense-button ${site.enabled ? 'active' : ''}`} type="button" onClick={() => onToggle(!site.enabled)} disabled={defensePending || !canWrite}>
           {defensePending && <Loader2 size={13} className="spin" />}
           {defensePending ? 'UPDATING' : 'DEFENSE'}
         </button>
@@ -2419,7 +2435,7 @@ function ApplicationCard({
           type="button"
           onClick={() => onToggleUnderAttack(!site.underAttack?.enabled)}
           title="Challenge new visitors while the application is under attack"
-          disabled={underAttackPending}
+          disabled={underAttackPending || !canWrite}
         >
           {underAttackPending ? <Loader2 size={14} className="spin" /> : <ShieldAlert size={14} />}
           {underAttackPending ? 'UPDATING' : 'UNDER ATTACK'}
@@ -2445,13 +2461,17 @@ function ApplicationCard({
                 <Download size={17} />
               </button>
             )}
-            <button className="table-action" onClick={onEdit} title="Edit application" aria-label="Edit application">
-              <Edit3 size={17} />
-            </button>
+            {canWrite && (
+              <button className="table-action" onClick={onEdit} title="Edit application" aria-label="Edit application">
+                <Edit3 size={17} />
+              </button>
+            )}
             <button className="link-button" onClick={onOpenDetail}>DETAIL</button>
-            <button className="table-action delete-action" onClick={onDelete} title="Delete application" aria-label="Delete application">
-              <Trash2 size={17} />
-            </button>
+            {canWrite && (
+              <button className="table-action delete-action" onClick={onDelete} title="Delete application" aria-label="Delete application">
+                <Trash2 size={17} />
+              </button>
+            )}
           </div>
         </div>
         <div className="app-field">
@@ -2475,17 +2495,17 @@ function ApplicationCard({
           </div>
         )}
         <div className="feature-chip-row">
-          {Object.entries(siteFeatureLabels).map(([key, label]) => key === 'httpFlood' ? (
+          {Object.entries(siteFeatureLabels).map(([key, label]) => key === 'httpFlood' && canWrite ? (
             <button className={`feature-chip feature-chip-button ${features[key] ? 'active' : ''}`} key={key} type="button" onClick={onConfigureFlood} title="Configure HTTP Flood">
               <SlidersHorizontal size={13} />
               {label}
             </button>
-          ) : key === 'botProtection' ? (
+          ) : key === 'botProtection' && canWrite ? (
             <button className={`feature-chip feature-chip-button ${features[key] ? 'active' : ''}`} key={key} type="button" onClick={onConfigureBot} title="Configure Bot Protect">
               <ShieldCheck size={13} />
               {label}
             </button>
-          ) : key === 'geoBlock' ? (
+          ) : key === 'geoBlock' && canWrite ? (
             <button className={`feature-chip feature-chip-button ${features[key] ? 'active' : ''}`} key={key} type="button" onClick={onConfigureGeo} title="Configure Geo Block">
               <Globe2 size={13} />
               {label}
@@ -2501,6 +2521,7 @@ function ApplicationCard({
 
 function SiteDetailView({
   data,
+  canWrite,
   detailSiteId,
   setActiveView,
   setModal,
@@ -2586,9 +2607,11 @@ function SiteDetailView({
         <div className="panel-heading">
           <h2>Overview</h2>
           <div className="row-actions">
-            <button className="tool-button" onClick={() => setModal({ type: 'site', site })}>
-              <Edit3 size={16} /> Edit
-            </button>
+            {canWrite && (
+              <button className="tool-button" onClick={() => setModal({ type: 'site', site })}>
+                <Edit3 size={16} /> Edit
+              </button>
+            )}
             {certificate?.certFile && (
               <button className="tool-button" onClick={() => downloadCertificate(certificate)}>
                 <Download size={16} /> Certificate
@@ -2617,6 +2640,7 @@ function SiteDetailView({
             </div>
             <Switch
               checked={Boolean(site.enabled)}
+              disabled={!canWrite}
               pending={Boolean(pendingActions[`site:${site.id}:enabled`])}
               onChange={(checked) => toggleSite(site, checked)}
             />
@@ -2628,23 +2652,26 @@ function SiteDetailView({
             </div>
             <Switch
               checked={Boolean(site.underAttack?.enabled)}
+              disabled={!canWrite}
               pending={Boolean(pendingActions[`site:${site.id}:underAttack`])}
               onChange={(checked) => toggleUnderAttack(site, checked)}
             />
           </div>
         </div>
 
-        <div className="detail-protection-row">
-          <button className={`feature-chip feature-chip-button ${features.httpFlood ? 'active' : ''}`} type="button" onClick={() => setModal({ type: 'httpFlood', site })}>
-            <SlidersHorizontal size={13} /> HTTP FLOOD
-          </button>
-          <button className={`feature-chip feature-chip-button ${features.botProtection ? 'active' : ''}`} type="button" onClick={() => setModal({ type: 'botProtect', site })}>
-            <ShieldCheck size={13} /> BOT PROTECT
-          </button>
-          <button className={`feature-chip feature-chip-button ${features.geoBlock ? 'active' : ''}`} type="button" onClick={() => setModal({ type: 'geoBlock', site })}>
-            <Globe2 size={13} /> GEO BLOCK
-          </button>
-        </div>
+        {canWrite && (
+          <div className="detail-protection-row">
+            <button className={`feature-chip feature-chip-button ${features.httpFlood ? 'active' : ''}`} type="button" onClick={() => setModal({ type: 'httpFlood', site })}>
+              <SlidersHorizontal size={13} /> HTTP FLOOD
+            </button>
+            <button className={`feature-chip feature-chip-button ${features.botProtection ? 'active' : ''}`} type="button" onClick={() => setModal({ type: 'botProtect', site })}>
+              <ShieldCheck size={13} /> BOT PROTECT
+            </button>
+            <button className={`feature-chip feature-chip-button ${features.geoBlock ? 'active' : ''}`} type="button" onClick={() => setModal({ type: 'geoBlock', site })}>
+              <Globe2 size={13} /> GEO BLOCK
+            </button>
+          </div>
+        )}
       </section>
 
       <section className="panel detail-rules">
@@ -2652,13 +2679,15 @@ function SiteDetailView({
           <h2>Detection Rules</h2>
           <div className="row-actions">
             <span className="pill">{activeCount} of {applicableRules.length} active</span>
-            <button
-              className="tool-button primary"
-              type="button"
-              onClick={() => setModal({ type: 'rule', rule: null, defaults: { siteId: site.id } })}
-            >
-              <Plus size={16} /> Add rule for this application
-            </button>
+            {canWrite && (
+              <button
+                className="tool-button primary"
+                type="button"
+                onClick={() => setModal({ type: 'rule', rule: null, defaults: { siteId: site.id } })}
+              >
+                <Plus size={16} /> Add rule for this application
+              </button>
+            )}
           </div>
         </div>
 
@@ -2702,7 +2731,7 @@ function SiteDetailView({
                   <span className="code">{rule.pattern}</span>
                 </div>
                 <div className="detail-rule-state">
-                  {owned && (
+                  {canWrite && owned && (
                     <>
                       <button className="table-action" type="button" title="Edit rule" onClick={() => setModal({ type: 'rule', rule })}>
                         <Edit3 size={16} />
@@ -2714,7 +2743,7 @@ function SiteDetailView({
                   )}
                   <Switch
                     checked={on}
-                    disabled={!isCustom}
+                    disabled={!isCustom || !canWrite}
                     onChange={(checked) => toggleRuleForSite(rule, checked)}
                   />
                 </div>
@@ -2731,7 +2760,7 @@ function SiteDetailView({
             pending={saving}
             pendingText="Saving..."
             className="tool-button primary"
-            disabled={!dirty}
+            disabled={!dirty || !canWrite}
             onClick={() => saveSiteRuleOverrides(site, draft).catch(() => {})}
           >
             <Save size={16} /> Save rule selection
@@ -2771,7 +2800,7 @@ function ruleOverridesFromSite(site) {
   };
 }
 
-function RulesView({ data, filter, setFilter, setModal, toggleRule, deleteRule, pendingActions }) {
+function RulesView({ data, canWrite, filter, setFilter, setModal, toggleRule, deleteRule, pendingActions }) {
   const rules = data.rules.filter((rule) => {
     if (!filter.trim()) return true;
     return [rule.name, rule.description, rule.pattern, rule.target, rule.action, rule.severity]
@@ -2785,9 +2814,11 @@ function RulesView({ data, filter, setFilter, setModal, toggleRule, deleteRule, 
       <div className="filters">
         <div className="panel-heading compact">
           <h2>Rules</h2>
-          <button className="tool-button primary" onClick={() => setModal({ type: 'rule', rule: null })}>
-            <Plus size={18} /> Add Rule
-          </button>
+          {canWrite && (
+            <button className="tool-button primary" onClick={() => setModal({ type: 'rule', rule: null })}>
+              <Plus size={18} /> Add Rule
+            </button>
+          )}
         </div>
         <input className="search" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter rules" />
       </div>
@@ -2820,11 +2851,11 @@ function RulesView({ data, filter, setFilter, setModal, toggleRule, deleteRule, 
                 <td>{rule.target} / {rule.matcher}</td>
                 <td className="path-cell"><span className="code">{rule.pattern}</span></td>
                 <td><span className={`status ${rule.action}`}>{rule.action}</span></td>
-                <td><Switch checked={rule.enabled} pending={Boolean(pendingActions[`rule:${rule.id}:enabled`])} onChange={(checked) => toggleRule(rule, checked)} /></td>
+                <td><Switch checked={rule.enabled} disabled={!canWrite} pending={Boolean(pendingActions[`rule:${rule.id}:enabled`])} onChange={(checked) => toggleRule(rule, checked)} /></td>
                 <td>
                   <div className="row-actions">
-                    <button className="table-action" onClick={() => setModal({ type: 'rule', rule })} title="Edit"><Edit3 size={17} /></button>
-                    {!rule.builtin && <button className="table-action" onClick={() => deleteRule(rule)} title="Delete"><Trash2 size={17} /></button>}
+                    {canWrite && <button className="table-action" onClick={() => setModal({ type: 'rule', rule })} title="Edit"><Edit3 size={17} /></button>}
+                    {canWrite && !rule.builtin && <button className="table-action" onClick={() => deleteRule(rule)} title="Delete"><Trash2 size={17} /></button>}
                   </div>
                 </td>
               </tr>
@@ -2836,7 +2867,7 @@ function RulesView({ data, filter, setFilter, setModal, toggleRule, deleteRule, 
   );
 }
 
-function AccessView({ data, setModal, toggleAccessRule, deleteAccessRule, pendingActions }) {
+function AccessView({ data, canWrite, setModal, toggleAccessRule, deleteAccessRule, pendingActions }) {
   const [wlOpen, setWlOpen] = useState(false);
   const [wlUrls, setWlUrls] = useState('');
   const [wlSiteId, setWlSiteId] = useState('*');
@@ -2870,16 +2901,18 @@ function AccessView({ data, setModal, toggleAccessRule, deleteAccessRule, pendin
     <section className="table-panel">
       <div className="panel-heading">
         <h2>Access Rules</h2>
-        <div className="row-actions">
-          <button className={`tool-button ${wlOpen ? 'active' : ''}`} onClick={() => setWlOpen(!wlOpen)} title="Quick-add URL whitelist">
-            <ShieldCheck size={16} /> URL Whitelist
-          </button>
-          <button className="tool-button primary" onClick={() => setModal({ type: 'accessRule', rule: null })}>
-            <Plus size={18} /> Add Access Rule
-          </button>
-        </div>
+        {canWrite && (
+          <div className="row-actions">
+            <button className={`tool-button ${wlOpen ? 'active' : ''}`} onClick={() => setWlOpen(!wlOpen)} title="Quick-add URL whitelist">
+              <ShieldCheck size={16} /> URL Whitelist
+            </button>
+            <button className="tool-button primary" onClick={() => setModal({ type: 'accessRule', rule: null })}>
+              <Plus size={18} /> Add Access Rule
+            </button>
+          </div>
+        )}
       </div>
-      {wlOpen && (
+      {wlOpen && canWrite && (
         <div className="url-whitelist-panel">
           <div className="whitelist-grid">
             <label className="field">
@@ -2924,11 +2957,11 @@ function AccessView({ data, setModal, toggleAccessRule, deleteAccessRule, pendin
                 <td><span className={`status ${rule.action === 'deny' ? 'block' : rule.action}`}>{rule.action}</span></td>
                 <td>{siteName(rule.siteId)}</td>
                 <td className="path-cell">{accessRuleMatch(rule, data.ipGroups)}</td>
-                <td><Switch checked={rule.enabled} pending={Boolean(pendingActions[`access-rule:${rule.id}:enabled`])} onChange={(checked) => toggleAccessRule(rule, checked)} /></td>
+                <td><Switch checked={rule.enabled} disabled={!canWrite} pending={Boolean(pendingActions[`access-rule:${rule.id}:enabled`])} onChange={(checked) => toggleAccessRule(rule, checked)} /></td>
                 <td>
                   <div className="row-actions">
-                    <button className="table-action" onClick={() => setModal({ type: 'accessRule', rule })} title="Edit"><Edit3 size={17} /></button>
-                    <button className="table-action" onClick={() => deleteAccessRule(rule)} title="Delete"><Trash2 size={17} /></button>
+                    {canWrite && <button className="table-action" onClick={() => setModal({ type: 'accessRule', rule })} title="Edit"><Edit3 size={17} /></button>}
+                    {canWrite && <button className="table-action" onClick={() => deleteAccessRule(rule)} title="Delete"><Trash2 size={17} /></button>}
                   </div>
                 </td>
               </tr>
@@ -2942,14 +2975,16 @@ function AccessView({ data, setModal, toggleAccessRule, deleteAccessRule, pendin
   );
 }
 
-function IpGroupsView({ data, setModal, toggleIpGroup, deleteIpGroup, syncIpGroup, pendingActions }) {
+function IpGroupsView({ data, canWrite, setModal, toggleIpGroup, deleteIpGroup, syncIpGroup, pendingActions }) {
   return (
     <section className="table-panel">
       <div className="panel-heading">
         <h2>IP Groups</h2>
-        <button className="tool-button primary" onClick={() => setModal({ type: 'ipGroup', group: null })}>
-          <Plus size={18} /> Add IP Group
-        </button>
+        {canWrite && (
+          <button className="tool-button primary" onClick={() => setModal({ type: 'ipGroup', group: null })}>
+            <Plus size={18} /> Add IP Group
+          </button>
+        )}
       </div>
       <div className="table-wrap">
         <table>
@@ -2996,15 +3031,15 @@ function IpGroupsView({ data, setModal, toggleIpGroup, deleteIpGroup, syncIpGrou
                     <span className="muted">Manual</span>
                   )}
                 </td>
-                <td><Switch checked={group.enabled} pending={Boolean(pendingActions[`ip-group:${group.id}:enabled`])} onChange={(checked) => toggleIpGroup(group, checked)} /></td>
+                <td><Switch checked={group.enabled} disabled={!canWrite} pending={Boolean(pendingActions[`ip-group:${group.id}:enabled`])} onChange={(checked) => toggleIpGroup(group, checked)} /></td>
                 <td>
                   <div className="row-actions">
-                    {group.referenceUrl && (
+                    {canWrite && group.referenceUrl && (
                       <button className="table-action" onClick={() => syncIpGroup(group)} title="Sync now" disabled={Boolean(pendingActions[`ip-group:${group.id}:sync`])}>
                         <RefreshCw size={17} className={pendingActions[`ip-group:${group.id}:sync`] ? 'spin' : ''} />
                       </button>
                     )}
-                    {!group.managed && (
+                    {canWrite && !group.managed && (
                       <>
                         <button className="table-action" onClick={() => setModal({ type: 'ipGroup', group })} title="Edit"><Edit3 size={17} /></button>
                         <button className="table-action" onClick={() => deleteIpGroup(group)} title="Delete"><Trash2 size={17} /></button>
@@ -3021,14 +3056,16 @@ function IpGroupsView({ data, setModal, toggleIpGroup, deleteIpGroup, syncIpGrou
   );
 }
 
-function CertificatesView({ data, setModal, deleteCertificate, downloadCertificate }) {
+function CertificatesView({ data, canWrite, setModal, deleteCertificate, downloadCertificate }) {
   return (
     <section className="table-panel">
       <div className="panel-heading">
         <h2>Certificates</h2>
-        <button className="tool-button primary" onClick={() => setModal({ type: 'certificate', certificate: null })}>
-          <Plus size={18} /> Add Certificate
-        </button>
+        {canWrite && (
+          <button className="tool-button primary" onClick={() => setModal({ type: 'certificate', certificate: null })}>
+            <Plus size={18} /> Add Certificate
+          </button>
+        )}
       </div>
       <div className="table-wrap">
         <table>
@@ -3055,8 +3092,8 @@ function CertificatesView({ data, setModal, deleteCertificate, downloadCertifica
                     {certificate.certFile && (
                       <button className="table-action" onClick={() => downloadCertificate(certificate)} title="Download public certificate" aria-label={`Download public certificate for ${certificate.name || certificate.id}`}><Download size={17} /></button>
                     )}
-                    <button className="table-action" onClick={() => setModal({ type: 'certificate', certificate })} title="Edit"><Edit3 size={17} /></button>
-                    <button className="table-action" onClick={() => deleteCertificate(certificate)} title="Delete"><Trash2 size={17} /></button>
+                    {canWrite && <button className="table-action" onClick={() => setModal({ type: 'certificate', certificate })} title="Edit"><Edit3 size={17} /></button>}
+                    {canWrite && <button className="table-action" onClick={() => deleteCertificate(certificate)} title="Delete"><Trash2 size={17} /></button>}
                   </div>
                 </td>
               </tr>
@@ -3072,6 +3109,7 @@ function CertificatesView({ data, setModal, deleteCertificate, downloadCertifica
 
 function LogsView({
   data,
+  canWrite,
   filter,
   setFilter,
   clearLogs,
@@ -3125,7 +3163,7 @@ function LogsView({
           <a className="tool-button" href={exportUrl} download>
             <Download size={18} /> Export
           </a>
-          <button className="tool-button danger" onClick={clearLogs}><Trash2 size={18} /> Clear</button>
+          {canWrite && <button className="tool-button danger" onClick={clearLogs}><Trash2 size={18} /> Clear</button>}
         </div>
         <div className="log-filter-controls">
           <select
@@ -3237,6 +3275,7 @@ function LogsView({
 
 function SettingsView({
   data,
+  canWrite,
   setModal,
   network,
   loadNetworkStatus,
@@ -3369,6 +3408,7 @@ function SettingsView({
     <>
       <NetworkPanel
         network={network}
+        canWrite={canWrite}
         pending={Boolean(pendingActions['settings:ipv6'])}
         rejectPending={Boolean(pendingActions['settings:rejectUnknownHosts'])}
         onRefresh={() => loadNetworkStatus(true)}
@@ -3394,7 +3434,7 @@ function SettingsView({
           <TextField label="Logo URL" value={panelForm.logoUrl} onChange={(value) => updatePanel('logoUrl', value)} placeholder="https://cdn.example.com/logo.svg" full />
           <TextField label="Session Hours" value={panelForm.sessionHours} onChange={(value) => updatePanel('sessionHours', value)} />
           <div className="settings-actions full">
-            <LoadingButton pending={pendingAction === 'panel'} pendingText="Saving..." className="tool-button primary">
+            <LoadingButton pending={pendingAction === 'panel'} disabled={!canWrite} pendingText="Saving..." className="tool-button primary">
               <Save size={18} /> Save Panel SSL
             </LoadingButton>
           </div>
@@ -3475,7 +3515,7 @@ function SettingsView({
             </div>
           </section>
           <div className="settings-actions full">
-            <LoadingButton pending={pendingAction === 'applicationDefaults'} pendingText="Saving..." className="tool-button primary">
+            <LoadingButton pending={pendingAction === 'applicationDefaults'} disabled={!canWrite} pendingText="Saving..." className="tool-button primary">
               <Save size={18} /> Save Global Defaults
             </LoadingButton>
           </div>
@@ -3509,7 +3549,7 @@ function SettingsView({
               ]}
             />
             <div className="settings-actions full">
-              <LoadingButton pending={pendingAction === 'challengePage'} pendingText="Saving..." className="tool-button primary">
+              <LoadingButton pending={pendingAction === 'challengePage'} disabled={!canWrite} pendingText="Saving..." className="tool-button primary">
                 <Save size={18} /> Save Challenge Page
               </LoadingButton>
             </div>
@@ -3566,7 +3606,7 @@ function SettingsView({
                 <input readOnly type="text" value={aiRulesForm.mcpToken || '(save once to generate)'} onFocus={(event) => event.target.select()} />
               </label>
               <div className="settings-actions full">
-                <button type="button" className="tool-button" onClick={regenerateMcpToken} disabled={!aiRulesForm.mcpToken || Boolean(pendingAction)}>
+                <button type="button" className="tool-button" onClick={regenerateMcpToken} disabled={!canWrite || !aiRulesForm.mcpToken || Boolean(pendingAction)}>
                   Regenerate MCP Token
                 </button>
               </div>
@@ -3594,7 +3634,7 @@ function SettingsView({
           )}
 
           <div className="settings-actions full">
-            <LoadingButton pending={pendingAction === 'aiRules'} pendingText="Saving..." className="tool-button primary">
+            <LoadingButton pending={pendingAction === 'aiRules'} disabled={!canWrite} pendingText="Saving..." className="tool-button primary">
               <Save size={18} /> Save AI Rule Detector
             </LoadingButton>
           </div>
@@ -3604,9 +3644,11 @@ function SettingsView({
       <section className="table-panel">
         <div className="panel-heading">
           <h2>Users</h2>
-          <button className="tool-button primary" onClick={() => setModal({ type: 'user', user: null })}>
-            <UserPlus size={18} /> Add User
-          </button>
+          {canWrite && (
+            <button className="tool-button primary" onClick={() => setModal({ type: 'user', user: null })}>
+              <UserPlus size={18} /> Add User
+            </button>
+          )}
         </div>
         <div className="table-wrap">
           <table>
@@ -3630,8 +3672,8 @@ function SettingsView({
                   <td><span className={`status ${user.enabled ? 'enabled' : 'disabled'}`}>{user.enabled ? 'enabled' : 'disabled'}</span></td>
                   <td>
                     <div className="row-actions">
-                      <button className="table-action" onClick={() => setModal({ type: 'user', user })} title="Edit"><Edit3 size={17} /></button>
-                      <button className="table-action" onClick={() => deleteUser(user)} title="Delete" disabled={auth.user?.id === user.id}><Trash2 size={17} /></button>
+                      {canWrite && <button className="table-action" onClick={() => setModal({ type: 'user', user })} title="Edit"><Edit3 size={17} /></button>}
+                      {canWrite && <button className="table-action" onClick={() => deleteUser(user)} title="Delete" disabled={auth.user?.id === user.id}><Trash2 size={17} /></button>}
                     </div>
                   </td>
                 </tr>
@@ -3680,7 +3722,7 @@ function SettingsView({
             pending={pendingAction === 'systemUpdate' || Boolean(updateStatus.running)}
             pendingText={updateStatus.running ? 'Updating...' : 'Starting...'}
             className="tool-button primary"
-            disabled={Boolean(pendingAction && pendingAction !== 'systemUpdate')}
+            disabled={!canWrite || Boolean(pendingAction && pendingAction !== 'systemUpdate')}
             onClick={() => runLocalAction('systemUpdate', startSystemUpdate)}
           >
             <UploadCloud size={18} /> Update FreeWAF
@@ -3705,16 +3747,16 @@ function SettingsView({
           <span className="pill">native enforcement</span>
         </div>
         <div className="settings-actions">
-          <LoadingButton type="button" pending={pendingAction === 'nginxPreview'} pendingText="Previewing..." className="tool-button" onClick={() => runLocalAction('nginxPreview', previewNginx)}>
+          <LoadingButton type="button" pending={pendingAction === 'nginxPreview'} disabled={!canWrite} pendingText="Previewing..." className="tool-button" onClick={() => runLocalAction('nginxPreview', previewNginx)}>
             <ListFilter size={18} /> Preview
           </LoadingButton>
-          <LoadingButton type="button" pending={pendingAction === 'nginxWrite'} pendingText="Writing..." className="tool-button primary" onClick={() => runLocalAction('nginxWrite', () => applyNginx({}))}>
+          <LoadingButton type="button" pending={pendingAction === 'nginxWrite'} disabled={!canWrite} pendingText="Writing..." className="tool-button primary" onClick={() => runLocalAction('nginxWrite', () => applyNginx({}))}>
             <Save size={18} /> Write Config
           </LoadingButton>
-          <LoadingButton type="button" pending={pendingAction === 'nginxTest'} pendingText="Testing..." className="tool-button" onClick={() => runLocalAction('nginxTest', () => applyNginx({ test: true }))}>
+          <LoadingButton type="button" pending={pendingAction === 'nginxTest'} disabled={!canWrite} pendingText="Testing..." className="tool-button" onClick={() => runLocalAction('nginxTest', () => applyNginx({ test: true }))}>
             <ShieldCheck size={18} /> Write + Test
           </LoadingButton>
-          <LoadingButton type="button" pending={pendingAction === 'nginxReload'} pendingText="Reloading..." className="tool-button" onClick={() => runLocalAction('nginxReload', () => applyNginx({ test: true, reload: true }))}>
+          <LoadingButton type="button" pending={pendingAction === 'nginxReload'} disabled={!canWrite} pendingText="Reloading..." className="tool-button" onClick={() => runLocalAction('nginxReload', () => applyNginx({ test: true, reload: true }))}>
             <RefreshCw size={18} /> Test + Reload
           </LoadingButton>
           <button className="tool-button" onClick={logout}><LogOut size={18} /> Sign Out</button>
@@ -3724,7 +3766,7 @@ function SettingsView({
   );
 }
 
-function NetworkPanel({ network, pending, rejectPending, onRefresh, onToggleIpv6, onToggleRejectUnknownHosts }) {
+function NetworkPanel({ network, canWrite, pending, rejectPending, onRefresh, onToggleIpv6, onToggleRejectUnknownHosts }) {
   const ipv4 = network?.ipv4 || [];
   const ipv6 = network?.ipv6 || [];
   const available = Boolean(network?.ipv6Available);
@@ -3766,7 +3808,7 @@ function NetworkPanel({ network, pending, rejectPending, onRefresh, onToggleIpv6
             pending={pending}
             pendingText={enabled ? 'Disabling...' : 'Enabling...'}
             className={`tool-button ${enabled ? '' : 'primary'}`}
-            disabled={!available}
+            disabled={!available || !canWrite}
             onClick={() => onToggleIpv6(!enabled).catch(() => {})}
           >
             {enabled ? 'Disable IPv6' : 'Enable IPv6'}
@@ -3785,6 +3827,7 @@ function NetworkPanel({ network, pending, rejectPending, onRefresh, onToggleIpv6
             pending={rejectPending}
             pendingText={rejectUnknownHosts ? 'Allowing...' : 'Blocking...'}
             className={`tool-button ${rejectUnknownHosts ? '' : 'primary'}`}
+            disabled={!canWrite}
             onClick={() => onToggleRejectUnknownHosts(!rejectUnknownHosts).catch(() => {})}
           >
             {rejectUnknownHosts ? 'Allow bare-IP access' : 'Block bare-IP access'}
