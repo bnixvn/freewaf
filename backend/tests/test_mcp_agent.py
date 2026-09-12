@@ -221,3 +221,45 @@ class CallMcpToolTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RequestPayloadTests(unittest.TestCase):
+    """The wire payload must never leave "stream" to the provider's default.
+
+    Regression test: router.sgd.ovh streams unless told otherwise and replies
+    with text/event-stream, which these clients cannot parse - they read one
+    JSON document - so every call failed with JSONDecodeError. It worked
+    against a different OpenAI-compatible endpoint only because that one
+    happened to default to non-streaming.
+    """
+
+    def _captured_payload(self, fn):
+        captured = {}
+
+        def fake_urlopen(request, *args, **kwargs):
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            response = mock.MagicMock()
+            response.read.return_value = json.dumps(
+                {"choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                 "content": [{"type": "text", "text": "OK"}]}
+            ).encode("utf-8")
+            response.__enter__.return_value = response
+            return response
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            fn()
+        return captured["body"]
+
+    def test_openai_compatible_call_disables_streaming(self):
+        body = self._captured_payload(
+            lambda: mcp_agent._call_openai_compatible("https://x.test/v1", "k", "m", [{"role": "user", "content": "hi"}])
+        )
+        self.assertIs(body["stream"], False)
+        self.assertEqual(body["model"], "m")
+        self.assertTrue(body["tools"], "agent mode needs the tool schemas attached")
+
+    def test_anthropic_call_disables_streaming(self):
+        body = self._captured_payload(
+            lambda: mcp_agent._call_anthropic("https://x.test", "k", "m", [{"role": "user", "content": "hi"}])
+        )
+        self.assertIs(body["stream"], False)

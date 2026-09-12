@@ -358,6 +358,11 @@ def _call_openai_compatible(base_url: str, api_key: str, model: str, prompt: str
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0,
+            # Explicit, not inherited: "OpenAI-compatible" endpoints
+            # disagree on the default, and a router that streams unless told
+            # otherwise returns text/event-stream, which this client cannot
+            # read - it parses one JSON document.
+            "stream": False,
         }
     ).encode("utf-8")
     request = urllib.request.Request(
@@ -378,6 +383,7 @@ def _call_anthropic(base_url: str, api_key: str, model: str, prompt: str, timeou
             "model": model,
             "max_tokens": 512,
             "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
         }
     ).encode("utf-8")
     request = urllib.request.Request(

@@ -119,7 +119,19 @@ def _call_mcp_tool(mcp_base_url: str, mcp_token: str, name: str, arguments: dict
 def _call_openai_compatible(base_url: str, api_key: str, model: str, messages: list[dict]) -> dict:
     url = base_url.rstrip("/") + "/chat/completions"
     body = json.dumps(
-        {"model": model, "messages": messages, "tools": _openai_tool_schemas(), "tool_choice": "auto", "temperature": 0}
+        {
+            "model": model,
+            "messages": messages,
+            "tools": _openai_tool_schemas(),
+            "tool_choice": "auto",
+            "temperature": 0,
+            # Always explicit: "OpenAI-compatible" endpoints disagree on the
+            # default. Some routers stream unless told otherwise and answer
+            # with text/event-stream, which this client cannot parse - it
+            # reads one JSON document. Leaving it unset made the provider's
+            # default decide whether the feature worked at all.
+            "stream": False,
+        }
     ).encode("utf-8")
     request = urllib.request.Request(
         url, data=body, method="POST", headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
@@ -168,6 +180,7 @@ def _call_anthropic(base_url: str, api_key: str, model: str, messages: list[dict
             "system": _SYSTEM_PROMPT,
             "messages": messages,
             "tools": _anthropic_tool_schemas(),
+            "stream": False,
         }
     ).encode("utf-8")
     request = urllib.request.Request(
