@@ -406,6 +406,65 @@ class NginxGeneratorTests(unittest.TestCase):
         self.assertIn("set $sfl_reason $sfl_builtin_rule_reason;", config)
         self.assertNotIn("$request_method$request_uri", config)
 
+    def test_contains_and_equals_rules_are_escaped_into_literal_regexes(self):
+        # Regression test: every rule is enforced through nginx's ~* regex
+        # operator, but render_rule_if ignored the matcher and handed a
+        # "contains"/"equals" pattern to PCRE raw. A real AI-created rule
+        # blocking this User-Agent substring took the whole config down -
+        # `nginx -t` failed on the unmatched ")", which blocks every later
+        # config apply, not just that one rule.
+        user_agent_fragment = "X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0"
+        state = make_state(
+            rules=[
+                {
+                    "id": "rule-ua",
+                    "name": "Block spoofed Chrome UA",
+                    "enabled": True,
+                    "siteId": "*",
+                    "matcher": "contains",
+                    "target": "headers",
+                    "pattern": user_agent_fragment,
+                    "action": "block",
+                    "severity": "high",
+                },
+            ]
+        )
+
+        config = generate_nginx_config(state)
+
+        emitted = [line for line in config.splitlines() if "$http_user_agent ~*" in line and "X11" in line]
+        self.assertTrue(emitted, "expected the user-agent rule to be emitted")
+        pattern = re.search(r'~\* "(.*)"\) \{', emitted[0]).group(1)
+        # Valid regex now (it was not before), and still matches the real UA.
+        compiled = re.compile(pattern.replace('\\"', '"'), re.IGNORECASE)
+        self.assertTrue(compiled.search(f"Mozilla/5.0 ({user_agent_fragment} Safari/537.36"))
+
+    def test_matcher_decides_whether_a_pattern_is_literal_or_regex(self):
+        self.assertEqual(
+            nginx_module.rule_match_regex({"matcher": "contains", "pattern": "/.env"}),
+            re.escape("/.env"),
+        )
+        self.assertEqual(
+            nginx_module.rule_match_regex({"matcher": "equals", "pattern": "35.242.238.168"}),
+            "^" + re.escape("35.242.238.168") + "$",
+        )
+        # A regex rule is still passed through untouched.
+        self.assertEqual(
+            nginx_module.rule_match_regex({"matcher": "regex", "pattern": r"^/wp-login\.php(?:\?|$)"}),
+            r"^/wp-login\.php(?:\?|$)",
+        )
+        # No matcher recorded behaves like the historical default (regex).
+        self.assertEqual(nginx_module.rule_match_regex({"pattern": r"a(b|c)"}), r"a(b|c)")
+
+    def test_literal_matchers_no_longer_match_regex_wildcards(self):
+        contains = re.compile(nginx_module.rule_match_regex({"matcher": "contains", "pattern": "/.env"}), re.IGNORECASE)
+        self.assertTrue(contains.search("/wp/.env"))
+        self.assertFalse(contains.search("/wp/aenv"))
+
+        equals = re.compile(nginx_module.rule_match_regex({"matcher": "equals", "pattern": "35.242.238.168"}), re.IGNORECASE)
+        self.assertTrue(equals.search("35.242.238.168"))
+        self.assertFalse(equals.search("135.242.238.1684"))
+
     def test_shared_builtin_rules_are_not_repeated_in_each_site_file(self):
         state = make_state(
             sites=[

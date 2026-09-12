@@ -3647,7 +3647,7 @@ def render_rule_if(rule: dict, effect: str, index: int) -> list[str]:
         ]
 
     variables = target_variables(target)
-    pattern = nginx_regex(rule.get("pattern") or "")
+    pattern = nginx_regex(rule_match_regex(rule))
     reason = nginx_string(rule.get("name") or rule.get("id") or "Rule matched")
     match_var = f"$sfl_rule_{index}"
     lines = [f"    set {match_var} 0;"]
@@ -3757,6 +3757,31 @@ def escape_server_name(value: str) -> str:
     if safe == "*":
         return "_"
     return safe or "_"
+
+
+def rule_match_regex(rule: dict) -> str:
+    """Turn a rule's pattern into the regex nginx should match on, honouring
+    the rule's matcher.
+
+    Every rule is enforced through nginx's ``~*`` regex operator, so a
+    "contains"/"equals" pattern has to be escaped into a literal before it
+    gets there - exactly what access_condition_expression() already does
+    for the equivalent access-rule operators. Without this, a literal
+    pattern was handed to PCRE raw: at best it silently matched the wrong
+    thing ("/.env" matching "/aenv", "gio-hang/?x=" not needing the "?"),
+    at worst it was not a valid regex at all and took the whole config
+    down with it - a rule blocking the User-Agent substring
+    "X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) ..." failed
+    `nginx -t` on the unmatched ")", which blocks every later config apply
+    until the rule is fixed, not just that one rule.
+    """
+    pattern = str(rule.get("pattern") or "")
+    matcher = str(rule.get("matcher") or "regex").strip().lower()
+    if matcher == "contains":
+        return re.escape(pattern)
+    if matcher == "equals":
+        return exact_regex(pattern)
+    return pattern
 
 
 def nginx_regex(value: str) -> str:
