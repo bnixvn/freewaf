@@ -2249,11 +2249,39 @@ def dashboard_stats(
     return stats
 
 
+def dashboard_state_entry_is_stale(entry: dict) -> bool:
+    """True when a cached dashboard entry is older than the refresh interval.
+
+    An entry with no parseable updatedAt counts as stale so old cache files
+    heal themselves instead of pinning the dashboard forever.
+    """
+    raw = str((entry or {}).get("updatedAt") or "").strip()
+    if not raw:
+        return True
+    try:
+        updated_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - updated_at).total_seconds()
+    return age >= dashboard_state_refresh_seconds()
+
+
 def dashboard_stats_snapshot(store: Store, state: dict | None = None, site_id: str = "", retention_days: int | None = None) -> dict:
     normalized_days = dashboard_period_days(retention_days)
     key = dashboard_state_key(site_id, normalized_days)
     cached = load_dashboard_state_cache().get("stats", {}).get(key)
     if isinstance(cached, dict) and isinstance(cached.get("data"), dict):
+        # Serve the cached numbers immediately (the rebuild scans every access
+        # log and is far too slow to run inside a request), but kick off a
+        # background refresh once they age out. Without this the cache was
+        # write-once: any entry that existed suppressed every future refresh,
+        # so a dashboard cached at the moment someone cleared the logs stayed
+        # pinned at zero forever. The stats-warmup worker used to paper over
+        # that by rebuilding on a timer; where it is disabled, nothing did.
+        if dashboard_state_entry_is_stale(cached):
+            request_dashboard_state_refresh(store, key)
         return cached["data"]
     request_dashboard_state_refresh(store, key)
     source_state = state or store.get_state_fields("sites", "settings")

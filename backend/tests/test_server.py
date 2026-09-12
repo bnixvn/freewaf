@@ -1278,6 +1278,37 @@ class LogPaginationTests(unittest.TestCase):
         self.assertEqual(second["total"], 12)
         stats.assert_called_once_with(store, state, site_id="", retention_days=1)
 
+    def test_dashboard_snapshot_refreshes_a_stale_cache_entry(self):
+        # Regression test: dashboard_stats_snapshot returned any existing
+        # cache entry and only ever requested a refresh on a cache MISS, so
+        # the cache was effectively write-once. On 103.139.154.160 an entry
+        # written at the instant the logs were cleared (total=0) pinned the
+        # dashboard at zero for two days, because the stats-warmup worker
+        # that used to rebuild on a timer is disabled there.
+        store = mock.Mock()
+        store.get_state_fields.return_value = {"sites": [], "settings": {}, "logs": []}
+        fresh = (datetime.now(timezone.utc) - timedelta(seconds=2)).isoformat()
+        stale = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+
+        for label, updated_at, expect_refresh in (("fresh", fresh, False), ("stale", stale, True)):
+            payload = {"stats": {server_module.dashboard_state_key("", 1): {"updatedAt": updated_at, "data": {"total": 7}}}}
+            with mock.patch("freewaf.server.load_dashboard_state_cache", return_value=payload), \
+                    mock.patch("freewaf.server.request_dashboard_state_refresh") as refresh:
+                stats = server_module.dashboard_stats_snapshot(store, retention_days=1)
+            # Either way the cached numbers are served without blocking.
+            self.assertEqual(stats["total"], 7, label)
+            self.assertEqual(refresh.called, expect_refresh, label)
+
+    def test_dashboard_state_entry_staleness_rules(self):
+        with mock.patch("freewaf.server.dashboard_state_refresh_seconds", return_value=15):
+            recent = (datetime.now(timezone.utc) - timedelta(seconds=2)).isoformat()
+            aged = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+            self.assertFalse(server_module.dashboard_state_entry_is_stale({"updatedAt": recent}))
+            self.assertTrue(server_module.dashboard_state_entry_is_stale({"updatedAt": aged}))
+            # Anything unreadable counts as stale so old cache files heal.
+            self.assertTrue(server_module.dashboard_state_entry_is_stale({}))
+            self.assertTrue(server_module.dashboard_state_entry_is_stale({"updatedAt": "not-a-date"}))
+
     def test_dashboard_refresh_batches_log_scan_and_period_summaries(self):
         store = mock.Mock()
         state = {"sites": [{"id": "site-a", "name": "Site A", "hostnames": ["a.test"]}], "settings": {}, "logs": []}
