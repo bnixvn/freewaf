@@ -1769,6 +1769,7 @@ export default function App() {
         <SiteModal
           site={modal.site}
           certificates={data?.certificates || []}
+          modSecurityDisabled={Boolean(data?.runtime?.modSecurityDisabled)}
           onClose={() => setModal(null)}
           onSave={saveSite}
         />
@@ -3461,6 +3462,13 @@ function SettingsView({
               <ApplicationOption label="Proxy SSL Server Name" checked={boolValue(applicationForm.proxySslServerName)} onChange={(value) => updateApplication('proxySslServerName', String(value))} />
               <ApplicationOption label="ModSecurity" checked={boolValue(applicationForm.modSecurityEnabled)} onChange={(value) => updateApplication('modSecurityEnabled', String(value))} />
             </div>
+            {data.runtime?.modSecurityDisabled && (
+              <div className="notice full">
+                <strong>ModSecurity is switched off server-wide</strong> - <span className="code">FREEWAF_MODSECURITY_DISABLED=true</span> in
+                the environment file overrides every toggle here, and nginx is running with no ModSecurity rules loaded. Turning this on
+                has no effect until that setting is removed.
+              </div>
+            )}
             <div className="application-option-inputs">
               <SelectField
                 label="Get Attack IP From"
@@ -4618,7 +4626,7 @@ function LimitEditFields({ prefix, form, updateLimit, includeStatusCodes = false
   );
 }
 
-function SiteModal({ site, certificates, onClose, onSave }) {
+function SiteModal({ site, certificates, modSecurityDisabled = false, onClose, onSave }) {
   const [submitting, setSubmitting] = useState(false);
   const domainFieldRef = useRef(null);
   const [form, setForm] = useState(() => ({
@@ -4914,6 +4922,12 @@ function SiteModal({ site, certificates, onClose, onSave }) {
             <TextField label="HSTS Max Age (seconds)" value={form.proxyHstsMaxAge} onChange={(value) => update('proxyHstsMaxAge', value)} type="number" full />
           )}
 
+          {modSecurityDisabled && (
+            <div className="notice full">
+              <strong>ModSecurity is switched off server-wide.</strong> This toggle has no effect until
+              <span className="code"> FREEWAF_MODSECURITY_DISABLED</span> is removed from the environment file.
+            </div>
+          )}
           <div className="feature-toggle-grid">
             <ApplicationOption label="ModSecurity" checked={boolValue(form.modSecurityEnabled)} onChange={(value) => update('modSecurityEnabled', String(value))} />
             <ApplicationOption label="HTTP Flood" checked={boolValue(form.featureHttpFlood)} onChange={(value) => update('featureHttpFlood', String(value))} />

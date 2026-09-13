@@ -2337,9 +2337,21 @@ def site_modsecurity(site: dict, defaults: dict | None = None) -> dict:
     }
 
 
+def modsecurity_globally_disabled() -> bool:
+    """Kill switch for ModSecurity across every site.
+
+    Set by FREEWAF_MODSECURITY_DISABLED in the environment file. When it is
+    on, no modsecurity directive is emitted at all - which means a site
+    whose own settings say ModSecurity is enabled is silently running
+    without it. runtime_payload() reports this so the panel can say so
+    rather than showing a toggle that is on but has no effect.
+    """
+    return os.environ.get("FREEWAF_MODSECURITY_DISABLED", "false").lower() == "true"
+
+
 def render_modsecurity_directives(site: dict) -> list[str]:
     # Temporarily disable all ModSecurity rules
-    if os.environ.get("FREEWAF_MODSECURITY_DISABLED", "false").lower() == "true":
+    if modsecurity_globally_disabled():
         return []
     config = site.get("modSecurity") if isinstance(site.get("modSecurity"), dict) else {}
     if not config.get("enabled"):
@@ -2395,7 +2407,7 @@ def http_flood_cooldown_required(site: dict) -> bool:
 
 
 def render_bot_rate_modsecurity_rules(site: dict, state: dict | None = None, indent: str = "        ") -> list[str]:
-    if os.environ.get("FREEWAF_MODSECURITY_DISABLED", "false").lower() == "true":
+    if modsecurity_globally_disabled():
         return []
     config = site.get("modSecurity") if isinstance(site.get("modSecurity"), dict) else {}
     protection = site_bot_protection(site)
@@ -2510,7 +2522,7 @@ def bot_rate_block_minutes(rate: dict) -> int:
 
 
 def render_http_flood_modsecurity_rules(site: dict, state: dict | None = None, indent: str = "        ") -> list[str]:
-    if os.environ.get("FREEWAF_MODSECURITY_DISABLED", "false").lower() == "true":
+    if modsecurity_globally_disabled():
         return []
     config = site.get("modSecurity") if isinstance(site.get("modSecurity"), dict) else {}
     if (

@@ -34,6 +34,7 @@ from urllib.parse import parse_qs, quote, urlparse
 from .nginx import (
     challenge_backend_url,
     clear_nginx_logs,
+    modsecurity_globally_disabled,
     generate_nginx_config,
     nginx_modsecurity_ip_list_dir,
     nginx_output_file,
@@ -3843,6 +3844,10 @@ def runtime_payload(state: dict, admin_port: int, demo_origin_port: int, demo_en
         "adminPort": admin_port,
         "adminProtocol": "https" if panel.get("httpsEnabled") else "http",
         "wafMode": "nginx",
+        # The env kill switch wins over every per-site ModSecurity toggle, so
+        # the panel has to know: otherwise a site shows ModSecurity ON while
+        # nginx is running with none of it loaded.
+        "modSecurityDisabled": modsecurity_globally_disabled(),
         "nginxListenPorts": listen_ports,
         "proxyPort": listen_ports[0] if listen_ports else None,
         "demoOriginPort": demo_origin_port if demo_enabled else None,

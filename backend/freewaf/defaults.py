@@ -600,6 +600,84 @@ def _filter_safeline_rules(rules: list[dict]) -> list[dict]:
 
 BUILTIN_RULES.extend(_deduplicate_safeline_rules(_filter_safeline_rules(SAFELINE_COMPATIBILITY_RULES)))
 
+# Whitespace as it can actually reach a rule. nginx matches rules against
+# $request_uri, which it does NOT percent-decode, so spaces in a payload
+# arrive as %20 - or as "+" inside a query string - never as a literal
+# space. %09/%0a/%0d cover the tab/newline variants used for the same
+# purpose.
+_ENCODED_WHITESPACE = r"(?:\s|\+|%20|%09|%0a|%0d)"
+_WORD_START_BOUNDARY = r"(?:(?<![A-Za-z_])|(?<=%0a)|(?<=%0d))"
+
+
+def encoded_whitespace_pattern(pattern: str) -> str:
+    r"""Rewrite ``\s`` in a rule pattern so it also matches encoded whitespace.
+
+    A pattern written with ``\s`` only ever matched the literal form, which
+    is not what real tooling sends. Verified live on 103.139.154.160: the
+    builtin SQL-injection rule blocked ``?id=1' OR 1=1--`` but let the
+    ordinary encoded form ``?id=1%27%20OR%201=1--`` through to the origin,
+    which defeats every space-dependent branch of it (union select,
+    or 1=1, and 1=1, "-- ").
+
+    ``\s`` inside a character class is deliberately left alone: ``[^#\s]``
+    has to stay a class, and expanding it there would corrupt the regex.
+
+    A ``\b`` sitting directly against an encoded-whitespace run is dropped,
+    because it can never hold there: ``%20`` ends in a word character, so
+    there is no word boundary between it and the letter that follows.
+    Leaving it in place would veto every match on the encoded form - which
+    is exactly the bypass this function exists to close.
+    """
+    out: list[str] = []
+    index = 0
+    in_class = False
+    quantifiers = {"+", "*", "?"}
+    while index < len(pattern):
+        char = pattern[index]
+        next_char = pattern[index + 1] if index + 1 < len(pattern) else ""
+        if char == "\\" and next_char:
+            if next_char == "s" and not in_class:
+                if out and out[-1] == r"\b":
+                    out.pop()
+                out.append(_ENCODED_WHITESPACE)
+            elif next_char == "b" and not in_class:
+                previous = out[-1] if out else ""
+                before_previous = out[-2] if len(out) > 1 else ""
+                adjacent_to_whitespace = previous == _ENCODED_WHITESPACE or (
+                    previous in quantifiers and before_previous == _ENCODED_WHITESPACE
+                )
+                following = pattern[index + 2] if index + 2 < len(pattern) else ""
+                if adjacent_to_whitespace:
+                    pass
+                elif following.isalpha():
+                    # Word-START boundary. \b cannot hold after encoded
+                    # whitespace - %20 ends in "0", a word character, so
+                    # there is no boundary before the keyword that follows.
+                    # A letter boundary keeps the point of \b (still refuses
+                    # to match "union" inside "reunion") while allowing the
+                    # digit that %20/%09 end with; %0a/%0d end in a letter,
+                    # so those two need an explicit lookbehind of their own.
+                    out.append(_WORD_START_BOUNDARY)
+                else:
+                    # Word-END boundary is fine as-is: what follows an
+                    # encoded payload is "%", which is not a word character.
+                    out.append(r"\b")
+            else:
+                out.append(char + next_char)
+            index += 2
+            continue
+        if char == "[":
+            in_class = True
+        elif char == "]":
+            in_class = False
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+for _builtin_rule in BUILTIN_RULES:
+    _builtin_rule["pattern"] = encoded_whitespace_pattern(_builtin_rule["pattern"])
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()

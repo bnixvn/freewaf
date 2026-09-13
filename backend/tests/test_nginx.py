@@ -2143,3 +2143,62 @@ class UnmatchedHostServerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EncodedWhitespaceRuleTests(unittest.TestCase):
+    """Rules run against nginx's $request_uri, which is NOT percent-decoded.
+
+    Verified live on 103.139.154.160 before this fix: the builtin SQL
+    injection rule blocked "?id=1' OR 1=1--" but let the ordinary encoded
+    form "?id=1%27%20OR%201=1--" through to the origin, which is the form
+    real tooling actually sends.
+    """
+
+    def sqli_pattern(self):
+        from freewaf.defaults import BUILTIN_RULES
+        return next(r["pattern"] for r in BUILTIN_RULES if r["name"] == "SQL injection probes")
+
+    def test_every_encoding_of_the_same_payload_is_caught(self):
+        pattern = self.sqli_pattern()
+        for label, uri in {
+            "literal space": "/shop/?id=1 UNION SELECT 1,2",
+            "percent-encoded": "/shop/?id=1%20UNION%20SELECT%201,2",
+            "plus": "/shop/?id=1+UNION+SELECT+1,2",
+            "encoded tab": "/shop/?id=1%09UNION%09SELECT%201,2",
+            "encoded newline": "/shop/?id=1%0aUNION%0aSELECT%201,2",
+            "encoded CR": "/shop/?id=1%0dUNION%0dSELECT%201,2",
+            "quote form": "/shop/?id=1%27%20OR%201=1--",
+        }.items():
+            self.assertRegex(uri, re.compile(pattern, re.IGNORECASE), label)
+
+    def test_word_boundary_protection_is_kept(self):
+        # The point of \b was to not match a keyword inside a longer word.
+        # The encoded-aware boundary must keep that.
+        pattern = re.compile(self.sqli_pattern(), re.IGNORECASE)
+        for uri in ("/reunion-tour/", "/selection-guide/", "/shop/?s=union+jack+flag", "/or-else/"):
+            self.assertIsNone(pattern.search(uri), uri)
+
+    def test_no_builtin_rule_fires_on_ordinary_traffic(self):
+        from freewaf.defaults import BUILTIN_RULES
+        for uri in (
+            "/wp-json/wp/v2/posts?per_page=10",
+            "/gio-hang/?_wpnonce=30089707f7&add-to-cart=47513",
+            "/wp-content/uploads/2026/01/image.jpg",
+            "/?q=c%2B%2B+programming",
+        ):
+            hits = [r["name"] for r in BUILTIN_RULES if re.search(r["pattern"], uri, re.IGNORECASE)]
+            self.assertEqual(hits, [], f"{uri} -> {hits}")
+
+    def test_character_classes_are_left_alone(self):
+        from freewaf.defaults import encoded_whitespace_pattern
+        # \s inside a class must stay a class, or the regex is corrupted.
+        self.assertEqual(encoded_whitespace_pattern(r"[^#\s]+"), r"[^#\s]+")
+        self.assertEqual(encoded_whitespace_pattern(r"a\sb"), r"a(?:\s|\+|%20|%09|%0a|%0d)b")
+
+    def test_every_builtin_pattern_still_compiles(self):
+        from freewaf.defaults import BUILTIN_RULES
+        for rule in BUILTIN_RULES:
+            try:
+                re.compile(rule["pattern"])
+            except re.error as error:
+                self.fail(f"{rule['id']}: {error}")
