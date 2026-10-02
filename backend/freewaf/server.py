@@ -3823,11 +3823,17 @@ def backup_certificate_file_writer(store: Store, cert_id: str, files: dict) -> N
     if not fullchain or not privkey:
         return
 
+    # Flat filenames, not a per-certificate subdirectory: nginx.py's
+    # certificate_file_path() resolves any "nginx/certs/..." reference by
+    # basename alone (matching how a plain certificate upload names its
+    # files - see prepare_certificate_payload()), so a nested path here
+    # would render as if the file sat directly in nginx/certs/, pointing
+    # nginx at a file that doesn't exist there.
     safe_id = safe_file_stem(cert_id)
-    dest_dir = certificate_dir() / "restored" / safe_id
+    dest_dir = certificate_dir()
     dest_dir.mkdir(parents=True, exist_ok=True)
-    cert_path = dest_dir / "fullchain.pem"
-    key_path = dest_dir / "privkey.pem"
+    cert_path = dest_dir / f"restored-{safe_id}-fullchain.pem"
+    key_path = dest_dir / f"restored-{safe_id}-privkey.pem"
     cert_path.write_bytes(fullchain)
     key_path.write_bytes(privkey)
     try:
