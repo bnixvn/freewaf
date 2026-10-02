@@ -1313,6 +1313,47 @@ export default function App() {
     }
   }
 
+  async function exportBackup() {
+    try {
+      const response = await fetch('/api/backup/export', { method: 'GET', cache: 'no-store' });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || response.statusText);
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get('content-disposition') || '';
+      const match = disposition.match(/filename="([^"]+)"/);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = match ? match[1] : `freewaf-backup-${Date.now()}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      showToast('Backup download started');
+    } catch (error) {
+      showToast(error.message, true);
+      throw error;
+    }
+  }
+
+  async function restoreBackup(file, mode) {
+    try {
+      const fileBase64 = await fileToBase64(file);
+      const result = await api('/api/backup/restore', { method: 'POST', body: { mode, fileBase64 } });
+      showToast(`Backup restored (${result.categories.join(', ')}) - reloading...`);
+      // A restore can touch settings, sites, rules, certificates, IP groups
+      // and access rules at once; reloading is simpler and safer than
+      // hand-merging six categories' worth of cached view state.
+      window.setTimeout(() => window.location.reload(), 900);
+      return result;
+    } catch (error) {
+      showToast(error.message, true);
+      throw error;
+    }
+  }
+
   async function deleteIpGroup(group) {
     if (!window.confirm(`Delete ${group.name}?`)) return;
     await api(`/api/ip-groups/${group.id}`, { method: 'DELETE' });
@@ -1608,6 +1649,8 @@ export default function App() {
       saveBotProtection,
       saveGeoBlock,
       deleteUser,
+      exportBackup,
+      restoreBackup,
       pendingActions,
       logsLoading,
       logResult,
@@ -3293,6 +3336,8 @@ function SettingsView({
   systemUpdate,
   loadSystemUpdateStatus,
   startSystemUpdate,
+  exportBackup,
+  restoreBackup,
   auth,
   logout
 }) {
@@ -3320,6 +3365,9 @@ function SettingsView({
   // doesn't look like it's asking the same question twice - "Change" opens
   // it back up to edit.
   const [llmConfigExpanded, setLlmConfigExpanded] = useState(!aiRules?.llmApiKeyConfigured);
+  const [backupFile, setBackupFile] = useState(null);
+  const [backupReplace, setBackupReplace] = useState(false);
+  const backupFileInputRef = useRef(null);
 
   useEffect(() => {
     setPanelForm({
@@ -3359,6 +3407,17 @@ function SettingsView({
     } finally {
       setPendingAction('');
     }
+  }
+
+  function submitBackupRestore() {
+    if (!backupFile) return;
+    const confirmed = window.confirm(
+      backupReplace
+        ? `Replace existing settings, applications, rules and certificates with the contents of "${backupFile.name}"? This cannot be undone.`
+        : `Restore "${backupFile.name}" into the current configuration? Matching items are updated in place; new items are added.`
+    );
+    if (!confirmed) return;
+    runLocalAction('backupRestore', () => restoreBackup(backupFile, backupReplace ? 'replace' : 'merge'));
   }
 
   function submitPanel(event) {
@@ -3747,6 +3806,62 @@ function SettingsView({
           </LoadingButton>
         </div>
         <p className="form-note">Update restarts the FreeWAF service after the job finishes.</p>
+      </section>
+
+      <section className="panel backup-panel">
+        <div className="panel-heading">
+          <div>
+            <h2>Backup &amp; Restore</h2>
+            <p>Export settings, applications, rules and certificates as one file, or restore them on this install.</p>
+          </div>
+        </div>
+        <div className="settings-actions">
+          <LoadingButton
+            type="button"
+            pending={pendingAction === 'backupExport'}
+            disabled={!canWrite}
+            pendingText="Exporting..."
+            className="tool-button primary"
+            onClick={() => runLocalAction('backupExport', exportBackup)}
+          >
+            <Download size={18} /> Export Backup
+          </LoadingButton>
+        </div>
+        <p className="form-note">The downloaded file includes private keys and other secrets - store and transfer it securely.</p>
+
+        <div className="ip-import-actions full">
+          <button type="button" className="outline-action" disabled={!canWrite} onClick={() => backupFileInputRef.current?.click()}>
+            <Upload size={16} /> {backupFile ? backupFile.name : 'Choose backup file...'}
+          </button>
+          <input
+            ref={backupFileInputRef}
+            className="hidden-file-input"
+            type="file"
+            accept=".zip"
+            disabled={!canWrite}
+            onChange={(event) => setBackupFile(event.target.files?.[0] || null)}
+          />
+          <label className="form-note" style={{ display: 'flex', alignItems: 'center', gap: '0.4em' }}>
+            <input
+              type="checkbox"
+              checked={backupReplace}
+              disabled={!canWrite}
+              onChange={(event) => setBackupReplace(event.target.checked)}
+            />
+            Replace existing config instead of merging
+          </label>
+          <LoadingButton
+            type="button"
+            pending={pendingAction === 'backupRestore'}
+            disabled={!canWrite || !backupFile}
+            pendingText="Restoring..."
+            className="tool-button"
+            onClick={submitBackupRestore}
+          >
+            <UploadCloud size={18} /> Restore Backup
+          </LoadingButton>
+        </div>
+        <p className="form-note">Restoring tests and reloads Nginx immediately. A safety snapshot of the current config is kept under data/backups/ first.</p>
       </section>
 
       <section className="panel">
@@ -5803,6 +5918,18 @@ async function api(path, options = {}) {
   }
   if (response.status === 204) return null;
   return response.json();
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      resolve(result.split(',')[1] || '');
+    };
+    reader.onerror = () => reject(reader.error || new Error('Could not read file'));
+    reader.readAsDataURL(file);
+  });
 }
 
 function logsExportUrl({ siteId = '', verdict = '', search = '', domain = '' } = {}) {

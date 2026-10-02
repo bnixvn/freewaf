@@ -48,6 +48,7 @@ from .nginx import (
     write_nginx_config,
 )
 from . import ai_rules
+from . import backup
 from . import mcp_agent
 from . import mcp_tools
 from . import ipset_manager
@@ -542,6 +543,32 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                 self.send_json(200, {"entries": read_audit_log(clamp(limit, 1, 1000))})
                 return
 
+            if parsed.path == "/api/backup/export":
+                if not self.require_platform_admin(parsed.path):
+                    return
+                categories_param = (query.get("categories") or [""])[0]
+                categories = [item.strip() for item in categories_param.split(",") if item.strip()] or None
+                try:
+                    content, filename = backup.build_backup_archive(
+                        store,
+                        categories,
+                        certificate_file_reader=backup_certificate_files,
+                    )
+                except StoreError as error:
+                    self.send_json(error.status, error_payload(error))
+                    return
+                self.record_audit(action="backup.export", target="backup", status=200, extra={"categories": categories or list(backup.CATEGORIES)})
+                self.send_binary(
+                    200,
+                    content,
+                    "application/zip",
+                    headers={
+                        "Content-Disposition": f'attachment; filename="{filename}"',
+                        "X-Content-Type-Options": "nosniff",
+                    },
+                )
+                return
+
             self.serve_static(parsed.path)
 
         def do_POST(self):
@@ -724,6 +751,33 @@ def make_admin_handler(store: Store, admin_port: int, demo_origin_port: int, dem
                     result, status_code = start_system_update()
                     self.record_audit(action="system.update", target="system", status=status_code, payload={}, extra={"status": result.get("status"), "running": result.get("running")})
                     self.send_json(status_code, result)
+                    return
+                if self.path == "/api/backup/restore":
+                    if not self.require_platform_admin(self.path):
+                        return
+                    file_b64 = str(payload.get("fileBase64") or "")
+                    if not file_b64:
+                        self.send_json(400, {"error": "fileBase64 is required"})
+                        return
+                    try:
+                        content = base64.b64decode(file_b64, validate=True)
+                    except ValueError:
+                        self.send_json(400, {"error": "fileBase64 is not valid base64"})
+                        return
+                    mode = str(payload.get("mode") or "merge")
+                    categories = payload.get("categories")
+                    archive_data = backup.read_backup_archive(content)
+                    result = backup.apply_backup_archive(
+                        store,
+                        archive_data,
+                        categories,
+                        mode,
+                        certificate_file_writer=lambda cert_id, files: backup_certificate_file_writer(store, cert_id, files),
+                        ip_group_dir=store.file_path.parent / "ip-groups",
+                    )
+                    apply_nginx_or_raise(store)
+                    self.record_audit(action="backup.restore", target="backup", status=200, extra={"mode": mode, "categories": result.get("categories")})
+                    self.send_json(200, result)
                     return
                 self.send_json(404, {"error": "Not found"})
             except StoreError as error:
@@ -3726,6 +3780,74 @@ def certificate_download_roots() -> list[Path]:
         live_root.resolve(strict=False),
         archive_root.resolve(strict=False),
     ]
+
+
+def backup_certificate_files(certificate: dict) -> tuple[bytes | None, bytes | None]:
+    """Read a certificate's fullchain+key for inclusion in a backup archive.
+
+    Tolerant of missing/unreadable files (returns None for that half)
+    instead of raising, so one bad certificate record doesn't abort the
+    whole export - unlike certificate_download_bundle(), which is used for
+    a single, user-requested download and should fail loudly.
+    """
+    cert_bytes = None
+    key_bytes = None
+    try:
+        cert_path = certificate_download_path(certificate)
+        cert_bytes = cert_path.read_bytes()
+    except (StoreError, OSError):
+        cert_bytes = None
+
+    key_path = resolve_reference(certificate.get("keyFile"))
+    if key_path:
+        resolved_key = key_path.resolve(strict=False)
+        if any(is_relative_to(resolved_key, root) for root in certificate_download_roots()) and resolved_key.is_file():
+            try:
+                key_bytes = resolved_key.read_bytes()
+            except OSError:
+                key_bytes = None
+    return cert_bytes, key_bytes
+
+
+def backup_certificate_file_writer(store: Store, cert_id: str, files: dict) -> None:
+    """Restore a certificate's PEM files from a backup archive.
+
+    Writes into the panel's own managed cert directory rather than trying to
+    recreate certbot's /etc/letsencrypt live/archive/renewal bookkeeping on
+    the new host - that keeps the restored site serving the right
+    certificate immediately, at the cost of auto-renew needing to be
+    re-issued via Certbot afterward for certbot/cloudflare-sourced certs.
+    """
+    fullchain = files.get("fullchain.pem")
+    privkey = files.get("privkey.pem")
+    if not fullchain or not privkey:
+        return
+
+    safe_id = safe_file_stem(cert_id)
+    dest_dir = certificate_dir() / "restored" / safe_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    cert_path = dest_dir / "fullchain.pem"
+    key_path = dest_dir / "privkey.pem"
+    cert_path.write_bytes(fullchain)
+    key_path.write_bytes(privkey)
+    try:
+        os.chmod(key_path, 0o600)
+    except OSError:
+        pass
+
+    state = store.get_state()
+    certificate = next((item for item in state.get("certificates", []) if item.get("id") == cert_id), None)
+    if certificate is None:
+        return
+    store.upsert_certificate(
+        {
+            **certificate,
+            "source": "upload",
+            "certFile": relative_to_root(cert_path),
+            "keyFile": relative_to_root(key_path),
+        },
+        cert_id,
+    )
 
 
 def is_downloadable_certificate_path(path: Path) -> bool:

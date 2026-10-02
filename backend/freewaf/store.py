@@ -788,6 +788,81 @@ class Store:
 
             self.persist()
 
+    RESTORE_CATEGORIES = ("settings", "sites", "rules", "certificates", "ipGroups", "accessRules")
+    RESTORE_LIST_CATEGORIES = ("sites", "rules", "certificates", "ipGroups", "accessRules")
+
+    def snapshot_state_file(self, label: str) -> Path | None:
+        """Copy the current state.json into data/backups/ before a bulk mutation.
+
+        Mirrors install.sh's pre-upgrade safety snapshot so a bad restore can
+        still be recovered by hand even though restore_categories() has no
+        transactional rollback of its own.
+        """
+        if not self.file_path.exists():
+            return None
+        backups_dir = self.file_path.parent / "backups"
+        backups_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = utc_now().replace(":", "").replace("-", "")
+        destination = backups_dir / f"state-{label}-{timestamp}.json"
+        try:
+            destination.write_bytes(self.file_path.read_bytes())
+            os.chmod(destination, 0o600)
+        except OSError:
+            return None
+        return destination
+
+    def restore_categories(self, categories: dict, mode: str = "merge") -> dict:
+        """Apply a backup's categories into the live state.
+
+        `categories` maps a subset of RESTORE_CATEGORIES to the values
+        captured in a backup archive (see backup.py). `mode` "merge" upserts
+        list items by id and shallow-merges settings; "replace" overwrites
+        each selected category outright. The result is re-run through
+        normalize_state() so restored records pick up current defaults/shape
+        the same way a reloaded state.json would.
+        """
+        if mode not in ("merge", "replace"):
+            raise StoreError(400, "mode must be 'merge' or 'replace'")
+
+        with self.lock:
+            self.snapshot_state_file("pre-restore")
+            state = self._state()
+            summary: dict[str, dict] = {}
+
+            if "settings" in categories:
+                incoming = categories["settings"] if isinstance(categories["settings"], dict) else {}
+                state["settings"] = incoming if mode == "replace" else {**(state.get("settings") or {}), **incoming}
+                summary["settings"] = {"applied": True}
+
+            for key in self.RESTORE_LIST_CATEGORIES:
+                if key not in categories:
+                    continue
+                incoming_items = [item for item in (categories[key] or []) if isinstance(item, dict) and item.get("id")]
+
+                if mode == "replace":
+                    state[key] = incoming_items
+                    summary[key] = {"added": 0, "updated": 0, "replaced": len(incoming_items)}
+                    continue
+
+                existing = state.get(key) or []
+                by_id = {item["id"]: item for item in existing if isinstance(item, dict) and item.get("id")}
+                added = 0
+                updated = 0
+                for item in incoming_items:
+                    if item["id"] in by_id:
+                        by_id[item["id"]].update(item)
+                        updated += 1
+                    else:
+                        existing.append(item)
+                        by_id[item["id"]] = item
+                        added += 1
+                state[key] = existing
+                summary[key] = {"added": added, "updated": updated}
+
+            self.state = normalize_state(state)
+            self.persist()
+            return summary
+
     def upsert_ip_group(self, payload: dict, group_id: str | None = None) -> dict:
         with self.lock:
             now = utc_now()
