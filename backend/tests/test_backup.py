@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -14,7 +15,9 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from freewaf import backup
-from freewaf.server import make_admin_handler
+from freewaf import nginx as nginx_module
+from freewaf import server as server_module
+from freewaf.server import backup_certificate_file_writer, make_admin_handler
 from freewaf.store import Store, StoreError
 
 
@@ -217,6 +220,47 @@ class BackupArchiveTests(unittest.TestCase):
             self.assertIn(cert["id"], written)
             self.assertEqual(written[cert["id"]]["fullchain.pem"], b"FULLCHAIN")
             self.assertEqual(written[cert["id"]]["privkey.pem"], b"PRIVKEY")
+
+    def test_server_certificate_file_writer_produces_a_path_nginx_can_resolve(self):
+        # Regression test: nginx.certificate_file_path() resolves any
+        # "nginx/certs/..." reference by basename alone (it's built for
+        # certificates that live flat in that directory, like a plain
+        # upload - see prepare_certificate_payload()). A writer that nests
+        # restored certs under a per-id subdirectory would silently produce
+        # a certFile nginx can never actually find.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = self.make_store(root)
+            cert = store.upsert_certificate(
+                {
+                    "name": "example.test",
+                    "domains": ["example.test"],
+                    "source": "certbot",
+                    "email": "admin@example.test",
+                    "certFile": "/etc/letsencrypt/live/example.test/fullchain.pem",
+                    "keyFile": "/etc/letsencrypt/live/example.test/privkey.pem",
+                }
+            )
+
+            # NGINX_CERT_DIR is always an absolute path in a real deployment
+            # (set in freewaf.env); pin it here too so both the writer
+            # (server.certificate_dir()) and the renderer
+            # (nginx.certificate_file_path()) resolve the same directory
+            # regardless of the test runner's cwd.
+            cert_dir = root / "nginx" / "certs"
+            with mock.patch.object(server_module, "ROOT_DIR", root), mock.patch.dict(os.environ, {"NGINX_CERT_DIR": str(cert_dir)}):
+                backup_certificate_file_writer(store, cert["id"], {"fullchain.pem": b"FULLCHAIN", "privkey.pem": b"PRIVKEY"})
+
+                restored = next(c for c in store.get_state()["certificates"] if c["id"] == cert["id"])
+                self.assertEqual(restored["source"], "upload")
+
+                resolved_cert_path = Path(nginx_module.certificate_file_path(restored["certFile"]))
+                resolved_key_path = Path(nginx_module.certificate_file_path(restored["keyFile"]))
+
+            self.assertTrue(resolved_cert_path.is_file(), f"nginx would look for a certificate at {resolved_cert_path}, which doesn't exist")
+            self.assertTrue(resolved_key_path.is_file(), f"nginx would look for a private key at {resolved_key_path}, which doesn't exist")
+            self.assertEqual(resolved_cert_path.read_bytes(), b"FULLCHAIN")
+            self.assertEqual(resolved_key_path.read_bytes(), b"PRIVKEY")
 
     def test_restore_writes_ip_group_files_into_target_directory(self):
         with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
